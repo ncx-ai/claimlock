@@ -55,6 +55,52 @@ class Manifest(unittest.TestCase):
         self.assertTrue((REPO / "docs/format.md").is_file())
 
 
+OLD_PYTHON = (
+    "import runpy, sys\n"
+    "sys.version_info = (3, 10, 0, 'final', 0)\n"
+    "sys.argv = [sys.argv[1]] + sys.argv[2:]\n"
+    "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+)
+
+
+class LauncherOnOldPython(unittest.TestCase):
+    """C1: a too-old interpreter must never turn a hook into a blocking error."""
+
+    def _run(self, *args, env=None):
+        import sys, tempfile
+        e = dict(os.environ)
+        e.pop("CLAUDE_PLUGIN_DATA", None)
+        e.update(env or {})
+        return subprocess.run([sys.executable, "-c", OLD_PYTHON, str(BIN), *args],
+                              capture_output=True, text=True, env=e, timeout=60,
+                              cwd=tempfile.gettempdir())
+
+    def test_hook_exits_0_silently_and_logs(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            data.mkdir()
+            for event in ("stop", "session-start", "post-tool-use"):
+                r = self._run("hook", event, env={"CLAUDE_PLUGIN_DATA": str(data)})
+                self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), event)
+            log = (data / "hook-errors.log").read_text()
+            self.assertEqual(log.count("3.11"), 3)
+
+    def test_hook_without_plugin_data_still_exits_0(self):
+        r = self._run("hook", "stop")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_interactive_command_still_exits_2(self):
+        r = self._run("check")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("3.11", r.stderr)
+
+    def test_launcher_parses_on_old_python(self):
+        import ast
+        ast.parse((REPO / "bin/claimlock").read_text(), feature_version=(3, 6))
+
+
 class NoLeakedMachinePaths(unittest.TestCase):
     def test_tracked_files_have_no_machine_specific_paths(self):
         """Every file `git ls-files` reports must be free of this machine's
