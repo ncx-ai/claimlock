@@ -1,9 +1,13 @@
 """Operations that change files. Each refuses rather than guessing."""
+import os
+from datetime import datetime
 from pathlib import Path
 
 from . import claims as C
+from . import frontmatter, snapshots
 from .frontmatter import quote
-from .project import CONFIG
+from .pins import blob_of_bytes
+from .project import CONFIG, safe_source
 
 
 class Refused(Exception):
@@ -63,3 +67,40 @@ def new_claim(project, cid: str, area: str) -> Path:
         raise Refused(f"{p} already exists")
     p.write_text(CLAIM_TEMPLATE.format(id=cid, area=quote(area)), encoding="utf-8")
     return p
+
+
+def verify(project, cid, now=None) -> list:
+    """Pin every source of `cid` to its current content and mark it verified.
+
+    Refuses a refuted claim, a claim that would be invalid as verified (no
+    evidence, no sources, bad fields), and a claim with a missing source.
+    Nothing is written unless every check passes.
+    """
+    all_claims = C.load_claims(project)
+    c = next((x for x in all_claims if x.id == cid), None)
+    if c is None:
+        raise Refused(f"no claim {cid!r}")
+    if c.status == "refuted":
+        raise Refused(f"{cid} is refuted; edit its status by hand if it holds again")
+    probs = C.problems(c, project, as_status="verified")
+    if probs:
+        raise Refused(f"{cid} cannot be verified:\n  " + "\n  ".join(probs))
+    contents = []
+    for s in c.sources:
+        try:
+            data = safe_source(project.root, s.path).read_bytes()
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            raise Refused(f"{cid}: source {s.path} does not exist — fix its sources, then verify") from None
+        contents.append((s.path, blob_of_bytes(data), data))
+    for _, blob, data in contents:
+        snapshots.store(project, blob, data)
+    stamp = now or datetime.now().astimezone().isoformat(timespec="seconds")
+    text = frontmatter.rewrite(c.text, c.path.name, status="verified", verified_at=stamp,
+                               sources=[{"path": p, "blob": b} for p, b, _ in contents])
+    tmp = c.path.with_name(c.path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, c.path)
+    referenced = {b for _, b, _ in contents}
+    referenced |= {s.blob for other in all_claims if other.id != cid for s in other.sources if s.blob}
+    snapshots.prune(project, referenced)
+    return [(p, b) for p, b, _ in contents]

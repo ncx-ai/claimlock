@@ -1,5 +1,6 @@
 """Command-line front end. Formatting lives here; logic lives in the modules."""
 import argparse
+import difflib
 import json
 import os
 import sys
@@ -9,6 +10,7 @@ from . import VERSION
 from . import claims as C
 from . import ops
 from . import project as P
+from . import snapshots
 
 HINT = {
     "stale": "re-check it (claimlock diff {id}), then: claimlock verify {id}",
@@ -181,6 +183,60 @@ def cmd_show(args):
     return 0
 
 
+def cmd_verify(args):
+    project = _project(args)
+    rc = 0
+    for cid in args.ids:
+        try:
+            pinned = ops.verify(project, cid)
+        except ops.Refused as e:
+            print(f"claimlock: {e}", file=sys.stderr)
+            rc = 1
+            continue
+        print(f"verified {cid}")
+        for path, blob in pinned:
+            print(f"  {path} @ {blob[:12]}")
+    return rc
+
+
+def cmd_diff(args):
+    project = _project(args)
+    c = _find(project, args.id)
+    if c is None:
+        print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
+        return 1
+    hasher = C.open_hasher(project)
+    state, per = C.freshness(c, project, hasher)
+    hasher.save()
+    if state is None:
+        print(f"claimlock: {c.id} is {c.status}; only verified claims have pins")
+        return 0
+    if state == "fresh":
+        print(f"claimlock: {c.id} is fresh — every source matches its pin")
+        return 0
+    pins = {s.path: s.blob for s in c.sources}
+    for path, st in per:
+        if st == "fresh":
+            continue
+        if st == "missing":
+            print(f"--- {path}: deleted or renamed since verification")
+            continue
+        if st == "unpinned":
+            print(f"--- {path}: never pinned; nothing to compare against")
+            continue
+        old = snapshots.load(project, pins[path])
+        if old is None:
+            print(f"--- {path}: changed, but the pinned content {pins[path][:12]} is unavailable "
+                  f"(not in git, no snapshot) — re-read the claim against the current file")
+            continue
+        new = (project.root / path).read_bytes()
+        sys.stdout.writelines(difflib.unified_diff(
+            old.decode("utf-8", "replace").splitlines(keepends=True),
+            new.decode("utf-8", "replace").splitlines(keepends=True),
+            fromfile=f"{path} @ {pins[path][:12]} (verified)", tofile=f"{path} (now)"))
+    return 0
+
+
 def build_parser():
     ap = argparse.ArgumentParser(prog="claimlock",
                                  description="Claims pinned to the content that could falsify them.")
@@ -208,6 +264,10 @@ def build_parser():
     p = add("search", cmd_search, "case-insensitive substring search")
     p.add_argument("query")
     p = add("show", cmd_show, "one claim with evidence and per-source state")
+    p.add_argument("id")
+    p = add("verify", cmd_verify, "pin sources and mark verified (only after re-checking)")
+    p.add_argument("ids", nargs="+")
+    p = add("diff", cmd_diff, "show what changed in a claim's sources since it was verified")
     p.add_argument("id")
     return ap, sub, add
 
