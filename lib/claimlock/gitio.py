@@ -72,6 +72,33 @@ def anchored_blobs(root, rels):
     return blobs
 
 
+def hash_paths(root, rels):
+    """{rel: blob} for root-relative files, hashed the way git stores them
+    (clean filters and text/eol/autocrlf normalization applied), in one
+    `git hash-object --stdin-paths`. None when git fails or any path cannot
+    be hashed: the batch is all-or-nothing.
+
+    Absolute paths are passed on purpose — `--stdin-paths` resolves relative
+    paths from the repository top level, not the working directory."""
+    if not rels:
+        return {}
+    base = Path(root).resolve()
+    names = [str(base / rel) for rel in rels]
+    if any("\n" in n for n in names):
+        return None
+    try:
+        r = subprocess.run(["git", "hash-object", "--stdin-paths"], cwd=root,
+                           input=("\n".join(names) + "\n").encode(), capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    out = r.stdout.decode("ascii", "replace").split()
+    if len(out) != len(rels):
+        return None
+    return dict(zip(rels, out))
+
+
 def head(root):
     return _text(run(root, "rev-parse", "--verify", "-q", "HEAD")) or None
 

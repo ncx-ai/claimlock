@@ -6,7 +6,6 @@ from pathlib import Path
 from . import claims as C
 from . import frontmatter
 from .frontmatter import quote
-from .pins import blob_of_bytes
 from .project import CONFIG, safe_source
 
 
@@ -85,18 +84,18 @@ def verify(project, cid, now=None) -> list:
     probs = C.problems(c, project, as_status="verified")
     if probs:
         raise Refused(f"{cid} cannot be verified:\n  " + "\n  ".join(probs))
-    contents = []
+    hasher = C.open_hasher(project)
+    pinned = []
     for s in c.sources:
-        try:
-            data = safe_source(project.root, s.path).read_bytes()
-        except OSError as e:
-            raise Refused(f"{cid}: source {s.path} does not exist or cannot be read "
-                          f"({e.strerror or e}) — fix its sources, then verify") from None
-        contents.append((s.path, blob_of_bytes(data), data))
+        blob = hasher.blob(s.path, use_cache=False)
+        if blob is None:
+            raise Refused(f"{cid}: source {s.path} does not exist or cannot be read — "
+                          f"fix its sources (or the file's permissions), then verify")
+        pinned.append((s.path, blob))
     stamp = now or datetime.now().astimezone().isoformat(timespec="seconds")
     text = frontmatter.rewrite(c.text, c.path.name, status="verified", verified_at=stamp,
-                               sources=[{"path": p, "blob": b} for p, b, _ in contents])
+                               sources=[{"path": p, "blob": b} for p, b in pinned])
     tmp = c.path.with_name(c.path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, c.path)
-    return [(p, b) for p, b, _ in contents]
+    return pinned

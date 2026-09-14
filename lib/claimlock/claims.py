@@ -249,13 +249,15 @@ def freshness(claim, project, hasher, anchors=None):
 
 
 def open_hasher(project):
-    return Hasher(project.root, project.state_dir / "cache" / "stat.json")
+    mode = "git" if gitio.in_git(project.root) else "raw"
+    return Hasher(project.root, project.state_dir / "cache" / "stat.json", mode=mode)
 
 
 def evaluate(project, hasher):
     claims = load_claims(project)
-    anchors = anchors_for(project, [s.path for c in claims
-                                    if c.status == "verified" and not c.parse_error
-                                    for s in c.sources])
+    paths = [s.path for c in claims if c.status == "verified" and not c.parse_error
+             for s in c.sources if safe_source(project.root, s.path) is not None]
+    hasher.prime(paths)
+    anchors = anchors_for(project, paths)
     return [Result(c, problems(c, project), *freshness(c, project, hasher, anchors))
             for c in claims]
