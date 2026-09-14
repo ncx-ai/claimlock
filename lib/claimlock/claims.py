@@ -13,11 +13,15 @@ from . import frontmatter, gitio
 from .pins import Hasher
 from .project import safe_source
 
-STATUSES = ("verified", "unverified", "refuted")
+STATUSES = ("verified", "unverified", "refuted", "owed")
 KINDS = ("test", "measurement", "source", "run")
-FIELDS = ("id", "area", "status", "verified_at", "evidence", "sources")
+FIELDS = ("id", "area", "status", "verified_at", "owed_by", "owed_since", "evidence", "sources")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 BLOB_RE = re.compile(r"^[0-9a-f]{40}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
+SINCE_RE = re.compile(r"^([0-9a-f]{7,40}|none)$")
+_CONFLICT_START = re.compile(r"^<{7} ", re.M)
+_CONFLICT_END = re.compile(r"^>{7} ", re.M)
 NON_FRESH = ("unpinned", "unanchored", "stale", "missing")
 _SEVERITY = {"fresh": 0, "unpinned": 1, "unanchored": 2, "stale": 3, "missing": 4}
 
@@ -53,6 +57,7 @@ class Claim:
     meta: dict
     body: str
     parse_error: str | None = None
+    conflicted: bool = False
 
     def _str(self, key):
         v = self.meta.get(key)
@@ -71,8 +76,12 @@ class Claim:
         return self._str("status") or "unverified"
 
     @property
-    def verified_at(self):
-        return self._str("verified_at")
+    def owed_by(self):
+        return self._str("owed_by")
+
+    @property
+    def owed_since(self):
+        return self._str("owed_since")
 
     @property
     def evidence(self):
@@ -131,6 +140,9 @@ def load_claims(project):
             # must not hide the state of every other claim.
             out.append(Claim(p, "", {}, "", f"{p.name}:1: cannot be read: {e.strerror or e}"))
             continue
+        if _CONFLICT_START.search(text) and _CONFLICT_END.search(text):
+            out.append(Claim(p, text, {}, "", None, conflicted=True))
+            continue
         try:
             if "\r" in text:
                 raise frontmatter.FrontmatterError(p.name, 1, "CR line endings are not supported; convert to LF")
@@ -145,6 +157,8 @@ def load_claims(project):
 
 def problems(claim, project, *, as_status=None):
     """Every reason this claim cannot be trusted as written."""
+    if claim.conflicted:
+        return [f"{claim.path.name}: contains git conflict markers — run `claimlock resolve`"]
     if claim.parse_error:
         return [claim.parse_error]
     m, out = claim.meta, []
@@ -159,7 +173,7 @@ def problems(claim, project, *, as_status=None):
             out.append(f"id {cid!r} is not kebab-case ([a-z0-9][a-z0-9-]*)")
         if cid != claim.path.stem:
             out.append(f"id {cid!r} does not match filename {claim.path.name!r}")
-    for k in ("area", "verified_at"):
+    for k in ("area", "verified_at", "owed_by", "owed_since"):
         if m.get(k) is not None and not isinstance(m[k], str):
             out.append(f"'{k}' must be a single value")
     status = as_status or m.get("status")
@@ -204,6 +218,17 @@ def problems(claim, project, *, as_status=None):
             out.append(f"source {path!r} is listed twice")
         seen.add(path)
 
+    if status == "owed":
+        if not (isinstance(m.get("owed_by"), str) and EMAIL_RE.match(m["owed_by"])):
+            out.append("status is 'owed' but 'owed_by' is not an email address")
+        if not (isinstance(m.get("owed_since"), str) and SINCE_RE.match(m["owed_since"])):
+            out.append("status is 'owed' but 'owed_since' is not a commit id (7-40 hex) or 'none'")
+        if not claim.sources:
+            out.append("status is 'owed' but no sources are listed")
+    elif as_status is None:
+        for k in ("owed_by", "owed_since"):
+            if m.get(k) is not None:
+                out.append(f"'{k}' is only valid with status: owed")
     if status == "verified":
         if not claim.evidence:
             out.append("status is 'verified' but no evidence is cited")
@@ -252,7 +277,7 @@ def freshness(claim, project, hasher, anchors=None):
 
     Worst source wins: missing > stale > unanchored > unpinned > fresh.
     """
-    if claim.parse_error or claim.status != "verified":
+    if claim.parse_error or claim.conflicted or claim.status != "verified":
         return None, []
     per = []
     for s in claim.sources:

@@ -25,7 +25,7 @@ class Verify(TmpCase):
         self.assertIn(f"a.py @ {blob[:12]}", out)
         text = (self.root / "claims/c.md").read_text()
         self.assertIn("status: verified\n", text)
-        self.assertRegex(text, r"verified_at: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d\n")
+        self.assertNotIn("verified_at", text)
         self.assertIn(f"  - path: a.py\n    blob: {blob}\n", text)
         self.assertTrue(text.endswith("---\nThe thing holds.\n\nBecause reasons.\n"))
         self.assertEqual(run_cli(self.root, "check")[0], 0)

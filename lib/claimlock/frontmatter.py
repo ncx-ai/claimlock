@@ -190,12 +190,15 @@ def _skip_list_block(head, i):
     return i
 
 
-def rewrite(text, name, *, status=None, verified_at=None, sources=None):
+def rewrite(text, name, *, status=None, verified_at=None, sources=None, set_fields=None, remove=()):
     """Replace only the named fields; every other line is preserved in place.
 
     None means "leave untouched". A missing `status`/`verified_at` key is
     inserted after `status` (or after `id`, or at the end); a missing
-    `sources` key is appended at the end of the frontmatter.
+    `sources` key is appended at the end of the frontmatter. `set_fields`
+    maps key -> string value, inserted in order after `status` when absent
+    (quoted via `quote`); `remove` deletes those keys — a scalar line, or a
+    key and its whole list block.
     """
     fm, _ = split(text, name)  # validates the delimiters
     lines = text.split("\n")
@@ -216,6 +219,18 @@ def rewrite(text, name, *, status=None, verified_at=None, sources=None):
             out.extend(_sources_block(sources))
         head = out
 
+    if remove:
+        keys = set(remove)
+        out, i = [], 0
+        while i < len(head):
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):", head[i])
+            if m and m.group(1) in keys:
+                i = _skip_list_block(head, i + 1)
+                continue
+            out.append(head[i])
+            i += 1
+        head = out
+
     def set_scalar(key, value, after):
         for j, l in enumerate(head):
             if re.match(rf"^{key}:", l):
@@ -230,4 +245,8 @@ def rewrite(text, name, *, status=None, verified_at=None, sources=None):
         set_scalar("status", status, "area")
     if verified_at is not None:
         set_scalar("verified_at", verified_at, "status")
+    after = "status"
+    for key, value in (set_fields or {}).items():
+        set_scalar(key, quote(value), after)
+        after = key
     return "\n".join(["---", *head, *lines[close:]])

@@ -122,6 +122,18 @@ class Rewrite(unittest.TestCase):
         fm, _ = split(new, "x.md")
         self.assertEqual(parse(fm, "x.md")["sources"], [{"path": "src_a.py"}, {"path": "src_b.py"}])
 
+    def test_set_fields_inserts_after_status_in_order_and_replaces_existing(self):
+        text = "---\nid: x\nstatus: verified\nevidence: []\n---\nb\n"
+        new = rewrite(text, "x.md", status="owed", set_fields={"owed_by": "bob@example.com", "owed_since": "a1b2c3d"})
+        self.assertEqual(new, '---\nid: x\nstatus: owed\nowed_by: "bob@example.com"\nowed_since: a1b2c3d\nevidence: []\n---\nb\n')
+        again = rewrite(new, "x.md", set_fields={"owed_by": "amy@example.com"})
+        self.assertIn('owed_by: "amy@example.com"\nowed_since: a1b2c3d', again)
+
+    def test_remove_deletes_scalars_and_list_blocks_and_ignores_absent_keys(self):
+        text = "---\nid: x\nverified_at: 2026-01-01\nstatus: owed\nowed_by: a@b.c\nsources:\n  - a.py\nevidence: []\n---\nb\n"
+        new = rewrite(text, "x.md", remove=("verified_at", "owed_by", "sources", "nope"))
+        self.assertEqual(new, "---\nid: x\nstatus: owed\nevidence: []\n---\nb\n")
+
 
 if __name__ == "__main__":
     unittest.main()

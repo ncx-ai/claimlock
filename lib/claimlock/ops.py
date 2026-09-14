@@ -1,6 +1,5 @@
 """Operations that change files. Each refuses rather than guessing."""
 import os
-from datetime import datetime
 from pathlib import Path
 
 from . import claims as C
@@ -68,17 +67,25 @@ def new_claim(project, cid: str, area: str) -> Path:
     return p
 
 
-def verify(project, cid, now=None) -> list:
+def _write(path, text):
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def verify(project, cid) -> list:
     """Pin every source of `cid` to its current content and mark it verified.
 
-    Refuses a refuted claim, a claim that would be invalid as verified (no
-    evidence, no sources, bad fields), and a claim with a missing source.
-    Nothing is written unless every check passes.
+    Refuses a conflicted claim, a refuted claim, a claim that would be
+    invalid as verified (no evidence, no sources, bad fields), and a claim
+    with a missing source. Nothing is written unless every check passes.
     """
     all_claims = C.load_claims(project)
     c = next((x for x in all_claims if x.id == cid), None)
     if c is None:
         raise Refused(f"no claim {cid!r}")
+    if c.conflicted:
+        raise Refused(f"{cid} has merge conflicts — run claimlock resolve first")
     if c.status == "refuted":
         raise Refused(f"{cid} is refuted; edit its status by hand if it holds again")
     probs = C.problems(c, project, as_status="verified")
@@ -104,10 +111,8 @@ def verify(project, cid, now=None) -> list:
             raise Refused(f"{cid}: source {s.path} does not exist or cannot be read{detail} — "
                           f"fix its sources (or the file's permissions), then verify")
         pinned.append((s.path, blob))
-    stamp = now or datetime.now().astimezone().isoformat(timespec="seconds")
-    text = frontmatter.rewrite(c.text, c.path.name, status="verified", verified_at=stamp,
-                               sources=[{"path": p, "blob": b} for p, b in pinned])
-    tmp = c.path.with_name(c.path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, c.path)
+    text = frontmatter.rewrite(c.text, c.path.name, status="verified",
+                               sources=[{"path": p, "blob": b} for p, b in pinned],
+                               remove=("verified_at", "owed_by", "owed_since"))
+    _write(c.path, text)
     return pinned

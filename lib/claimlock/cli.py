@@ -21,7 +21,7 @@ HINT = {
     "unanchored": ("the pinned content was never committed or staged — commit the source so every "
                    "clone can see it (if it changed since, re-check, then: claimlock verify {id})"),
 }
-MARK = {"verified": "✓", "unverified": "?", "refuted": "✗"}
+MARK = {"verified": "✓", "unverified": "?", "refuted": "✗", "owed": "⇢"}
 
 CI_SNIPPET = """\
 Add the gate to CI or a pre-commit hook:
@@ -138,6 +138,7 @@ def cmd_list(args):
             continue
         flag = f" [{r.state}]" if r.state in C.NON_FRESH else ""
         flag += " [invalid]" if r.problems else ""
+        flag += f" [owed → {r.claim.owed_by}]" if r.claim.status == "owed" else ""
         print(f"{MARK.get(r.claim.status, '?')} {r.claim.id} ({r.claim.area}){flag}")
         print(f"    {r.claim.headline()}")
     return 0
@@ -173,7 +174,10 @@ def cmd_show(args):
         print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
         return 1
     c = r.claim
-    print(f"{c.id} ({c.area}) — {c.status}, verified_at {c.verified_at or '-'}")
+    line = f"{c.id} ({c.area}) — {c.status}"
+    if c.status == "owed":
+        line += f", owed by {c.owed_by or '?'} since {c.owed_since or '?'}"
+    print(line)
     if r.state in C.NON_FRESH:
         print(_paint("33", f"{r.state.upper()}: {HINT[r.state].format(id=c.id)}"))
     for x in r.problems:
