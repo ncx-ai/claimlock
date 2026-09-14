@@ -62,8 +62,12 @@ def run_cli(cwd, *args, stdin=None, env=None):
     e = dict(os.environ)
     e["NO_COLOR"] = "1"
     e.update(env or {})
+    # errors="surrogateescape": claimlock's own stdout/stderr round-trip a
+    # non-UTF-8 source path back to its exact original bytes (cli.main
+    # reconfigures with the same error handler); plain "strict" decoding here
+    # would otherwise raise on that legitimate output.
     r = subprocess.run([sys.executable, str(BIN), *args], cwd=cwd, capture_output=True,
-                       text=True, input=stdin, env=e, timeout=120)
+                       text=True, errors="surrogateescape", input=stdin, env=e, timeout=120)
     return r.returncode, r.stdout, r.stderr
 
 

@@ -97,10 +97,11 @@ def ignored_paths(root, rels):
     if not rels:
         return set()
     try:
+        payload = b"\0".join(os.fsencode(rel) for rel in rels) + b"\0"
         r = subprocess.run(["git", "-c", "core.quotepath=off", "check-ignore", "--stdin", "-z"],
-                           cwd=root, input=("\0".join(rels) + "\0").encode(),
+                           cwd=root, input=payload,
                            capture_output=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
         return None
     if r.returncode not in (0, 1):
         return None
@@ -111,10 +112,16 @@ def hash_paths(root, rels):
     """{rel: blob} for root-relative files, hashed the way git stores them
     (clean filters and text/eol/autocrlf normalization applied), in one
     `git hash-object --stdin-paths`. None when git fails or any path cannot
-    be hashed: the batch is all-or-nothing.
+    be hashed, including a name this function cannot even encode to send to
+    git: the batch is all-or-nothing.
 
     Absolute paths are passed on purpose — `--stdin-paths` resolves relative
-    paths from the repository top level, not the working directory."""
+    paths from the repository top level, not the working directory. Names are
+    encoded with `os.fsencode` (surrogateescape round-trips a non-UTF-8 name
+    back to its exact original bytes) rather than `str.encode` (strict UTF-8,
+    which raises `UnicodeEncodeError` on the lone surrogates `os.fsdecode`
+    produces for such a name — every git subprocess here must degrade to
+    None, never raise, on failure)."""
     if not rels:
         return {}
     base = Path(root).resolve()
@@ -122,13 +129,17 @@ def hash_paths(root, rels):
     if any("\n" in n for n in names):
         return None
     try:
+        payload = b"\n".join(os.fsencode(n) for n in names) + b"\n"
         r = subprocess.run(["git", "hash-object", "--stdin-paths"], cwd=root,
-                           input=("\n".join(names) + "\n").encode(), capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
+                           input=payload, capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
         return None
     if r.returncode != 0:
         return None
-    out = r.stdout.decode("ascii", "replace").split()
+    try:
+        out = r.stdout.decode("ascii", "replace").split()
+    except UnicodeError:
+        return None
     if len(out) != len(rels):
         return None
     return dict(zip(rels, out))

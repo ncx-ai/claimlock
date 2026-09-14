@@ -138,8 +138,23 @@ _NEEDS_QUOTE = re.compile(r"""[:#'"\[\]{},&*!|>%@`]|^\s|\s$|^-|^$""")
 
 
 def quote(s):
-    """Render a string as a scalar that `parse` reads back unchanged."""
-    return json.dumps(s, ensure_ascii=False) if _NEEDS_QUOTE.search(s) else s
+    """Render a string as a scalar that `parse` reads back unchanged.
+
+    A source path that names a non-UTF-8 filesystem entry decodes (via
+    os.fsdecode/surrogateescape) to a Python string holding a lone surrogate —
+    it needs no quoting by the rules below (no colon, no leading dash, ...),
+    but cannot be written out as UTF-8 at all, and the store's own files must
+    stay valid UTF-8. That case is checked first and always quoted, with
+    `ensure_ascii=True` so the escape itself (`\\udcXX`) is plain ASCII;
+    everything else keeps `ensure_ascii=False` so normal non-ASCII text stays
+    human-readable in the file."""
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(s)
+    if not _NEEDS_QUOTE.search(s):
+        return s
+    return json.dumps(s, ensure_ascii=False)
 
 
 def _sources_block(sources):

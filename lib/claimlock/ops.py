@@ -89,7 +89,19 @@ def verify(project, cid, now=None) -> list:
     for s in c.sources:
         blob = hasher.blob(s.path, use_cache=False)
         if blob is None:
-            raise Refused(f"{cid}: source {s.path} does not exist or cannot be read — "
+            # Hasher.blob swallows OSError (one bad source must not silence
+            # every other claim), so the specific reason is lost by the time
+            # we get here — recover it with a direct open attempt on the same
+            # safe path, purely for the error message.
+            detail = ""
+            p = safe_source(project.root, s.path)
+            if p is not None:
+                try:
+                    p.open("rb").close()
+                except OSError as e:
+                    if e.strerror:
+                        detail = f" ({e.strerror})"
+            raise Refused(f"{cid}: source {s.path} does not exist or cannot be read{detail} — "
                           f"fix its sources (or the file's permissions), then verify")
         pinned.append((s.path, blob))
     stamp = now or datetime.now().astimezone().isoformat(timespec="seconds")

@@ -39,12 +39,18 @@ class Verify(TmpCase):
         }
         for cid, text in cases.items():
             write(self.root, f"claims/{cid}.md", text)
+        errs = {}
         for cid, text in cases.items():
             with self.subTest(cid):
                 rc, _, err = run_cli(self.root, "verify", cid)
                 self.assertEqual(rc, 1)
                 self.assertIn(cid, err)
                 self.assertEqual((self.root / f"claims/{cid}.md").read_text(), text)
+                errs[cid] = err
+        # The refusal for a missing source keeps the OS's own reason, not just
+        # the generic "does not exist or cannot be read" text.
+        self.assertIn("does not exist or cannot be read", errs["gone"])
+        self.assertIn("No such file or directory", errs["gone"])
         rc, _, err = run_cli(self.root, "verify", "unknown")
         self.assertEqual(rc, 1)
         self.assertIn("no claim 'unknown'", err)

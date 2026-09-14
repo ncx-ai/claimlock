@@ -1,5 +1,6 @@
 """Pins inside git are the blob git stores, so clones with different line-ending
 settings agree; outside git a pin is the file's raw bytes."""
+import json
 import os
 import re
 import shutil
@@ -87,6 +88,52 @@ class SubdirectoryHashing(TmpCase):
         self.assertEqual(got, {"a.txt": blob_of_bytes(b"hello\n")})
 
 
+@NEED_GIT
+class NonUtf8SourceNames(TmpCase):
+    """`os.fsdecode` surfaces a non-UTF-8 filesystem name as a string holding
+    lone surrogates; `str.encode()` (strict, UTF-8) refuses those, so
+    gitio.hash_paths must not build its stdin payload with plain `.encode()`.
+    Every git subprocess here degrades on failure — it must never raise and
+    crash `check`/`verify`.
+
+    A lone surrogate can't be embedded literally in a claim file's own bytes
+    (the store is UTF-8), so the source path is written the same way a real
+    claim author would have to: double-quoted with a JSON `\\uXXXX` escape
+    (frontmatter's quoted-scalar parser is `json.JSONDecoder`), which decodes
+    back to the exact same surrogate string `os.fsdecode` produces for the
+    file on disk."""
+
+    def test_a_non_utf8_named_source_degrades_instead_of_crashing(self):
+        name = os.fsdecode(b"bad\xffname.txt")
+        root = make_repo(self.tmp, use_git=True)
+        try:
+            write(root, name, "one\n")
+        except OSError:
+            self.skipTest("filesystem refuses a non-UTF-8 filename")
+
+        # Direct unit assertion: hash_paths must answer, never raise.
+        got = gitio.hash_paths(root, [name])
+        self.assertEqual(got, {name: blob_of_bytes(b"one\n")})
+
+        write(root, "claims/c.md", claim_text("c", sources=(json.dumps(name),)))
+        git(root, "add", "-A")  # anchoring requires the content be committed or staged
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("Traceback", err)
+        rc, out, err = run_cli(root, "check")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("0 invalid, 0 unpinned, 0 unanchored, 0 stale, 0 missing", out)
+
+        # Edited content must read as stale, not missing.
+        write(root, name, "one, edited\n")
+        rc, out, err = run_cli(root, "check")
+        self.assertEqual(rc, 1, out)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("STALE", out)
+        self.assertNotIn("MISSING", out)
+
+
 class RawOutsideGit(TmpCase):
     def test_a_line_ending_change_is_stale_outside_git(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -123,6 +170,23 @@ class HasherModes(TmpCase):
         self.assertEqual(got, ["a" * 40, "b" * 40, "c" * 40])
         self.assertEqual(hp.call_count, 1)
         self.assertEqual(hp.call_args[0][1], ["a.txt", "b.txt", "c.txt"])
+
+    def test_batch_failure_falls_back_to_one_call_per_file(self):
+        for n in "abc":
+            write(self.tmp, f"{n}.txt", n)
+        singles = {f"{n}.txt": n * 40 for n in "abc"}
+
+        def fake_hash_paths(root, rels):
+            if len(rels) > 1:
+                return None  # the batch call fails
+            return {rels[0]: singles[rels[0]]} if rels else {}
+
+        with mock.patch("claimlock.gitio.hash_paths", side_effect=fake_hash_paths) as hp:
+            h = Hasher(self.tmp, None, mode="git")
+            h.prime(["a.txt", "b.txt", "c.txt"])
+            got = [h.blob(f"{n}.txt") for n in "abc"]
+        self.assertEqual(got, ["a" * 40, "b" * 40, "c" * 40])
+        self.assertEqual(hp.call_count, 4)  # 1 failed batch + 3 single-file calls
 
     def test_a_primed_hash_is_discarded_when_the_file_changed_after_priming(self):
         write(self.tmp, "a.txt", "one")

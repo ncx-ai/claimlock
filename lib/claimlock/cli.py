@@ -359,6 +359,17 @@ def build_parser():
 
 
 def main(argv) -> int:
+    # A source path that names a non-UTF-8 filesystem entry decodes (via
+    # os.fsdecode/surrogateescape) to a string holding a lone surrogate.
+    # `print`-ing it under stdout/stderr's default strict encoding raises and
+    # crashes the whole command; surrogateescape here round-trips it back to
+    # the file's exact original bytes instead, the same way a terminal shows
+    # `ls`'s output for such a name.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="surrogateescape")
+        except (AttributeError, ValueError):
+            pass
     ap, _, _ = build_parser()
     args = ap.parse_args(argv)
     try:
