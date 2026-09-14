@@ -177,13 +177,13 @@ class Stop(HookCase):
         write(root, "a.py", "two!\n")
         out = self.hook(root, "stop")
         self.assertEqual(set(out), {"systemMessage"})
-        self.assertIn("introduced 1 stale (c)", out["systemMessage"])
+        self.assertIn("since the last check, 1 claim became stale (c)", out["systemMessage"])
         self.assertNotIn("old", out["systemMessage"])
         self.assertIsNone(self.hook(root, "stop"))
         write(root, "a.py", "one\n")
         self.assertIsNone(self.hook(root, "stop"))
         write(root, "a.py", "three\n")
-        self.assertIn("introduced 1 stale (c)", self.hook(root, "stop")["systemMessage"])
+        self.assertIn("since the last check, 1 claim became stale (c)", self.hook(root, "stop")["systemMessage"])
 
     def test_no_baseline_means_no_warning(self):
         root = self.store()
@@ -265,6 +265,37 @@ class HeadMovement(HookCase):
         git(root, "commit", "-qam", "from another terminal")
         msg = self.hook(root, "stop")["systemMessage"]
         self.assertIn("HEAD moved", msg)
+        # I6: the HEAD-moved report already names c; it is not repeated in the
+        # "since the last check" line, which is dropped when nothing remains.
+        self.assertNotIn("since the last check", msg)
+        self.assertEqual(msg.count("c (stale)"), 1)
+
+    def test_stop_lists_only_what_the_head_report_did_not_name(self):
+        root = self.store(use_git=True)
+        write(root, "b.py", "bee\n")
+        write(root, "claims/d.md", claim_text("d", area="api", sources=("b.py",)))
+        self.assertEqual(run_cli(root, "verify", "d")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "add d")
+        self.hook(root, "session-start")
+        write(root, "a.py", "two!\n")
+        git(root, "commit", "-qam", "pulled in from elsewhere")  # stales c by moving HEAD
+        write(root, "b.py", "BEE\n")  # stales d, uncommitted
+        msg = self.hook(root, "stop")["systemMessage"]
+        self.assertIn("since the last check, 1 claim became stale (d)", msg)
+        self.assertIn("c (stale)", msg)
+        self.assertNotIn("(c)", msg)
+        self.assertNotIn("introduced", msg)
+
+    def test_dangling_marker_list_is_marked_when_truncated(self):
+        root = self.store(use_git=True)
+        self.hook(root, "session-start")
+        write(root, "docs/x.md", "".join(f"Claim: `ghost-{i:02d}`\n" for i in range(12)))
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "docs")
+        ctx = self.hook(root, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("docs/x.md:ghost-09….", ctx)
+        self.assertNotIn("ghost-10", ctx)
 
     def test_transient_git_failure_does_not_lose_the_head_range(self):
         # Finding C: head_check used to read gitio.head twice per check (once

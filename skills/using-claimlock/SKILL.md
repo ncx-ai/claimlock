@@ -91,11 +91,13 @@ and if the diff shows the claim no longer holds, do not verify: report it.
   asserting in those areas.
 - **After a Bash or MCP tool call** (you see it), only when HEAD has moved: up
   to 10 claims, backed by files changed anywhere in the commit range, that are
-  now not fresh, plus markers naming no claim. `…` means there are more — run
-  `claimlock stale`. Re-check them before relying on them.
-- **End of turn** (only the user sees it; you do not): problems that appeared
-  since the previous end of turn. If the user relays it, answer each named claim
-  with `claimlock diff <id>`.
+  now not fresh, plus up to 10 markers naming no claim. `…` after the claims
+  means there are more — run `claimlock stale`; `…` after the markers means
+  there are more — run `claimlock refs`. Re-check them before relying on them.
+- **End of turn** (only the user sees it; you do not): problems not present at
+  the previous check in this clone ("since the last check") — including drift
+  that arrived by `git pull`, not only edits made this session. If the user
+  relays it, answer each named claim with `claimlock diff <id>`.
 
 ## Red flags
 

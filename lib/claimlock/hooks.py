@@ -281,15 +281,28 @@ def head_check(project, st):
     dangling = sorted({f"{m.path}:{m.id}" for m in markers if m.id not in ids})
     if not hit and not dangling:
         return None
+    return _head_report(old, new, hit, dangling)
+
+
+class _HeadReport(str):
+    """The HEAD-moved message, carrying which claim ids and `path:id` markers
+    it actually printed, so Stop does not name them a second time."""
+    named = frozenset()
+
+
+def _head_report(old, new, hit, dangling):
     parts = [f"claimlock: HEAD moved {(old or 'none')[:7]}→{new[:7]} (a commit, merge, rebase, pull or checkout)."]
     if hit:
         more = "…" if len(hit) > 10 else ""
         parts.append(f"Files changed in that range back {len(hit)} claim(s) that are no longer fresh: "
                      + ", ".join(f"{i} ({s})" for i, s in hit[:10]) + more + ".")
     if dangling:
-        parts.append("Markers naming no claim: " + ", ".join(dangling[:10]) + ".")
+        more = "…" if len(dangling) > 10 else ""
+        parts.append("Markers naming no claim: " + ", ".join(dangling[:10]) + more + ".")
     parts.append("Re-check each with `claimlock diff <id>`; `claimlock verify <id>` only after re-checking.")
-    return " ".join(parts)
+    report = _HeadReport(" ".join(parts))
+    report.named = frozenset([i for i, _ in hit[:10]] + dangling[:10])
+    return report
 
 
 def session_start(project, payload, data_dir):
@@ -321,15 +334,27 @@ def stop(project, payload, data_dir):
     head_msg = head_check(project, st)
     st["baseline"] = s
     _save_state(path, st)
+    # "Since the last check", not "this session": drift that arrived by
+    # `git pull` is new to this baseline too. Anything the HEAD-moved report
+    # below already names is not repeated here.
+    named = getattr(head_msg, "named", frozenset())
+    new = {k: [x for x in v if x not in named] for k, v in new.items()}
     parts = []
     if any(new.values()):
-        parts.append("claimlock: this session introduced "
-                     + "; ".join(f"{len(v)} {k} ({', '.join(v[:5])}{'…' if len(v) > 5 else ''})"
-                                 for k, v in new.items() if v)
+        parts.append("claimlock: since the last check, "
+                     + "; ".join(_since_phrase(k, v) for k, v in new.items() if v)
                      + ". Inspect with `claimlock diff <id>` or `claimlock refs`.")
     if head_msg:
         parts.append(head_msg)
     return {"systemMessage": "\n".join(parts)[:LIMIT]} if parts else None
+
+
+def _since_phrase(kind, items):
+    shown = ", ".join(items[:5]) + ("…" if len(items) > 5 else "")
+    n = len(items)
+    if kind == "dangling":
+        return f"{n} dangling marker{'' if n == 1 else 's'} appeared ({shown})"
+    return f"{n} claim{'' if n == 1 else 's'} became {kind} ({shown})"
 
 
 def post_tool_use(project, payload, data_dir):

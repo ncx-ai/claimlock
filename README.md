@@ -73,7 +73,7 @@ field-level and format detail: [`docs/format.md`](docs/format.md).
 |---|---|---|
 | SessionStart | Claude (as context) | Counts of non-fresh/invalid claims and the areas they're in, plus a reminder to search before asserting. |
 | PostToolUse (after Bash / MCP tool calls) | Claude (as context) | HEAD moved since the last check, and the commits in that range changed sources of now-non-fresh claims or introduced dangling markers. |
-| Stop | The user (a `systemMessage`) | Problems *this session introduced* (not pre-existing ones) — new stale/invalid claims or dangling markers, plus any HEAD movement. |
+| Stop | The user (a `systemMessage`) | Problems *since the last check* in this clone (not pre-existing ones) — new stale/invalid claims or dangling markers, whether this session's edits or a `git pull` caused them — plus any HEAD movement. A claim named in the HEAD-moved report is not listed twice. |
 
 Hooks **never block**: they always exit 0, never set `decision`, and a Stop
 warning does not continue the turn — it is shown to the user only, after

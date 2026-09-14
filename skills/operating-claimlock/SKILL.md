@@ -74,7 +74,7 @@ either side, re-check the claim, then `claimlock verify <id>`.
 |---|---|---|
 | Session start | Claude | Counts of invalid, unpinned, stale and missing claims and of dangling markers, with the affected areas |
 | After Bash / MCP tool calls | Claude | Only when HEAD moved (commit, merge, rebase, pull, checkout): now-non-fresh claims backed by files changed anywhere in that commit range, and markers naming no claim |
-| End of turn | The user | Problems that appeared since the previous end of turn (not pre-existing ones), plus a HEAD-moved report no tool call delivered |
+| End of turn | The user | Problems not present at the previous end-of-turn check in this clone ("since the last check" — including drift that arrived by pull, not only this session's edits; pre-existing ones are not repeated), plus a HEAD-moved report no tool call delivered; a claim the HEAD-moved report already names is not listed twice |
 
 Hooks exit 0 always and never set a blocking decision. Each message is capped at
 2,000 characters; the HEAD-moved report names at most 10 claims and the
