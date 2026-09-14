@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import frontmatter
+from . import frontmatter, gitio
 from .pins import Hasher
 from .project import safe_source
 
@@ -18,8 +18,8 @@ KINDS = ("test", "measurement", "source", "run")
 FIELDS = ("id", "area", "status", "verified_at", "evidence", "sources")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 BLOB_RE = re.compile(r"^[0-9a-f]{40}$")
-NON_FRESH = ("unpinned", "stale", "missing")
-_SEVERITY = {"fresh": 0, "unpinned": 1, "stale": 2, "missing": 3}
+NON_FRESH = ("unpinned", "unanchored", "stale", "missing")
+_SEVERITY = {"fresh": 0, "unpinned": 1, "unanchored": 2, "stale": 3, "missing": 4}
 
 
 class StoreMissing(Exception):
@@ -212,10 +212,19 @@ def problems(claim, project, *, as_status=None):
     return out
 
 
-def freshness(claim, project, hasher):
+def anchors_for(project, paths):
+    """The anchor set for these source paths (see gitio.anchored_blobs), or
+    None outside git — where anchoring is not evaluated at all."""
+    paths = sorted({p for p in paths if safe_source(project.root, p) is not None})
+    if not paths:
+        return set()
+    return gitio.anchored_blobs(project.root, paths)
+
+
+def freshness(claim, project, hasher, anchors=None):
     """(state, [(path, state)]) for a verified claim; (None, []) otherwise.
 
-    Worst source wins: missing > stale > unpinned > fresh.
+    Worst source wins: missing > stale > unanchored > unpinned > fresh.
     """
     if claim.parse_error or claim.status != "verified":
         return None, []
@@ -230,6 +239,8 @@ def freshness(claim, project, hasher):
             st = "unpinned"
         elif cur != s.blob:
             st = "stale"
+        elif anchors is not None and s.blob not in anchors:
+            st = "unanchored"
         else:
             st = "fresh"
         per.append((s.path, st))
@@ -242,5 +253,9 @@ def open_hasher(project):
 
 
 def evaluate(project, hasher):
-    return [Result(c, problems(c, project), *freshness(c, project, hasher))
-            for c in load_claims(project)]
+    claims = load_claims(project)
+    anchors = anchors_for(project, [s.path for c in claims
+                                    if c.status == "verified" and not c.parse_error
+                                    for s in c.sources])
+    return [Result(c, problems(c, project), *freshness(c, project, hasher, anchors))
+            for c in claims]

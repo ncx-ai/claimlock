@@ -8,16 +8,18 @@ from pathlib import Path
 
 from . import VERSION
 from . import claims as C
+from . import gitio
 from . import hooks
 from . import importer, ops, refs, selftest
 from . import project as P
-from . import snapshots
 
 HINT = {
     "stale": "re-check it (claimlock diff {id}), then: claimlock verify {id}",
     "missing": ("a source does not exist or cannot be read — fix its sources (or the file's "
                 "permissions), re-check, then: claimlock verify {id}"),
     "unpinned": "never pinned — re-check it, then: claimlock verify {id}",
+    "unanchored": ("the pinned content was never committed or staged — commit the source so every "
+                   "clone can see it (if it changed since, re-check, then: claimlock verify {id})"),
 }
 MARK = {"verified": "✓", "unverified": "?", "refuted": "✗"}
 
@@ -217,7 +219,7 @@ def cmd_diff(args):
         print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
         return 1
     hasher = C.open_hasher(project)
-    state, per = C.freshness(c, project, hasher)
+    state, per = C.freshness(c, project, hasher, C.anchors_for(project, [s.path for s in c.sources]))
     hasher.save()
     if state is None:
         print(f"claimlock: {c.id} is {c.status}; only verified claims have pins")
@@ -235,10 +237,15 @@ def cmd_diff(args):
         if st == "unpinned":
             print(f"--- {path}: never pinned; nothing to compare against")
             continue
-        old = snapshots.load(project, pins[path])
+        if st == "unanchored":
+            print(f"--- {path}: unchanged since verification, but that content was never committed "
+                  f"or staged — commit it so other clones can diff this claim")
+            continue
+        old = gitio.cat_blob(project.root, pins[path])
         if old is None:
-            print(f"--- {path}: changed, but the pinned content {pins[path][:12]} is unavailable "
-                  f"(not in git, no snapshot) — re-read the claim against the current file")
+            print(f"--- {path}: changed, but the pinned content {pins[path][:12]} is not in git "
+                  f"(never committed, or no repository) — prior content unavailable; "
+                  f"re-read the claim against the current file")
             continue
         try:
             new = (project.root / path).read_bytes()

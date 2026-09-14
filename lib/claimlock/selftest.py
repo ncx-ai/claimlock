@@ -3,8 +3,9 @@
 A gate nobody has watched fail is decoration. This builds a throwaway store —
 in a plain directory and, when git is available, in a repository — pins a
 source, then edits it, deletes it, and plants a dangling marker, requiring
-each detector to report. It exercises the real code paths, not the store in
-the current project.
+each detector to report. In the git arm it also proves a freshly verified but
+unstaged source reads `unanchored` until it is staged. It exercises the real
+code paths, not the store in the current project.
 """
 import shutil
 import subprocess
@@ -59,8 +60,12 @@ def run(out=print) -> int:
 
             def state():
                 c = next(x for x in C.load_claims(project) if x.id == "probe")
-                return C.freshness(c, project, Hasher(root, None))[0]
+                return C.freshness(c, project, Hasher(root, None),
+                                   C.anchors_for(project, [s.path for s in c.sources]))[0]
 
+            if use_git:
+                expect(f"[{label}] verified, unstaged source", state(), "unanchored")
+                subprocess.run(["git", "add", "src.txt"], cwd=root, check=True, capture_output=True)
             expect(f"[{label}] pinned source", state(), "fresh")
             (root / "src.txt").write_text("after, and a different length\n")
             expect(f"[{label}] edited source", state(), "stale")

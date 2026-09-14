@@ -49,57 +49,8 @@ class Verify(TmpCase):
         self.assertEqual(rc, 1)
         self.assertIn("no claim 'unknown'", err)
 
-    def test_reverify_prunes_the_old_snapshot(self):
-        write(self.root, "claims/c.md", verifiable("c"))
-        run_cli(self.root, "verify", "c")
-        objects = self.root / ".claimlock" / "objects"
-        self.assertEqual([p.name for p in objects.iterdir()], [blob_of_bytes(b"one\n")])
-        write(self.root, "a.py", "two!\n")
-        run_cli(self.root, "verify", "c")
-        self.assertEqual([p.name for p in objects.iterdir()], [blob_of_bytes(b"two!\n")])
-
 
 class Diff(TmpCase):
-    def pin_then_edit(self, root):
-        write(root, "a.py", "one\nkeep\n")
-        write(root, "claims/c.md", verifiable("c"))
-        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
-        write(root, "a.py", "two\nkeep\n")
-
-    def test_diff_from_snapshot_without_git(self):
-        root = make_repo(self.tmp / "r", use_git=False)
-        self.pin_then_edit(root)
-        rc, out, _ = run_cli(root, "check")
-        self.assertEqual(rc, 1)
-        self.assertIn("STALE    c", out)
-        rc, out, err = run_cli(root, "diff", "c")
-        self.assertEqual(rc, 0, err)
-        self.assertIn("-one", out)
-        self.assertIn("+two", out)
-        self.assertIn("(verified)", out)
-
-    @NEED_GIT
-    def test_diff_from_git_object_and_no_snapshot_written(self):
-        root = make_repo(self.tmp / "r", use_git=True)
-        write(root, "a.py", "one\nkeep\n")
-        git(root, "add", "a.py")
-        git(root, "commit", "-q", "-m", "a")
-        write(root, "claims/c.md", verifiable("c"))
-        run_cli(root, "verify", "c")
-        objects = root / ".claimlock" / "objects"
-        self.assertFalse(objects.exists() and any(objects.iterdir()))
-        write(root, "a.py", "two\nkeep\n")
-        rc, out, _ = run_cli(root, "diff", "c")
-        self.assertIn("+two", out)
-
-    def test_unavailable_prior_content_says_so(self):
-        root = make_repo(self.tmp / "r", use_git=False)
-        self.pin_then_edit(root)
-        shutil.rmtree(root / ".claimlock" / "objects")
-        rc, out, _ = run_cli(root, "diff", "c")
-        self.assertEqual(rc, 0)
-        self.assertIn("unavailable", out)
-
     def test_missing_fresh_and_unknown(self):
         root = make_repo(self.tmp / "r", use_git=False)
         write(root, "a.py", "one\n")
@@ -112,35 +63,8 @@ class Diff(TmpCase):
         self.assertIn("a.py: does not exist or cannot be read", out)
         self.assertEqual(run_cli(root, "diff", "nope")[0], 1)
 
-    def test_corrupt_snapshot_is_unavailable(self):
-        root = make_repo(self.tmp / "r", use_git=False)
-        self.pin_then_edit(root)
-        [obj] = list((root / ".claimlock" / "objects").iterdir())
-        obj.write_bytes(b"tampered\n")
-        self.assertIn("unavailable", run_cli(root, "diff", "c")[1])
-
 
 @NEED_GIT
-class SnapshotWrite(TmpCase):
-    def test_failed_write_leaves_no_temp_file(self):
-        # M-a: snapshots.store wrote a fixed "<blob>.tmp" and left it behind
-        # when the rename failed.
-        from unittest import mock
-        from claimlock import snapshots
-        from claimlock.project import load
-        root = make_repo(self.tmp / "r", use_git=False)
-        project = load(root)
-        blob = blob_of_bytes(b"x\n")
-        objects = root / ".claimlock" / "objects"
-        with mock.patch("claimlock.snapshots.os.replace", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                snapshots.store(project, blob, b"x\n")
-        self.assertEqual(list(objects.iterdir()) if objects.exists() else [], [])
-        snapshots.store(project, blob, b"x\n")
-        self.assertEqual([p.name for p in objects.iterdir()], [blob])
-        self.assertEqual(snapshots.load(project, blob), b"x\n")
-
-
 class Transition(TmpCase):
     def test_pins_survive_git_init(self):
         root = make_repo(self.tmp / "r", use_git=False)

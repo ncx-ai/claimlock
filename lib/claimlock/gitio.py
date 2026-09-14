@@ -35,6 +35,43 @@ def root_is_ignored(root) -> bool:
     return r is not None and r.returncode == 0
 
 
+def _prefix(root):
+    """`root`'s path inside its repository ('' at the top level, 'sub/' below
+    it), or None outside git. `rev-list --objects` prints top-level paths."""
+    return _text(run(root, "rev-parse", "--show-prefix"))
+
+
+def anchored_blobs(root, rels):
+    """Blob ids every clone can recover for these root-relative paths: every
+    blob that appeared at one of them in any commit reachable from any ref,
+    plus the blob currently staged for each. None outside git or on failure.
+
+    `cat-file -e` is not used: it also reports loose objects that no commit
+    references (written by `hash-object -w`, or staged then unstaged)."""
+    if not rels:
+        return set()
+    prefix = _prefix(root)
+    if prefix is None:
+        return None
+    r = run(root, "rev-list", "--objects", "--all", "--", *rels)
+    if r is None or r.returncode != 0:
+        return None
+    wanted = {prefix + rel for rel in rels}
+    blobs = set()
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        sha, _, path = line.partition(" ")
+        if path in wanted:
+            blobs.add(sha)
+    s = run(root, "ls-files", "-s", "-z", "--", *rels)
+    if s is not None and s.returncode == 0:
+        for rec in s.stdout.split(b"\0"):
+            meta, tab, _ = rec.partition(b"\t")
+            parts = meta.split()
+            if tab and len(parts) >= 2:
+                blobs.add(parts[1].decode("ascii", "replace"))
+    return blobs
+
+
 def head(root):
     return _text(run(root, "rev-parse", "--verify", "-q", "HEAD")) or None
 

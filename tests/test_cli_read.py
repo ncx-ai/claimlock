@@ -64,14 +64,14 @@ class Check(TmpCase):
         self.assertIn("INVALID  invalid-one", out)
         self.assertIn("status 'maybe'", out)
         self.assertNotIn("fresh-one", out)
-        self.assertIn("claimlock: 4 claims, 3 sources hashed — 1 invalid, 1 unpinned, 1 stale, 0 missing", out)
+        self.assertIn("claimlock: 4 claims, 3 sources hashed — 1 invalid, 1 unpinned, 0 unanchored, 1 stale, 0 missing", out)
 
     def test_json(self):
         rc, out, _ = run_cli(self.root, "check", "--json")
         self.assertEqual(rc, 1)
         data = json.loads(out)
         self.assertEqual((data["claims"], data["sources_hashed"]), (4, 3))
-        self.assertEqual(data["counts"], {"invalid": 1, "unpinned": 1, "stale": 1, "missing": 0})
+        self.assertEqual(data["counts"], {"invalid": 1, "unpinned": 1, "unanchored": 0, "stale": 1, "missing": 0})
         by_id = {r["id"]: r for r in data["results"]}
         self.assertEqual(by_id["stale-one"]["sources"], [{"path": "b.py", "state": "stale"}])
 
@@ -80,7 +80,7 @@ class Check(TmpCase):
             (self.root / "claims" / f"{cid}.md").unlink()
         rc, out, _ = run_cli(self.root, "check")
         self.assertEqual(rc, 0)
-        self.assertIn("1 claims, 1 sources hashed — 0 invalid, 0 unpinned, 0 stale, 0 missing", out)
+        self.assertIn("1 claims, 1 sources hashed — 0 invalid, 0 unpinned, 0 unanchored, 0 stale, 0 missing", out)
         rc, out, _ = run_cli(self.root, "check", "--area", "elsewhere")
         self.assertEqual(rc, 0)
         self.assertIn("0 claims", out)

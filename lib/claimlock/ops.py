@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import claims as C
-from . import frontmatter, snapshots
+from . import frontmatter
 from .frontmatter import quote
 from .pins import blob_of_bytes
 from .project import CONFIG, safe_source
@@ -93,15 +93,10 @@ def verify(project, cid, now=None) -> list:
             raise Refused(f"{cid}: source {s.path} does not exist or cannot be read "
                           f"({e.strerror or e}) — fix its sources, then verify") from None
         contents.append((s.path, blob_of_bytes(data), data))
-    for _, blob, data in contents:
-        snapshots.store(project, blob, data)
     stamp = now or datetime.now().astimezone().isoformat(timespec="seconds")
     text = frontmatter.rewrite(c.text, c.path.name, status="verified", verified_at=stamp,
                                sources=[{"path": p, "blob": b} for p, b, _ in contents])
     tmp = c.path.with_name(c.path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, c.path)
-    referenced = {b for _, b, _ in contents}
-    referenced |= {s.blob for other in all_claims if other.id != cid for s in other.sources if s.blob}
-    snapshots.prune(project, referenced)
     return [(p, b) for p, b, _ in contents]
