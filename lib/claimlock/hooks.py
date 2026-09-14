@@ -143,9 +143,15 @@ def _session_lock(data_dir, sid):
         f.close()
 
 
+def _log_dir(where):
+    """Where hook-errors.log goes: the plugin data dir when known, else a
+    per-user ~/.claimlock (never a shared temp path other users can write)."""
+    return Path(where) if where else Path.home() / ".claimlock"
+
+
 def _log(where, event):
     try:
-        d = Path(where) if where else Path(tempfile.gettempdir()) / "claimlock"
+        d = _log_dir(where)
         d.mkdir(parents=True, exist_ok=True)
         with open(d / "hook-errors.log", "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().astimezone().isoformat()} {event}\n{traceback.format_exc()}\n")
@@ -157,7 +163,7 @@ def _log_note(where, text):
     """Append a plain one-line note (no traceback) — for a condition worth
     surfacing to an operator that is not itself a caught exception."""
     try:
-        d = Path(where) if where else Path(tempfile.gettempdir()) / "claimlock"
+        d = _log_dir(where)
         d.mkdir(parents=True, exist_ok=True)
         with open(d / "hook-errors.log", "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().astimezone().isoformat()} {text}\n")

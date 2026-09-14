@@ -55,6 +55,8 @@ class Root(TmpCase):
             ("nogroup", 'marker_pattern = "Claim"\n', "capture group"),
             ("badre", 'marker_pattern = "("\n', "marker_pattern"),
             ("escape", 'claims_dir = "../elsewhere"\n', "escapes"),
+            ("root", 'claims_dir = "."\n', "claims_dir must be a subdirectory of the project root"),
+            ("root-dotdot", 'claims_dir = "sub/.."\n', "claims_dir must be a subdirectory"),
         ]
         for name, cfg, needle in cases:
             with self.subTest(name):

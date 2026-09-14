@@ -7,6 +7,7 @@ is treated as unavailable rather than shown as the old content.
 """
 import os
 import re
+import tempfile
 
 from . import gitio
 from .pins import blob_of_bytes
@@ -25,9 +26,19 @@ def store(project, blob, data) -> None:
     if p.exists():
         return
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, p)
+    # A unique temp name: a fixed "<blob>.tmp" is shared by concurrent writers
+    # and left behind when the rename fails.
+    fd, tmp = tempfile.mkstemp(prefix=blob + ".", suffix=".tmp", dir=str(p.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load(project, blob):

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import stat
+import tempfile
 import time
 from pathlib import Path
 
@@ -73,8 +74,16 @@ class Hasher:
             return
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.cache_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.cache), encoding="utf-8")
+            fd, tmp = tempfile.mkstemp(prefix=self.cache_path.name + ".", suffix=".tmp",
+                                       dir=str(self.cache_path.parent))
+        except OSError:
+            return  # a cache that cannot be written only costs speed
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(self.cache))
             os.replace(tmp, self.cache_path)
         except OSError:
-            pass  # a cache that cannot be written only costs speed
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass

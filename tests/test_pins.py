@@ -6,7 +6,6 @@ import time
 import unittest
 
 from helpers import TmpCase, write
-from claimlock import pins
 from claimlock.pins import Hasher, blob_of_bytes
 
 OLD = time.time_ns() - 100 * 1_000_000_000  # 100 s ago: old enough to cache
@@ -64,6 +63,18 @@ class HasherCase(TmpCase):
         h.save()
         data = json.loads(self.cache().read_text()) if self.cache().exists() else {}
         self.assertNotIn("a.txt", data)
+
+    def test_failed_cache_write_leaves_no_temp_file(self):
+        # M-a: a fixed "<name>.tmp" was left behind (and shared by concurrent
+        # writers); the temp file is now unique and removed on failure.
+        from unittest import mock
+        p = write(self.tmp, "a.txt", "hello\n")
+        os.utime(p, ns=(OLD, OLD))
+        h = Hasher(self.tmp, self.cache())
+        h.blob("a.txt")
+        with mock.patch("claimlock.pins.os.replace", side_effect=OSError("disk full")):
+            h.save()  # a cache that cannot be written only costs speed
+        self.assertEqual(sorted(x.name for x in self.cache().parent.iterdir()), [])
 
     def test_corrupt_cache_is_ignored(self):
         write(self.tmp, "a.txt", "hello\n")

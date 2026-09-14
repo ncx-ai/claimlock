@@ -121,6 +121,26 @@ class Diff(TmpCase):
 
 
 @NEED_GIT
+class SnapshotWrite(TmpCase):
+    def test_failed_write_leaves_no_temp_file(self):
+        # M-a: snapshots.store wrote a fixed "<blob>.tmp" and left it behind
+        # when the rename failed.
+        from unittest import mock
+        from claimlock import snapshots
+        from claimlock.project import load
+        root = make_repo(self.tmp / "r", use_git=False)
+        project = load(root)
+        blob = blob_of_bytes(b"x\n")
+        objects = root / ".claimlock" / "objects"
+        with mock.patch("claimlock.snapshots.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                snapshots.store(project, blob, b"x\n")
+        self.assertEqual(list(objects.iterdir()) if objects.exists() else [], [])
+        snapshots.store(project, blob, b"x\n")
+        self.assertEqual([p.name for p in objects.iterdir()], [blob])
+        self.assertEqual(snapshots.load(project, blob), b"x\n")
+
+
 class Transition(TmpCase):
     def test_pins_survive_git_init(self):
         root = make_repo(self.tmp / "r", use_git=False)

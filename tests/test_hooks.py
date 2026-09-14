@@ -63,6 +63,19 @@ class Contract(HookCase):
         self.assertIsNone(self.hook(plain, "stop", stdin="not json"))
         self.assertFalse(self.data.exists())
 
+    def test_errors_with_no_known_data_dir_go_to_the_home_directory(self):
+        # M-e: the fallback was a shared temp path; it is now per user.
+        home = self.tmp / "home"
+        with mock.patch.object(hooks_mod.Path, "home", return_value=home):
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError:
+                hooks_mod._log(None, "stop")
+            hooks_mod._log_note(None, "a note")
+        log = (home / ".claimlock" / "hook-errors.log").read_text()
+        self.assertIn("boom", log)
+        self.assertIn("a note", log)
+
     def test_bare_claims_dir_without_config_is_inert(self):
         # I3: a directory that merely happens to be named claims/ is not a
         # store for hooks. Only .claimlock.toml activates them, and deciding

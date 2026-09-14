@@ -90,6 +90,9 @@ def load(start: Path) -> Project:
     claims_dir = (root / cfg["claims_dir"]).resolve()
     if not is_within(claims_dir, root):
         raise ConfigError(f"{CONFIG}: claims_dir escapes the project root")
+    if claims_dir == root.resolve():
+        # Every *.md in the root (README.md aside) would load as a claim.
+        raise ConfigError(f"{CONFIG}: claims_dir must be a subdirectory of the project root")
     return Project(root, claims_dir, list(globs), pattern, has_config)
 
 

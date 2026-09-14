@@ -38,6 +38,7 @@ class Manifest(unittest.TestCase):
             self.assertTrue(any(c.endswith(f"hook {event}") for c in commands), event)
         self.assertTrue(all("${CLAUDE_PLUGIN_ROOT}/bin/claimlock" in c for c in commands))
         self.assertEqual(hooks["PostToolUse"][0]["matcher"], "Bash|mcp__.*")
+        self.assertEqual(hooks["SessionStart"][0]["matcher"], "startup|resume|clear|compact|fork")
 
     def test_launcher_is_executable(self):
         self.assertTrue(os.access(REPO / "bin/claimlock", os.X_OK))
