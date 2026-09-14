@@ -5,8 +5,11 @@ directory is not a repository, or the command fails. Git is an enhancement —
 it serves prior content for `diff` and reveals commits — never a requirement.
 """
 import os
+import re
 import subprocess
 from pathlib import Path
+
+_BLOB_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def run(root, *args):
@@ -43,8 +46,13 @@ def _prefix(root):
 
 def anchored_blobs(root, rels):
     """Blob ids every clone can recover for these root-relative paths: every
-    blob that appeared at one of them in any commit reachable from any ref,
-    plus the blob currently staged for each. None outside git or on failure.
+    blob that appeared at one of them in any commit reachable from any ref
+    (full history — a merge that matches one parent at the path otherwise
+    prunes the other side, even though its blobs stay reachable), plus the
+    blob at every index stage (a conflicted merge; `ls-files -s` lists one
+    line per stage) currently staged for each. None outside git or on
+    failure. `--literal-pathspecs` on both commands: a source path containing
+    glob metacharacters (`src/[id].ts`) must never match an unrelated file.
 
     `cat-file -e` is not used: it also reports loose objects that no commit
     references (written by `hash-object -w`, or staged then unstaged)."""
@@ -53,7 +61,8 @@ def anchored_blobs(root, rels):
     prefix = _prefix(root)
     if prefix is None:
         return None
-    r = run(root, "rev-list", "--objects", "--all", "--", *rels)
+    r = run(root, "--literal-pathspecs", "rev-list", "--objects", "--all",
+           "--full-history", "--", *rels)
     if r is None or r.returncode != 0:
         return None
     wanted = {prefix + rel for rel in rels}
@@ -62,7 +71,7 @@ def anchored_blobs(root, rels):
         sha, _, path = line.partition(" ")
         if path in wanted:
             blobs.add(sha)
-    s = run(root, "ls-files", "-s", "-z", "--", *rels)
+    s = run(root, "--literal-pathspecs", "ls-files", "-s", "-z", "--", *rels)
     if s is not None and s.returncode == 0:
         for rec in s.stdout.split(b"\0"):
             meta, tab, _ = rec.partition(b"\t")
@@ -70,6 +79,32 @@ def anchored_blobs(root, rels):
             if tab and len(parts) >= 2:
                 blobs.add(parts[1].decode("ascii", "replace"))
     return blobs
+
+
+def ignored_paths(root, rels):
+    """Root-relative paths among `rels` that git ignores, in one batched
+    `check-ignore --stdin`. Content at an ignored path can never be committed
+    or staged, so it is exempt from anchoring rather than permanently unable
+    to satisfy it. `check-ignore` exits 1 when none of the given paths are
+    ignored — that is not a failure, only anything else is. None on failure.
+
+    No `--literal-pathspecs` here (unlike `anchored_blobs`): `--stdin` paths
+    are already matched literally with no pathspec-magic parsing — git 2.55
+    refuses to even start (`pathspec magic not supported by this command:
+    'literal'`) if the global flag is added on top of `--stdin`. Verified
+    directly: querying `src/[id].ts` via `--stdin` does not match a tracked
+    `src/i.ts` ignore rule, with or without the flag."""
+    if not rels:
+        return set()
+    try:
+        r = subprocess.run(["git", "-c", "core.quotepath=off", "check-ignore", "--stdin", "-z"],
+                           cwd=root, input=("\0".join(rels) + "\0").encode(),
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode not in (0, 1):
+        return None
+    return {os.fsdecode(p) for p in r.stdout.split(b"\0") if p}
 
 
 def hash_paths(root, rels):
@@ -109,6 +144,11 @@ def has_blob(root, sha) -> bool:
 
 
 def cat_blob(root, sha):
+    """The blob's content, or None. `sha` must be a full 40-hex object id: git
+    revision syntax (`HEAD:secret.txt`, `HEAD~1:x`, …) is otherwise accepted
+    by `cat-file`, which would let a malformed pin print an unrelated file."""
+    if not _BLOB_RE.match(sha or ""):
+        return None
     r = run(root, "cat-file", "blob", sha)
     return r.stdout if r is not None and r.returncode == 0 else None
 

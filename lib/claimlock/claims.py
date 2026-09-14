@@ -212,13 +212,39 @@ def problems(claim, project, *, as_status=None):
     return out
 
 
-def anchors_for(project, paths):
-    """The anchor set for these source paths (see gitio.anchored_blobs), or
-    None outside git — where anchoring is not evaluated at all."""
-    paths = sorted({p for p in paths if safe_source(project.root, p) is not None})
+@dataclass
+class Anchors:
+    """The blob ids every clone can recover for a set of sources (`blobs`),
+    plus the source paths git itself refuses to track (`ignored`). A pin
+    anchors when its blob is reachable/staged, or its own path is one git
+    ignores — content that can never be committed or staged is not owed one."""
+    blobs: set[str]
+    ignored: set[str]
+
+    def ok(self, path, blob) -> bool:
+        return blob in self.blobs or path in self.ignored
+
+
+def anchors_for(project, sources):
+    """The Anchors for these sources (see gitio.anchored_blobs /
+    gitio.ignored_paths), or None when anchoring is not evaluated at all:
+    outside git, on git failure, or when the store root itself lies inside a
+    directory an enclosing repository ignores — there, nothing under it can
+    ever be committed or staged, so anchoring has no valid answer to give."""
+    if gitio.root_is_ignored(project.root):
+        return None
+    valid = [s for s in sources if safe_source(project.root, s.path) is not None]
+    paths = sorted({s.path for s in valid})
     if not paths:
-        return set()
-    return gitio.anchored_blobs(project.root, paths)
+        return Anchors(set(), set())
+    blobs = gitio.anchored_blobs(project.root, paths)
+    if blobs is None:
+        return None
+    remaining = sorted({s.path for s in valid if s.blob not in blobs})
+    ignored = gitio.ignored_paths(project.root, remaining) if remaining else set()
+    if ignored is None:
+        ignored = set()
+    return Anchors(blobs, ignored)
 
 
 def freshness(claim, project, hasher, anchors=None):
@@ -239,7 +265,7 @@ def freshness(claim, project, hasher, anchors=None):
             st = "unpinned"
         elif cur != s.blob:
             st = "stale"
-        elif anchors is not None and s.blob not in anchors:
+        elif anchors is not None and not anchors.ok(s.path, s.blob):
             st = "unanchored"
         else:
             st = "fresh"
@@ -255,9 +281,9 @@ def open_hasher(project):
 
 def evaluate(project, hasher):
     claims = load_claims(project)
-    paths = [s.path for c in claims if c.status == "verified" and not c.parse_error
-             for s in c.sources if safe_source(project.root, s.path) is not None]
-    hasher.prime(paths)
-    anchors = anchors_for(project, paths)
+    sources = [s for c in claims if c.status == "verified" and not c.parse_error
+               for s in c.sources if safe_source(project.root, s.path) is not None]
+    hasher.prime([s.path for s in sources])
+    anchors = anchors_for(project, sources)
     return [Result(c, problems(c, project), *freshness(c, project, hasher, anchors))
             for c in claims]

@@ -315,3 +315,28 @@ T4. **`owe` with no identity** (no `--to` and no `git config user.email`)
     exits 2; `resolve` in that situation leaves the claim conflicted and exits 1.
 T5. **Source hashing verifies with the cache bypassed.** `verify` and `resolve`
     always re-hash; only `check`, hooks and listings use the stat cache.
+
+## Amendments (2026-09-14, Task 2 review)
+
+T6. **Content that cannot be committed is not owed a commit.** Anchoring is not
+    evaluated when the store root itself is ignored by an enclosing repository,
+    and a source path that git ignores is exempt from anchoring. Otherwise such
+    pins would read `unanchored` forever, with a hint (commit or stage the
+    source) that git refuses to follow.
+T7. **Anchoring is exact-path and full-history.** `rev-list` runs with
+    `--full-history` (default history simplification drops blobs still reachable
+    through a merge) and both anchoring commands run with `--literal-pathspecs`
+    (a source named `[id].ts` must not match `i.ts`).
+T8. **Anchors include every index stage and every local ref.** During a merge,
+    stages 1–3 anchor; `refs/stash` and unpushed branches anchor. A pin can
+    therefore anchor on content only this clone has until it is pushed; CI, which
+    has only pushed refs, still reports it.
+
+## Amendments (2026-09-14, Task 3)
+
+T9. **Claim files survive CRLF checkouts.** A clone with `core.autocrlf=true`
+    checks claim files out with CRLF; v1 rejected any CR, so every claim read
+    `invalid` there. Claim files with CRLF line endings are accepted and read as
+    LF (a lone CR not followed by LF is still invalid), and `claimlock init`
+    writes a `.gitattributes` entry `<claims_dir>/*.md text eol=lf` (appended,
+    never duplicated) so new stores keep LF claim files in every clone.

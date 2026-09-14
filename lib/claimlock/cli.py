@@ -219,7 +219,7 @@ def cmd_diff(args):
         print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
         return 1
     hasher = C.open_hasher(project)
-    state, per = C.freshness(c, project, hasher, C.anchors_for(project, [s.path for s in c.sources]))
+    state, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources))
     hasher.save()
     if state is None:
         print(f"claimlock: {c.id} is {c.status}; only verified claims have pins")

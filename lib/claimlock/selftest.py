@@ -61,7 +61,7 @@ def run(out=print) -> int:
             def state():
                 c = next(x for x in C.load_claims(project) if x.id == "probe")
                 return C.freshness(c, project, Hasher(root, None),
-                                   C.anchors_for(project, [s.path for s in c.sources]))[0]
+                                   C.anchors_for(project, c.sources))[0]
 
             if use_git:
                 expect(f"[{label}] verified, unstaged source", state(), "unanchored")
