@@ -295,3 +295,23 @@ teammate's refactor stales your claims right before a release".
   re-measured cold during implementation, with the per-pin fallback in §4.4.
 - **Normalized hashing needs a git subprocess per hashing pass.** Bounded by the
   stat cache; hooks keep their common path free of git.
+
+## Amendments (2026-09-14, planning)
+
+T1. **The anchor set includes staged content.** A pin is anchored if its blob
+    appears at that path in any commit reachable from any ref **or is the blob
+    currently staged in the index for that path** (`git ls-files -s`). Without
+    this, `verify` followed by `git add` and a pre-commit `check` would always
+    report `unanchored`, because the verified content is staged but not yet
+    committed. In CI the index equals HEAD, so this admits nothing uncommitted
+    there. A blob that was staged and then unstaged (the §3 spike case) is still
+    `unanchored`.
+T2. **Snapshots are removed in the same change that adds anchoring**, and
+    `selftest`'s git arm stages the probe source before expecting `fresh`, and
+    adds an `unanchored` expectation for an unstaged verified source.
+T3. **`owed` never fails any `check`**, scoped or not; it is listed. "Plain
+    `check` is unchanged" means strict for every other state.
+T4. **`owe` with no identity** (no `--to` and no `git config user.email`)
+    exits 2; `resolve` in that situation leaves the claim conflicted and exits 1.
+T5. **Source hashing verifies with the cache bypassed.** `verify` and `resolve`
+    always re-hash; only `check`, hooks and listings use the stat cache.
