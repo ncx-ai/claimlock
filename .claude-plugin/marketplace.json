@@ -1,0 +1,13 @@
+{
+  "name": "claimlock",
+  "owner": {"name": "dg"},
+  "description": "claimlock — claims pinned to the content that could falsify them.",
+  "plugins": [
+    {
+      "name": "claimlock",
+      "source": "./",
+      "description": "CLI gate, drift-aware hooks, and evidence-discipline skills for keeping written claims about code honest.",
+      "tags": ["documentation", "quality", "verification"]
+    }
+  ]
+}

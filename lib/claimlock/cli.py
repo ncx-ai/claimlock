@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import VERSION
 from . import claims as C
+from . import hooks
 from . import importer, ops, refs, selftest
 from . import project as P
 from . import snapshots
@@ -286,6 +287,10 @@ def cmd_self_test(args):
     return selftest.run()
 
 
+def cmd_hook(args):
+    return hooks.main(args.event, sys.stdin.read(), dict(os.environ))
+
+
 def build_parser():
     ap = argparse.ArgumentParser(prog="claimlock",
                                  description="Claims pinned to the content that could falsify them.")
@@ -324,6 +329,8 @@ def build_parser():
     p = add("import", cmd_import, "import claims from the original ground-truth format")
     p.add_argument("src")
     add("self-test", cmd_self_test, "prove the detectors can fail")
+    p = add("hook", cmd_hook, "Claude Code hook entry point (always exits 0)")
+    p.add_argument("event")
     return ap, sub, add
 
 

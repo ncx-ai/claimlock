@@ -1,0 +1,9 @@
+{
+  "name": "claimlock",
+  "displayName": "claimlock",
+  "version": "0.1.0",
+  "description": "Claude Code plugin: pin claims about your code to the content that could falsify them. A CLI gate, drift-aware hooks, and skills for evidence discipline.",
+  "author": {"name": "dg"},
+  "license": "MIT",
+  "keywords": ["claims", "documentation", "drift", "staleness", "evidence", "verification", "skills", "hooks"]
+}
