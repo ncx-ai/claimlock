@@ -177,7 +177,9 @@ other problems correctly. Reported as `<file>:<line>: <message>`:
 - `expected 'key: value' at column 0`
 - `unexpected indentation; expected 'key: value' at column 0`
 - `duplicate key '<k>'`
-- `bad double-quoted string: <json error>`
+- `bad double-quoted string: <json error>` (the quoted text isn't valid JSON)
+- `bad double-quoted string` (valid JSON, but not a string — defensive; a
+  leading `"` currently always parses to a JSON string when it parses at all)
 - `text after closing quote`
 - `bad single-quoted string`
 - `unsupported YAML syntax starting with '<char>'; quote the value`
