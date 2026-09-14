@@ -27,6 +27,14 @@ def in_git(root) -> bool:
     return _text(run(root, "rev-parse", "--is-inside-work-tree")) == "true"
 
 
+def root_is_ignored(root) -> bool:
+    """True when `root` itself lies inside a directory an enclosing repository
+    ignores. `git ls-files` then lists nothing under it, so an empty listing
+    there means "git will not tell us", not "there are no files"."""
+    r = run(root, "check-ignore", "-q", ".")
+    return r is not None and r.returncode == 0
+
+
 def head(root):
     return _text(run(root, "rev-parse", "--verify", "-q", "HEAD")) or None
 

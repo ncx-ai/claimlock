@@ -7,7 +7,9 @@ Globs use fnmatch semantics (`*` crosses directories); a leading `**/` also
 matches at the root. Hidden directories, node_modules and the claims
 directory are never scanned. Inside a git work tree the candidates come from
 `git ls-files --cached --others --exclude-standard`, so gitignored files are
-not scanned either; outside git (or if git fails) the tree is walked.
+not scanned either; outside git (or if git fails) the tree is walked —
+except when the store root is itself ignored by an enclosing repository,
+where the tree is walked.
 """
 import fnmatch
 import os
@@ -47,7 +49,9 @@ def _files(project, only):
                     and not _excluded(project, rel)):
                 yield p, rel
         return
-    listed = gitio.ls_files(project.root)
+    # A store inside a directory an enclosing repo ignores gets an empty
+    # listing from git; walk instead of silently scanning nothing.
+    listed = None if gitio.root_is_ignored(project.root) else gitio.ls_files(project.root)
     if listed is not None:
         # Inside a git work tree: one `git ls-files` instead of walking every
         # directory, so ignored trees (target/, build/, vendor/…) cost nothing.

@@ -18,6 +18,9 @@ class NoGit(TmpCase):
         self.assertEqual(gitio.changed_paths(self.tmp, None, "HEAD"), [])
         self.assertEqual(gitio.head_mark_paths(self.tmp), [])
 
+    def test_root_is_ignored_is_false_outside_git(self):
+        self.assertFalse(gitio.root_is_ignored(self.tmp))
+
 
 @NEED_GIT
 class WithGit(TmpCase):
@@ -62,6 +65,14 @@ class WithGit(TmpCase):
         self.assertTrue(any(m.endswith("logs/HEAD") for m in marks), marks)
         self.assertTrue(any(m.endswith("refs/heads/main") for m in marks), marks)
         self.assertTrue(all(Path(m).is_absolute() for m in marks))
+
+    def test_root_is_ignored_only_inside_an_ignored_directory(self):
+        write(self.top, ".gitignore", "scratch/\n")
+        (self.top / "scratch" / "proj").mkdir(parents=True)
+        (self.top / "open").mkdir()
+        self.assertTrue(gitio.root_is_ignored(self.top / "scratch" / "proj"))
+        self.assertFalse(gitio.root_is_ignored(self.top / "open"))
+        self.assertFalse(gitio.root_is_ignored(self.top))
 
 
 if __name__ == "__main__":

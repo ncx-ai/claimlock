@@ -226,5 +226,22 @@ class UnreadableFiles(TmpCase):
         self.assertIn("1 missing", ctx)
         self.assertFalse((data / "hook-errors.log").exists())
 
+
+class UnreadableClaimsDir(TmpCase):
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can read any directory")
+    def test_unreadable_claims_dir_is_exit_2_not_a_clean_store(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "claims/c.md", claim_text("c"))
+        os.chmod(root / "claims", 0)
+        try:
+            rc, out, err = run_cli(root, "check")
+        finally:
+            os.chmod(root / "claims", 0o755)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot be read", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn("0 claims", out)
+
+
 if __name__ == "__main__":
     unittest.main()

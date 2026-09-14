@@ -3,7 +3,7 @@ import shutil
 import unittest
 from unittest import mock
 
-from helpers import TmpCase, claim_text, make_repo, run_cli, write
+from helpers import TmpCase, claim_text, git, make_repo, run_cli, write
 from claimlock import refs, selftest
 from claimlock.project import load
 
@@ -105,6 +105,34 @@ class RefsInGit(TmpCase):
         with mock.patch("claimlock.gitio.ls_files", return_value=None, create=True):
             markers, files = refs.scan(load(root))
         self.assertEqual([m.id for m in markers], ["ghost-ignored"])
+
+
+@unittest.skipIf(shutil.which("git") is None, "git not installed")
+class IgnoredRoot(TmpCase):
+    def outer(self, ignore):
+        outer = self.tmp / "outer"
+        outer.mkdir()
+        git(outer, "init", "-q", "-b", "main")
+        write(outer, ".gitignore", ignore)
+        return outer
+
+    def test_store_inside_an_ignored_directory_is_still_scanned(self):
+        outer = self.outer("scratch/\n")
+        root = make_repo(outer / "scratch" / "proj", use_git=False)
+        write(root, "docs/x.md", "Claim: `ghost`\n")
+        markers, files = refs.scan(load(root))
+        self.assertEqual((files, [m.id for m in markers]), (1, ["ghost"]))
+        rc, out, _ = run_cli(root, "refs")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("1 dangling", out)
+
+    def test_a_non_ignored_store_still_honours_gitignore(self):
+        outer = self.outer("target/\n")
+        root = make_repo(outer / "proj", use_git=False)
+        write(root, "target/t.md", "Claim: `in-ignored-tree`\n")
+        write(root, "docs/ok.md", "Claim: `in-open-tree`\n")
+        markers, _ = refs.scan(load(root))
+        self.assertEqual([m.id for m in markers], ["in-open-tree"])
 
 
 class Affected(TmpCase):

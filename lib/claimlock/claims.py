@@ -4,6 +4,7 @@ Validation (`problems`) and freshness are separate on purpose. A claim can be
 well-formed and stale, or malformed and fresh; reporting only one would hide
 the other.
 """
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,18 @@ _SEVERITY = {"fresh": 0, "unpinned": 1, "stale": 2, "missing": 3}
 class StoreMissing(Exception):
     def __init__(self, path):
         super().__init__(f"no claims directory at {path} — run `claimlock init`")
+        self.path = path
+
+
+class StoreUnreadable(StoreMissing):
+    """The claims directory exists but cannot be listed. A subclass of
+    StoreMissing so every caller that maps "no readable store" to exit 2
+    handles it without change; reading it as an empty store would be a
+    false clean."""
+
+    def __init__(self, path, error):
+        Exception.__init__(self, f"claims directory {path} cannot be read: "
+                                 f"{getattr(error, 'strerror', None) or error}")
         self.path = path
 
 
@@ -97,9 +110,14 @@ def load_claims(project):
     if not project.claims_dir.is_dir():
         raise StoreMissing(project.claims_dir)
     out = []
-    for p in sorted(project.claims_dir.glob("*.md")):
-        if p.name == "README.md":
+    try:
+        names = sorted(os.listdir(project.claims_dir))
+    except OSError as e:
+        raise StoreUnreadable(project.claims_dir, e) from None
+    for name in names:
+        if not name.endswith(".md") or name == "README.md":
             continue
+        p = project.claims_dir / name
         try:
             # Path.read_text() applies universal-newline translation, which
             # silently turns "\r\n" into "\n" before we ever see the "\r" —
