@@ -77,8 +77,11 @@ field-level and format detail: [`docs/format.md`](docs/format.md).
 
 Hooks **never block**: they always exit 0, never set `decision`, and a Stop
 warning does not continue the turn — it is shown to the user only, after
-Claude has already finished responding. A project with no `.claimlock.toml`
-and no `claims/` directory is inert: every hook prints nothing at all.
+Claude has already finished responding. Hooks are active only in a project
+that has a `.claimlock.toml` — in the project directory Claude Code opened, or
+one of its ancestors (a config in a *subdirectory* of the opened project is not
+seen). Anywhere else, including a repository that merely has a `claims/`
+directory, every hook prints nothing at all and runs no git command.
 
 ## Skills
 
@@ -162,6 +165,13 @@ gate; `refs` fails on any prose marker naming no claim.
   *cache's* racy guard is unrelated to HEAD detection: it exists so a
   same-tick **content** edit is never missed by `check` — an entry younger
   than 2 seconds is never cached, so it's re-hashed instead of trusted.)
+- **Marker scanning outside git walks the whole tree.** Inside a git work
+  tree, `claimlock refs` and the SessionStart/Stop hooks take candidate files
+  from one `git ls-files --cached --others --exclude-standard`, so gitignored
+  trees (`target/`, `build/`, `vendor/`…) cost nothing — and markers in them,
+  or inside git submodules, are not scanned. Outside git, or if that git call
+  fails, every non-hidden directory except `node_modules/` and the claims
+  directory is walked, so a large untracked tree makes each Stop slower.
 - **Lock files accumulate.** The per-session hook lock
   (`<plugin data dir>/sessions/<session-id>.lock`) is left in place after use
   rather than removed — harmless (an empty file, reused by session id) but it

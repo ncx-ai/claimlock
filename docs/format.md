@@ -251,6 +251,11 @@ The project root is the nearest ancestor directory containing
 the directory isn't a repository). A project with neither a config file nor a
 `claims_dir` directory `has_store() == False`.
 
+The hooks are stricter than the CLI: they are active only when
+`.claimlock.toml` exists in the opened project directory or one of its
+ancestors. A `claims_dir` directory alone does not activate them, and a config
+in a subdirectory of the opened project is not seen.
+
 ## Marker scanning (`claimlock refs`)
 
 A **marker** is any regex match of `marker_pattern` in any file matched by
@@ -260,6 +265,10 @@ A **marker** is any regex match of `marker_pattern` in any file matched by
 Excluded from every scan, unconditionally:
 - Any path component starting with `.` (hidden directories) or named
   `node_modules`.
+- Inside a git work tree, any file git ignores: candidates come from `git
+  ls-files --cached --others --exclude-standard` run at the project root
+  (tracked plus untracked-but-not-ignored files; submodule contents are not
+  listed). Outside git, or if that command fails, the tree is walked instead.
 - Anything inside the resolved `claims_dir` itself (so a claim file quoting
   its own marker syntax in an example doesn't self-match).
 - When `refs.scan(project, only={...})` is called with an explicit path set

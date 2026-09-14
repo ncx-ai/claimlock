@@ -43,6 +43,11 @@ def main(event, stdin_text, env) -> int:
     try:
         payload, malformed = _parse_payload(stdin_text)
         start = Path(env.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
+        if not _has_config(start):
+            # Hooks are active only in a project that opted in with
+            # .claimlock.toml. Decided with plain stats — no git, no data dir —
+            # because PostToolUse runs this on every Bash and MCP call.
+            return 0
         project = P.load(start)
         if not project.claims_dir.is_dir():
             return 0
@@ -71,6 +76,17 @@ def main(event, stdin_text, env) -> int:
     except Exception:  # noqa: BLE001 — a hook must never fail loudly
         _log(data_dir or env.get("CLAUDE_PLUGIN_DATA"), event)
     return 0
+
+
+def _has_config(start):
+    """True when `.claimlock.toml` exists in `start` or one of its ancestors —
+    the same places `project.load` looks. A bare claims directory is not a
+    store for hooks, and a config below `start` is not seen."""
+    try:
+        start = start.resolve()
+    except OSError:
+        return False
+    return any((d / P.CONFIG).is_file() for d in (start, *start.parents))
 
 
 def _parse_payload(stdin_text):

@@ -63,6 +63,33 @@ class Contract(HookCase):
         self.assertIsNone(self.hook(plain, "stop", stdin="not json"))
         self.assertFalse(self.data.exists())
 
+    def test_bare_claims_dir_without_config_is_inert(self):
+        # I3: a directory that merely happens to be named claims/ is not a
+        # store for hooks. Only .claimlock.toml activates them, and deciding
+        # that must not spawn git (PostToolUse runs on every Bash/MCP call).
+        root = self.tmp / "bare"
+        write(root, "claims/2024-q1.md", "quarterly notes\n")
+        write(root, "claims/c.md", claim_text("c", status="maybe"))
+        no_git = AssertionError("git spawned while deciding whether hooks are active")
+        with mock.patch("claimlock.project._git_toplevel", side_effect=no_git), \
+                mock.patch("claimlock.gitio.run", side_effect=no_git):
+            for event in ("session-start", "stop", "post-tool-use"):
+                self.assertIsNone(self.hook_inprocess(root, event), event)
+        for event in ("session-start", "stop", "post-tool-use"):
+            self.assertIsNone(self.hook(root, event), event)
+        self.assertFalse(self.data.exists())
+        self.assertFalse((root / ".claimlock").exists())
+        (root / ".claimlock.toml").write_text("")
+        ctx = self.hook(root, "session-start")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("2 claims", ctx)
+
+    def test_config_in_an_ancestor_activates_hooks(self):
+        root = self.store()
+        sub = root / "pkg" / "deep"
+        sub.mkdir(parents=True)
+        out = self.hook(sub, "session-start")
+        self.assertIn("1 claims, all fresh", out["hookSpecificOutput"]["additionalContext"])
+
     def test_internal_errors_are_logged_not_shown(self):
         # A distinct dir from HookCase.store()'s hardcoded "r": this test also
         # calls self.store() below, and colliding on "r" made the second

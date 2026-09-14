@@ -81,7 +81,10 @@ Hooks exit 0 always and never set a blocking decision. Each message is capped at
 end-of-turn report 5 per category, with `…` when there are more — run
 `claimlock check` for the full list. Hook runs in one session are serialised,
 and a run that cannot take the session lock within 5 s is skipped without output.
-In a project without a store they print nothing. Internal errors, and hook input
+Hooks are active only when `.claimlock.toml` exists in the opened project
+directory or an ancestor — a bare `claims/` directory does not activate them,
+and a config in a subdirectory of the opened project is not seen. Everywhere
+else they print nothing. Internal errors, and hook input
 that was not valid JSON, are recorded in `hook-errors.log` in the plugin data
 directory.
 

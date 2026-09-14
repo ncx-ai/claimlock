@@ -4,6 +4,7 @@ Each function returns None / False / [] when git is not installed, the
 directory is not a repository, or the command fails. Git is an enhancement —
 it serves prior content for `diff` and reveals commits — never a requirement.
 """
+import os
 import subprocess
 from pathlib import Path
 
@@ -42,6 +43,18 @@ def cat_blob(root, sha):
 
 def _lines(out):
     return [l for l in (out or "").splitlines() if l]
+
+
+def ls_files(root):
+    """Tracked and untracked-but-not-ignored files under `root`, relative to it,
+    or None when `root` is not in a git work tree or git fails.
+
+    Deduplicated: during a merge conflict `--cached` lists a path once per stage.
+    """
+    r = run(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if r is None or r.returncode != 0:
+        return None
+    return sorted({os.fsdecode(p) for p in r.stdout.split(b"\0") if p})
 
 
 def changed_paths(root, old, new) -> list:

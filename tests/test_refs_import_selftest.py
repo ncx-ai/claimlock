@@ -61,6 +61,52 @@ class Refs(TmpCase):
         self.assertEqual((files, markers), (0, []))
 
 
+@unittest.skipIf(shutil.which("git") is None, "git not installed")
+class RefsInGit(TmpCase):
+    """I4: inside a git work tree, candidates come from git, so ignored trees
+    (target/, build/, vendor/…) are never walked or scanned."""
+
+    def test_gitignored_files_are_not_scanned(self):
+        from helpers import git
+        root = make_repo(self.tmp / "g", use_git=True)
+        write(root, ".gitignore", ".claimlock/\ntarget/\n")
+        write(root, "docs/tracked.md", "Claim: `ghost-tracked`\n")
+        write(root, "docs/deleted.md", "Claim: `ghost-deleted`\n")
+        write(root, ".github/hidden.md", "Claim: `ghost-hidden`\n")
+        write(root, "node_modules/pkg/r.md", "Claim: `ghost-nm`\n")
+        write(root, "claims/c.md", claim_text("c", body="Mentions Claim: `ghost-claims`."))
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        (root / "docs/deleted.md").unlink()  # tracked, gone from the work tree
+        write(root, "untracked.md", "Claim: `ghost-untracked`\n")
+        write(root, "target/doc/ignored.md", "Claim: `ghost-ignored`\n")
+        markers, files = refs.scan(load(root))
+        self.assertEqual(sorted(m.id for m in markers), ["ghost-tracked", "ghost-untracked"])
+        self.assertEqual(files, 2)
+        rc, out, _ = run_cli(root, "refs")
+        self.assertNotIn("ghost-ignored", out)
+        self.assertIn("2 markers in 2 files scanned, 2 dangling", out)
+
+    def test_store_in_a_subdirectory_of_the_repository(self):
+        from helpers import git
+        top = self.tmp / "top"
+        top.mkdir()
+        git(top, "init", "-q")
+        write(top, "outside.md", "Claim: `ghost-outside`\n")
+        root = make_repo(top / "sub", use_git=False)
+        write(root, "in.md", "Claim: `ghost-in`\n")
+        markers, files = refs.scan(load(root))
+        self.assertEqual(([(m.path, m.id) for m in markers], files), ([("in.md", "ghost-in")], 1))
+
+    def test_falls_back_to_walking_when_git_fails(self):
+        root = make_repo(self.tmp / "f", use_git=True)
+        write(root, ".gitignore", "target/\n")
+        write(root, "target/ignored.md", "Claim: `ghost-ignored`\n")
+        with mock.patch("claimlock.gitio.ls_files", return_value=None, create=True):
+            markers, files = refs.scan(load(root))
+        self.assertEqual([m.id for m in markers], ["ghost-ignored"])
+
+
 class Affected(TmpCase):
     def test_lists_claims_citing_a_path_from_any_cwd(self):
         root = make_repo(self.tmp / "r", use_git=False)
