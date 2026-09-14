@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 
 from helpers import TmpCase, claim_text, make_repo, pinned_text, run_cli, write
@@ -146,6 +147,84 @@ class Unreadable(TmpCase):
         self.assertEqual(rc, 0)
         self.assertIn("0 claims", out)
 
+
+
+@unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can read chmod 000 files")
+class UnreadableFiles(TmpCase):
+    """I2: a file that cannot be read is reported, never raised."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make_repo(self.tmp / "r", use_git=False)
+        write(self.root, "a.py", "one\n")
+        write(self.root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        self.locked = []
+
+    def tearDown(self):
+        for p in self.locked:
+            os.chmod(p, 0o644)
+        super().tearDown()
+
+    def lock(self, rel):
+        p = self.root / rel
+        os.chmod(p, 0)
+        self.locked.append(p)
+
+    def test_check_reports_unreadable_source_and_claim_file(self):
+        write(self.root, "claims/bad.md", claim_text("bad"))
+        self.lock("a.py")
+        self.lock("claims/bad.md")
+        rc, out, err = run_cli(self.root, "check")
+        self.assertEqual(rc, 1, err)
+        self.assertNotIn("Traceback", out + err)
+        self.assertIn("MISSING  c", out)
+        self.assertIn("does not exist or cannot be read", out)
+        self.assertIn("INVALID  bad", out)
+        self.assertIn("bad.md:1: cannot be read:", out)
+        rc, out, err = run_cli(self.root, "stale")
+        self.assertEqual(rc, 1)
+        self.assertNotIn("Traceback", out + err)
+        self.assertIn("c\tcore\tmissing\ta.py", out)
+
+    def test_verify_refuses_an_unreadable_source(self):
+        self.lock("a.py")
+        before = (self.root / "claims/c.md").read_text()
+        rc, out, err = run_cli(self.root, "verify", "c")
+        self.assertEqual(rc, 1)
+        self.assertNotIn("Traceback", out + err)
+        self.assertIn("a.py", err)
+        self.assertIn("cannot be read", err)
+        self.assertEqual((self.root / "claims/c.md").read_text(), before)
+
+    def test_diff_names_an_unreadable_source(self):
+        self.lock("a.py")
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertNotIn("Traceback", out + err)
+        self.assertIn("--- a.py: does not exist or cannot be read", out)
+
+    def test_diff_guards_the_current_read_when_the_cache_says_stale(self):
+        # A warm stat cache can report `stale` without reading the file, so
+        # diff's own read of the current content is the one that fails.
+        old = 1_000_000_000_000_000_000
+        write(self.root, "a.py", "two\n")
+        os.utime(self.root / "a.py", ns=(old, old))
+        self.assertEqual(run_cli(self.root, "check")[0], 1)  # caches the stale digest
+        self.lock("a.py")
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertNotIn("Traceback", out + err)
+        self.assertIn("--- a.py: cannot be read", out)
+
+    def test_session_start_hook_still_reports(self):
+        self.lock("a.py")
+        data = self.tmp / "data"
+        rc, out, err = run_cli(self.root, "hook", "session-start",
+                               stdin=json.dumps({"session_id": "s", "cwd": str(self.root)}),
+                               env={"CLAUDE_PROJECT_DIR": str(self.root), "CLAUDE_PLUGIN_DATA": str(data)})
+        self.assertEqual(rc, 0)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("1 missing", ctx)
+        self.assertFalse((data / "hook-errors.log").exists())
 
 if __name__ == "__main__":
     unittest.main()

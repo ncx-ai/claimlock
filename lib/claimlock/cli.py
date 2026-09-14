@@ -15,7 +15,8 @@ from . import snapshots
 
 HINT = {
     "stale": "re-check it (claimlock diff {id}), then: claimlock verify {id}",
-    "missing": "a source was deleted or renamed — fix its sources, re-check, then: claimlock verify {id}",
+    "missing": ("a source does not exist or cannot be read — fix its sources (or the file's "
+                "permissions), re-check, then: claimlock verify {id}"),
     "unpinned": "never pinned — re-check it, then: claimlock verify {id}",
 }
 MARK = {"verified": "✓", "unverified": "?", "refuted": "✗"}
@@ -229,7 +230,7 @@ def cmd_diff(args):
         if st == "fresh":
             continue
         if st == "missing":
-            print(f"--- {path}: deleted or renamed since verification")
+            print(f"--- {path}: does not exist or cannot be read")
             continue
         if st == "unpinned":
             print(f"--- {path}: never pinned; nothing to compare against")
@@ -239,7 +240,12 @@ def cmd_diff(args):
             print(f"--- {path}: changed, but the pinned content {pins[path][:12]} is unavailable "
                   f"(not in git, no snapshot) — re-read the claim against the current file")
             continue
-        new = (project.root / path).read_bytes()
+        try:
+            new = (project.root / path).read_bytes()
+        except OSError as e:
+            # A warm stat cache can report `stale` without reading the file.
+            print(f"--- {path}: cannot be read ({e.strerror or e})")
+            continue
         sys.stdout.writelines(difflib.unified_diff(
             old.decode("utf-8", "replace").splitlines(keepends=True),
             new.decode("utf-8", "replace").splitlines(keepends=True),

@@ -90,6 +90,19 @@ class Contract(HookCase):
         self.assertIn("not valid JSON", log)
 
 
+    @unittest.skipIf(hooks_mod.fcntl is None, "no fcntl: session locking unavailable")
+    def test_lock_timeout_skips_and_leaves_a_note(self):
+        root = self.store()
+        lock_path = self.data / "sessions" / "s1.lock"
+        lock_path.parent.mkdir(parents=True)
+        with open(lock_path, "a+") as held, mock.patch.object(hooks_mod, "LOCK_TIMEOUT_S", 0.1):
+            hooks_mod.fcntl.flock(held, hooks_mod.fcntl.LOCK_EX)
+            self.assertIsNone(self.hook_inprocess(root, "session-start"))
+        log = (self.data / "hook-errors.log").read_text()
+        self.assertIn("session-start", log)
+        self.assertIn("session lock", log)
+
+
 class SessionStart(HookCase):
     def test_reports_counts_and_areas_to_claude(self):
         root = self.store()

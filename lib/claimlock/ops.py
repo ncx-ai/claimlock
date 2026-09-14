@@ -89,8 +89,9 @@ def verify(project, cid, now=None) -> list:
     for s in c.sources:
         try:
             data = safe_source(project.root, s.path).read_bytes()
-        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
-            raise Refused(f"{cid}: source {s.path} does not exist — fix its sources, then verify") from None
+        except OSError as e:
+            raise Refused(f"{cid}: source {s.path} does not exist or cannot be read "
+                          f"({e.strerror or e}) — fix its sources, then verify") from None
         contents.append((s.path, blob_of_bytes(data), data))
     for _, blob, data in contents:
         snapshots.store(project, blob, data)

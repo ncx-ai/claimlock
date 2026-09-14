@@ -163,7 +163,8 @@ A claim has zero or more **problems** and exactly one **freshness**:
   parse error (unparseable frontmatter makes the claim `invalid`; the store
   itself is still readable, so `check` exits 1 for it, never 2).
 - freshness, evaluated only for `status: verified`:
-  - `missing` — a source path does not exist
+  - `missing` — a source path does not exist or cannot be read (an unreadable
+    file is reported, never raised)
   - `unpinned` — a source has no `blob`
   - `stale` — a source's current blob ≠ its pin
   - `fresh` — none of the above

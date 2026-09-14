@@ -41,10 +41,13 @@ class Hasher:
                 self.cache = {}
 
     def blob(self, rel: str):
-        """The file's blob SHA, or None if it does not exist or is not a regular file."""
+        """The file's blob SHA, or None if it does not exist, is not a regular
+        file, or cannot be read. One unreadable source is reported as that
+        claim's `missing` state, never raised: an exception here would silence
+        every other claim in the store (and every hook)."""
         try:
             st = (self.root / rel).stat()
-        except (FileNotFoundError, NotADirectoryError):
+        except OSError:
             return None
         if not stat.S_ISREG(st.st_mode):
             return None
@@ -53,7 +56,10 @@ class Hasher:
         if (isinstance(entry, list) and len(entry) == 3
                 and entry[0] == st.st_size and entry[1] == st.st_mtime_ns):
             return entry[2]
-        digest = blob_of_bytes((self.root / rel).read_bytes())
+        try:
+            digest = blob_of_bytes((self.root / rel).read_bytes())
+        except OSError:
+            return None
         if time.time_ns() - st.st_mtime_ns >= RACY_NS:
             self.cache[rel] = [st.st_size, st.st_mtime_ns, digest]
             self.dirty = True

@@ -60,7 +60,12 @@ def main(event, stdin_text, env) -> int:
         # stale state, compute the same diff and report it N times, nor
         # interleave writes to the same state file.
         with _session_lock(data_dir, _sid(payload)) as acquired:
-            out = handler(project, payload, data_dir) if acquired else None
+            if acquired:
+                out = handler(project, payload, data_dir)
+            else:
+                out = None
+                _log_note(data_dir, f"{event}: session lock not acquired within "
+                                    f"{LOCK_TIMEOUT_S:g} s; hook skipped")
         if out:
             print(json.dumps(out))
     except Exception:  # noqa: BLE001 — a hook must never fail loudly

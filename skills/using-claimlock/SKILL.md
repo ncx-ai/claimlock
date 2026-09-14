@@ -75,7 +75,8 @@ can prove the marker resolves.
 - True for a different reason → rewrite the body, then verify.
 - No longer true → set `status: refuted` and say what replaced it. **Never
   delete** — the record of what was believed and why is the point.
-- `missing` → a source was deleted or renamed; update `sources`, re-check, verify.
+- `missing` → a source does not exist or cannot be read (deleted, renamed, or
+  unreadable permissions); fix `sources` or the file, re-check, verify.
 
 **Look at the diff yourself, every time** — including when you are told the
 change was trivial, told someone else reviewed it, or told to just run

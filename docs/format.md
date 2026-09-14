@@ -174,6 +174,8 @@ other problems correctly. Reported as `<file>:<line>: <message>`:
   frontmatter parsing; the file is read as raw bytes specifically so a `\r`
   survives to be caught here instead of being silently normalized away)
 - `not valid UTF-8` (line 1 — the file could not be decoded at all)
+- `cannot be read: <reason>` (line 1 — the claim file itself could not be
+  opened, e.g. permissions; reported as an invalid claim, never raised)
 - `expected 'key: value' at column 0`
 - `unexpected indentation; expected 'key: value' at column 0`
 - `duplicate key '<k>'`
@@ -199,7 +201,7 @@ For each source of a verified claim:
 | `fresh` | The file exists and its current blob hash equals the pinned `blob`. |
 | `unpinned` | The source has no `blob` at all (e.g. imported, or added by hand without running `verify`). |
 | `stale` | The file exists but its current blob hash differs from the pinned `blob`. |
-| `missing` | The file no longer exists (or is no longer a regular file) at that path. |
+| `missing` | The file does not exist or cannot be read at that path (deleted, renamed, no longer a regular file, or unreadable permissions). An unreadable source is reported this way, never raised, so one bad file cannot hide every other claim's state. |
 
 A claim's overall state is the **worst of its sources' states**, in this
 precedence (worst wins): `missing` > `stale` > `unpinned` > `fresh`. A claim

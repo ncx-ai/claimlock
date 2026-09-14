@@ -109,7 +109,7 @@ class Diff(TmpCase):
         self.assertIn("is fresh", out)
         (root / "a.py").unlink()
         rc, out, _ = run_cli(root, "diff", "c")
-        self.assertIn("a.py: deleted or renamed", out)
+        self.assertIn("a.py: does not exist or cannot be read", out)
         self.assertEqual(run_cli(root, "diff", "nope")[0], 1)
 
     def test_corrupt_snapshot_is_unavailable(self):

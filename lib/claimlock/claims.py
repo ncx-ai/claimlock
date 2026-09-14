@@ -108,6 +108,11 @@ def load_claims(project):
         except UnicodeDecodeError:
             out.append(Claim(p, "", {}, "", f"{p.name}:1: not valid UTF-8"))
             continue
+        except OSError as e:
+            # Reported as an invalid claim, never raised: one unreadable file
+            # must not hide the state of every other claim.
+            out.append(Claim(p, "", {}, "", f"{p.name}:1: cannot be read: {e.strerror or e}"))
+            continue
         try:
             if "\r" in text:
                 raise frontmatter.FrontmatterError(p.name, 1, "CR line endings are not supported; convert to LF")
