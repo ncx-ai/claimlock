@@ -73,6 +73,22 @@ class Anchoring(TmpCase):
         git(outer, "commit", "-qm", "sub")
         self.assertEqual(state_of(root), "fresh")
 
+    def test_subdirectory_store_anchors_from_an_older_commit(self):
+        outer = self.tmp / "outer"
+        outer.mkdir()
+        git(outer, "init", "-q", "-b", "main")
+        git(outer, "config", "user.email", "t@example.com")
+        git(outer, "config", "user.name", "t")
+        git(outer, "config", "commit.gpgsign", "false")
+        root = self.store(make_repo(outer / "proj", use_git=False))
+        run_cli(root, "verify", "c")  # pins blob-of("one\n")
+        git(outer, "add", "-A")
+        git(outer, "commit", "-qm", "one")  # X is now only in this (non-HEAD-after-the-next-commit) commit
+        write(root, "a.py", "two\n")
+        git(outer, "commit", "-qam", "two")  # HEAD and the index both now hold Y ("two\n")
+        write(root, "a.py", "one\n")  # back to X, uncommitted and unstaged
+        self.assertEqual(state_of(root), "fresh")
+
     def test_diff_explains_an_unanchored_pin(self):
         root = self.store()
         run_cli(root, "verify", "c")

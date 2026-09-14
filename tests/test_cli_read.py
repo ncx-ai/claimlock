@@ -1,8 +1,9 @@
 import json
 import os
+import shutil
 import unittest
 
-from helpers import TmpCase, claim_text, make_repo, pinned_text, run_cli, write
+from helpers import TmpCase, claim_text, git, make_repo, pinned_text, run_cli, write
 from claimlock.pins import blob_of_bytes
 
 
@@ -203,17 +204,29 @@ class UnreadableFiles(TmpCase):
         self.assertNotIn("Traceback", out + err)
         self.assertIn("--- a.py: does not exist or cannot be read", out)
 
+    @unittest.skipIf(shutil.which("git") is None, "git not installed")
     def test_diff_guards_the_current_read_when_the_cache_says_stale(self):
         # A warm stat cache can report `stale` without reading the file, so
-        # diff's own read of the current content is the one that fails.
+        # diff's own read of the current content is the one that fails. Prior
+        # content now comes from git only, so the pin must be committed for
+        # this scenario (old available, new unreadable) to be reachable at all.
+        root = make_repo(self.tmp / "git-guard", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "c")
         old = 1_000_000_000_000_000_000
-        write(self.root, "a.py", "two\n")
-        os.utime(self.root / "a.py", ns=(old, old))
-        self.assertEqual(run_cli(self.root, "check")[0], 1)  # caches the stale digest
-        self.lock("a.py")
-        rc, out, err = run_cli(self.root, "diff", "c")
-        self.assertNotIn("Traceback", out + err)
-        self.assertIn("--- a.py: cannot be read", out)
+        write(root, "a.py", "two\n")
+        os.utime(root / "a.py", ns=(old, old))
+        self.assertEqual(run_cli(root, "check")[0], 1)  # caches the stale digest
+        os.chmod(root / "a.py", 0)
+        try:
+            rc, out, err = run_cli(root, "diff", "c")
+            self.assertNotIn("Traceback", out + err)
+            self.assertIn("--- a.py: cannot be read", out)
+        finally:
+            os.chmod(root / "a.py", 0o644)
 
     def test_session_start_hook_still_reports(self):
         self.lock("a.py")

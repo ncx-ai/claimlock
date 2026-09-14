@@ -160,15 +160,15 @@ class Collaboration(TmpCase):
         rc, out, err = run_cli(b, "check")
         self.assertEqual(rc, 0, out + err)
 
-    def test_d_pulled_pin_with_unavailable_snapshot_diffs_as_unavailable(self):
+    def test_d_pulled_pin_never_committed_diffs_as_unavailable(self):
         """(d) A verifies against uncommitted content, then edits the file again before
-        committing claim + file; the verified blob was never committed to git and its
-        local .claimlock/ snapshot is gitignored, so B (after pulling) sees the claim
-        as STALE and `diff` reports the pinned content as unavailable."""
+        committing claim + file; the verified blob was never committed to git, so no
+        clone can recover it — B (after pulling) sees the claim as STALE and `diff`
+        reports the pinned content as unavailable."""
         bare, a, b = scaffold(self.tmp)
 
         write(a, "src_a.py", "A = 5\n")
-        rc, _, err = run_cli(a, "verify", "claim-a")  # pins blob-of("A = 5\n"), snapshotted locally only
+        rc, _, err = run_cli(a, "verify", "claim-a")  # pins blob-of("A = 5\n"), never committed
         self.assertEqual(rc, 0, err)
 
         write(a, "src_a.py", "A = 6\n")  # changed again, before the commit below
@@ -177,8 +177,8 @@ class Collaboration(TmpCase):
         git(a, "push", "-q", "origin", "main")
 
         git(b, "pull", "-q", "--no-rebase", "origin", "main")
-        # B never ran verify, so it has no local snapshot for blob-of("A = 5");
-        # git never held that blob either, since it was never committed anywhere.
+        # B never ran verify; git never held blob-of("A = 5") either, since it was
+        # never committed anywhere — no clone can recover it.
         rc, out, err = run_cli(b, "check")
         self.assertEqual(rc, 1, out + err)
         self.assertIn("STALE", out)
@@ -187,7 +187,7 @@ class Collaboration(TmpCase):
         rc, out, err = run_cli(b, "diff", "claim-a")
         self.assertEqual(rc, 0, out + err)
         self.assertIn("unavailable", out)
-        self.assertIn("not in git, no snapshot", out)
+        self.assertIn("is not in git", out)
 
     def test_e_deleted_claim_leaves_a_dangling_marker_after_merge(self):
         """(e) A deletes a claim a committed `Claim:` marker in B's docs references;
