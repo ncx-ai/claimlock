@@ -8,8 +8,9 @@ A **Claude Code plugin** that pins written claims about a codebase to the exact
 content of the files that could falsify them, and makes a claim **loud** the
 moment that content changes. It ships:
 
-- `claimlock` — a single-file, stdlib-only Python CLI (on the Bash tool's PATH
-  via the plugin's `bin/`).
+- `claimlock` — a stdlib-only Python CLI: a `bin/claimlock` launcher (on the
+  Bash tool's PATH via the plugin's `bin/`) backed by the `lib/claimlock/`
+  package.
 - Four skills: `using-claimlock`, `operating-claimlock`, `evidence-standards`,
   `design-lenses`.
 - Three hooks: SessionStart (baseline + context), Stop (user-facing warning),
@@ -49,14 +50,17 @@ The extraction fixes defects found while reading it (2026-09-14):
 claimlock/
   .claude-plugin/plugin.json        # name "claimlock", description "Claude Code plugin: ..."
   .claude-plugin/marketplace.json   # single-plugin marketplace, source "./"
-  bin/claimlock                     # the CLI; one file; python3 >= 3.11 (tomllib)
+  bin/claimlock                     # launcher; python3 >= 3.11; puts lib/ on sys.path
+  lib/claimlock/                    # the package: frontmatter, project, pins, claims,
+                                     # gitio, snapshots, ops, refs, importer, selftest,
+                                     # hooks, cli
   hooks/hooks.json                  # every hook runs `claimlock hook <event>`
   skills/
     using-claimlock/SKILL.md
     operating-claimlock/SKILL.md
     evidence-standards/SKILL.md
     design-lenses/SKILL.md
-  tests/test_claimlock.py           # unittest, stdlib only
+  tests/helpers.py  tests/test_*.py # unittest, stdlib only
   docs/format.md                    # the claim file format, normative
   docs/specs/                       # this document
   README.md  LICENSE
@@ -87,6 +91,8 @@ Unknown keys are an error (a typo must not silently fall back to a default).
 ### Claim file — `<claims_dir>/<id>.md`
 
 One claim per file. The filename stem must equal `id`.
+`<claims_dir>/README.md` is reserved for human notes and is never loaded as a
+claim.
 
 ```markdown
 ---
@@ -137,7 +143,10 @@ lookup misses, and falls back to the snapshot cache.)
 
 **Stat cache.** `(path, size, mtime_ns) → blob`, stored at
 `.claimlock/cache/stat.json` — so the Stop hook re-reads only files whose
-metadata changed. A cache hit is never trusted when size or mtime differs.
+metadata changed. A cache hit is never trusted when size or mtime differs. An
+entry is never stored while the file's mtime is < 2 s old (a racy-timestamp
+guard, as git does), so a same-size edit within the clock tick cannot be
+missed.
 
 **Snapshot cache.** On `verify`, each pinned file's content is written to
 `.claimlock/objects/<blob>` unless git already holds that blob. After writing,
@@ -151,7 +160,8 @@ A claim has zero or more **problems** and exactly one **freshness**:
 - problems (`invalid`): bad status/kind, missing body, id ≠ filename, a
   `verified` claim with no evidence, a `verified` claim with no sources (it could
   never go stale — prose with extra steps), a source path that escapes the root,
-  parse error.
+  parse error (unparseable frontmatter makes the claim `invalid`; the store
+  itself is still readable, so `check` exits 1 for it, never 2).
 - freshness, evaluated only for `status: verified`:
   - `missing` — a source path does not exist
   - `unpinned` — a source has no `blob`
@@ -165,8 +175,9 @@ Precedence when several sources disagree: `missing` > `stale` > `unpinned` >
 
 ## 4. CLI
 
-Exit codes everywhere: **0** clean, **1** findings, **2** the store could not be
-read (bad config, parse error, no store where one was required).
+Exit codes everywhere: **0** clean, **1** findings (including any claim whose
+frontmatter cannot be parsed — reported `invalid`, never hidden), **2** the
+store could not be read (bad config, no store where one was required).
 
 | Command | Behaviour |
 |---|---|
@@ -177,7 +188,7 @@ read (bad config, parse error, no store where one was required).
 | `list [--area] [--status]` | Headline per claim with freshness flag |
 | `search <query>` | Case-insensitive substring over id, area, body, sources, evidence refs |
 | `show <id>` | Full claim, evidence, each source with its own state |
-| `verify <id>...` | Refuses a claim with problems or no evidence. Pins every source to its current blob, writes `verified_at` (local offset, seconds), refreshes the snapshot cache. Prints what was pinned |
+| `verify <id>...` | Refuses a claim with problems, no evidence, or `status: refuted` (un-refuting is a manual edit). Sets `status: verified`, pins every source to its current blob, writes `verified_at` (local offset, seconds), refreshes the snapshot cache. Prints what was pinned |
 | `diff <id>` | For each changed source: unified diff from pinned content (git object, else snapshot) to current. If neither has it, says so explicitly |
 | `affected <path>...` | Claims whose sources include any given path |
 | `refs` | Scan `marker_globs`, always excluding `claims_dir`, hidden directories (`.git/`, `.claimlock/`, …) and `node_modules/`; exit 1 on any marker naming no claim; census line `K markers in F files` |
@@ -196,7 +207,9 @@ blocking error).
 
 Session state lives at `${CLAUDE_PLUGIN_DATA}/sessions/<session_id>.json`:
 the baseline problem sets (stale / missing / unpinned / invalid / dangling
-markers) and `last_head` (commit sha, or null outside git).
+markers) and `last_head` (commit sha, or null outside git). A dangling
+marker's identity in the baseline is `path:id` (not its line number), so an
+edit that moves the marker within the file does not re-warn.
 
 ### Documented behaviour this relies on
 
@@ -234,9 +247,10 @@ turn, but drift introduced this session does:
 > claimlock: this session made 2 claims stale: ledger-conserves-money
 > (ops.rs), … — run `claimlock diff <id>`.
 
-After warning, the newly reported problems are added to the baseline so the same
-warning is not repeated on the next Stop. Also runs the HEAD check below, which
-catches commits made outside any tool call (another terminal, an IDE).
+After warning, the baseline is replaced by the current survey (not unioned) so
+the same warning is not repeated immediately — but a problem that is fixed and
+then re-introduced warns again. Also runs the HEAD check below, which catches
+commits made outside any tool call (another terminal, an IDE).
 
 ### PostToolUse — HEAD movement (matcher: `Bash|mcp__.*`)
 
@@ -292,8 +306,8 @@ origin project.
   directory. The core matrix runs **twice: without git and with git**, plus a
   transition test (pin → `git init` → commit → still fresh → edit → stale).
 - Each detector is shown to fire: edit → `stale`, delete → `missing`, unpinned
-  verified → `unpinned`, malformed frontmatter → exit 2 naming the line, dangling
-  marker → `refs` exit 1, id ≠ filename → invalid.
+  verified → `unpinned`, malformed frontmatter → `invalid`, exit 1, naming the
+  line, dangling marker → `refs` exit 1, id ≠ filename → invalid.
 - `verify` round-trip: body and unrelated lines byte-identical after rewrite.
 - `diff` from git object, from snapshot cache, and with neither.
 - Hooks as subprocesses fed recorded stdin JSON: inert without a store; exit 0
@@ -318,3 +332,13 @@ origin project.
   cache. PostToolUse is a stat on the common path.
 - **Documented hook semantics differ from behaviour.** Covered by the manual
   acceptance run before release.
+
+## Amendments (2026-09-14, planning)
+
+1. Layout is `bin/claimlock` launcher + `lib/claimlock/` package.
+2. Unparseable claim frontmatter is `invalid` (exit 1), not exit 2.
+3. Stop replaces its baseline with the current survey.
+4. `verify` sets `status: verified`; refuses `refuted`.
+5. Stat cache skips entries with mtime < 2 s old.
+6. Dangling-marker identity is `path:id`.
+7. `claims_dir/README.md` is not loaded as a claim.

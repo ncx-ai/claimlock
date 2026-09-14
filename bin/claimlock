@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""claimlock launcher. The package lives in ../lib so the plugin exposes one command."""
+import sys
+from pathlib import Path
+
+if sys.version_info < (3, 11):
+    sys.stderr.write("claimlock: needs Python 3.11+ (found %d.%d)\n" % sys.version_info[:2])
+    sys.exit(2)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+from claimlock.cli import main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))
