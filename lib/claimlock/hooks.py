@@ -9,6 +9,7 @@ Commits are detected by HEAD moving, not by matching a command, so `gh`, git
 aliases, scripts, merges, rebases, pulls and MCP tools are all seen. The common
 path is a handful of `stat` calls; git runs only when HEAD's files changed.
 """
+import contextlib
 import json
 import os
 import re
@@ -19,12 +20,20 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows): no locking available
+    fcntl = None
+
 from . import claims as C
 from . import gitio, refs
 from . import project as P
 
 LIMIT = 2000
 PROBE_EVERY_S = 30
+LOCK_TIMEOUT_S = 5.0
+LOCK_POLL_S = 0.05
+_UNSET = object()
 RECHECK = ("Before asserting a limit, default or guarantee, run `claimlock search <topic>`. "
            "A non-fresh claim is owed a re-check (`claimlock diff <id>`), never a bare re-stamp.")
 
@@ -32,31 +41,85 @@ RECHECK = ("Before asserting a limit, default or guarantee, run `claimlock searc
 def main(event, stdin_text, env) -> int:
     data_dir = None
     try:
-        try:
-            payload = json.loads(stdin_text) if stdin_text and stdin_text.strip() else {}
-        except ValueError:
-            # Malformed stdin degrades to an empty payload, same as absent
-            # stdin — it must not be treated as an internal error: that would
-            # touch hook-errors.log (and so the data dir) even in a project
-            # with no claim store, contradicting "print nothing... in a
-            # project that has no claim store" above.
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
+        payload, malformed = _parse_payload(stdin_text)
         start = Path(env.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
         project = P.load(start)
         if not project.claims_dir.is_dir():
             return 0
         data_dir = Path(env.get("CLAUDE_PLUGIN_DATA") or project.state_dir)
+        if malformed:
+            # Only worth a note once we know there's a store to log into —
+            # the storeless case above must stay completely silent.
+            _log_note(data_dir, f"{event}: hook stdin was not valid JSON; payload treated as empty")
         handler = HANDLERS.get(event)
         if handler is None:
             raise ValueError(f"unknown hook event {event!r}")
-        out = handler(project, payload, data_dir)
+        # Serialise this session's load -> check -> save: concurrent hook
+        # processes for the same session (several PostToolUse calls in
+        # flight, or PostToolUse racing Stop) must not each read the same
+        # stale state, compute the same diff and report it N times, nor
+        # interleave writes to the same state file.
+        with _session_lock(data_dir, _sid(payload)) as acquired:
+            out = handler(project, payload, data_dir) if acquired else None
         if out:
             print(json.dumps(out))
     except Exception:  # noqa: BLE001 — a hook must never fail loudly
         _log(data_dir or env.get("CLAUDE_PLUGIN_DATA"), event)
     return 0
+
+
+def _parse_payload(stdin_text):
+    """(payload dict, malformed bool). Empty/absent stdin and a syntactically
+    valid but non-dict JSON value both degrade to `{}` silently and are not
+    "malformed" — only text that fails to parse as JSON at all is, which
+    main() logs a note about once it knows there's a store (Finding D)."""
+    if not stdin_text or not stdin_text.strip():
+        return {}, False
+    try:
+        payload = json.loads(stdin_text)
+    except ValueError:
+        return {}, True
+    return (payload if isinstance(payload, dict) else {}), False
+
+
+@contextlib.contextmanager
+def _session_lock(data_dir, sid):
+    """Exclusive per-session lock serialising one session's load->check->save
+    across concurrent hook processes. Yields True once held, or False if it
+    could not be acquired within a bounded wait — the caller then skips
+    running the handler entirely rather than risk two processes reading,
+    computing and writing the same session-state file at once. Never blocks
+    indefinitely and never raises. Without `fcntl` (non-POSIX, e.g. Windows)
+    coordination is not possible; proceed unlocked (best effort) rather than
+    fail the hook — this is a known gap on that platform, not silent data
+    loss, since state writes still go through a unique temp file.
+    """
+    if fcntl is None:
+        yield True
+        return
+    lock_path = data_dir / "sessions" / f"{sid}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(lock_path, "a+")
+    acquired = False
+    try:
+        deadline = time.monotonic() + LOCK_TIMEOUT_S
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(LOCK_POLL_S)
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        f.close()
 
 
 def _log(where, event):
@@ -69,9 +132,24 @@ def _log(where, event):
         pass
 
 
+def _log_note(where, text):
+    """Append a plain one-line note (no traceback) — for a condition worth
+    surfacing to an operator that is not itself a caught exception."""
+    try:
+        d = Path(where) if where else Path(tempfile.gettempdir()) / "claimlock"
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "hook-errors.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().astimezone().isoformat()} {text}\n")
+    except OSError:
+        pass
+
+
+def _sid(payload):
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(payload.get("session_id") or "no-session"))
+
+
 def _state_path(data_dir, payload):
-    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(payload.get("session_id") or "no-session"))
-    return data_dir / "sessions" / f"{sid}.json"
+    return data_dir / "sessions" / f"{_sid(payload)}.json"
 
 
 def _load_state(path, project):
@@ -83,10 +161,22 @@ def _load_state(path, project):
 
 
 def _save_state(path, st):
+    """Write via a unique temp file in the same directory, then atomically
+    replace: a fixed name (e.g. "<sid>.tmp") let two concurrent writers for
+    the same session collide — one's `os.replace` could find the other had
+    already renamed the shared tmp path away, raising FileNotFoundError."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(st), encoding="utf-8")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(st))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def survey(project):
@@ -112,11 +202,26 @@ def _stat_marks(paths):
     return marks
 
 
-def _init_head(project, st):
+def _init_head(project, st, head=_UNSET):
+    """Reset the HEAD-change probe: mark_paths + their mtimes + last_head.
+
+    `head`, when given, is a HEAD value the caller already read this same
+    tick — head_check's primary branch passes its own `gitio.head` result so
+    this doesn't read HEAD a second time, closing the race/failure window
+    that opened between two separate reads. A `None` result (a transient git
+    failure, or `head` explicitly passed as None) never erases an
+    already-known `last_head`: losing it would make the next check diff only
+    the newest commit instead of the whole range of commits actually missed.
+    """
     paths = gitio.head_mark_paths(project.root)
     st["mark_paths"] = paths
+    if not paths:
+        st["last_head"] = None
+    else:
+        current = gitio.head(project.root) if head is _UNSET else head
+        if current is not None or "last_head" not in st:
+            st["last_head"] = current
     st["marks"] = _stat_marks(paths)
-    st["last_head"] = gitio.head(project.root) if paths else None
     st["probed_at"] = time.time()
 
 
@@ -136,8 +241,12 @@ def head_check(project, st):
     marks = _stat_marks(paths)
     if marks == st.get("marks"):
         return None
-    old, new = st.get("last_head"), gitio.head(project.root)
-    _init_head(project, st)  # the checked-out branch, and so the ref file, may have changed
+    old = st.get("last_head")
+    new = gitio.head(project.root)
+    # Pass `new` in: the checked-out branch (and so the ref file) may have
+    # changed too, but re-reading here would be a second `gitio.head` call
+    # for this same check — see _init_head's docstring for why that matters.
+    _init_head(project, st, head=new)
     if new is None or new == old:
         return None
     changed = set(gitio.changed_paths(project.root, old, new))

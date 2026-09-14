@@ -1,9 +1,17 @@
+import contextlib
+import io
 import json
+import os
 import shutil
 import subprocess
+import sys
 import unittest
+import unittest.mock as mock
 
-from helpers import TmpCase, claim_text, git, make_repo, run_cli, write
+from helpers import BIN, TmpCase, claim_text, git, make_repo, run_cli, write
+
+from claimlock import gitio as gitio_mod
+from claimlock import hooks as hooks_mod
 
 NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
 
@@ -18,6 +26,20 @@ class HookCase(TmpCase):
         rc, out, err = run_cli(root, "hook", event, stdin=payload,
                                env={"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_DATA": str(self.data)})
         self.assertEqual(rc, 0, f"hooks must always exit 0; stderr={err}")
+        return json.loads(out) if out.strip() else None
+
+    def hook_inprocess(self, root, event, session="s1"):
+        """Same contract as .hook(), but calls hooks.main() directly in this
+        process instead of via subprocess — needed wherever a test must
+        monkeypatch a module hooks.py imports (e.g. gitio.head) and observe
+        the effect, which a subprocess-based call cannot see."""
+        payload = json.dumps({"session_id": session, "cwd": str(root)})
+        env = {"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_DATA": str(self.data)}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hooks_mod.main(event, payload, env)
+        self.assertEqual(rc, 0, "hooks must always exit 0")
+        out = buf.getvalue()
         return json.loads(out) if out.strip() else None
 
     def store(self, use_git=False):
@@ -53,6 +75,20 @@ class Contract(HookCase):
         self.assertIsNone(self.hook(good, "no-such-event"))
         self.assertIn("unknown hook event", (self.data / "hook-errors.log").read_text())
 
+    def test_malformed_stdin_with_a_store_logs_a_note_but_still_reports_normally(self):
+        # Finding D: with no store, malformed stdin degrades to {} silently
+        # (test_inert_without_a_store above). But once a store exists, going
+        # on to silently share "no-session" state for every such call left
+        # nothing logged and no way for an operator to notice. It must still
+        # report normally (the note is log-only, never shown to Claude).
+        root = self.store()
+        out = self.hook(root, "session-start", stdin="not json")
+        self.assertIsNotNone(out)
+        self.assertIn("additionalContext", json.dumps(out))
+        self.assertNotIn("valid JSON", json.dumps(out))
+        log = (self.data / "hook-errors.log").read_text()
+        self.assertIn("not valid JSON", log)
+
 
 class SessionStart(HookCase):
     def test_reports_counts_and_areas_to_claude(self):
@@ -69,13 +105,27 @@ class SessionStart(HookCase):
         self.assertTrue((self.data / "sessions" / "s2.json").is_file())
 
     def test_output_is_bounded(self):
+        # Finding B: 400 claims with short area names ("area-057" etc.) never
+        # gets near 2000 chars, because SessionStart's message never lists
+        # claim ids — only counts, plus up to 8 "Affected areas" entries. A
+        # test asserting only assertLessEqual(len(ctx), 2000) here cannot
+        # fail even with `[:LIMIT]` deleted, so it proves nothing about
+        # truncation. Genuinely falsifiable input: 8 claims (sorted first
+        # alphabetically, so most_common(8)'s ties pick them — Counter
+        # documents ties as "ordered in the order first encountered") with
+        # very long area names, which the areas line prints in full. The
+        # other 400 short-area claims are kept so "408 invalid" still proves
+        # the realistic high-claim-count path is exercised under truncation.
         root = make_repo(self.tmp / "big", use_git=False)
+        for i in range(8):
+            write(root, f"claims/{i:03d}.md",
+                  claim_text(f"long-area-claim-{i}", status="maybe", area=f"area-{'x' * 300}-{i}"))
         for i in range(400):
             write(root, f"claims/claim-{i:03d}-with-a-long-identifier.md",
                   claim_text(f"claim-{i:03d}-with-a-long-identifier", status="maybe", area=f"area-{i}"))
         ctx = self.hook(root, "session-start")["hookSpecificOutput"]["additionalContext"]
-        self.assertLessEqual(len(ctx), 2000)
-        self.assertIn("400 invalid", ctx)
+        self.assertEqual(len(ctx), 2000)  # proves truncation actually happened
+        self.assertIn("408 invalid", ctx)
 
 
 class Stop(HookCase):
@@ -100,6 +150,26 @@ class Stop(HookCase):
         write(root, "a.py", "two!\n")
         self.assertIsNone(self.hook(root, "stop", session="fresh-session"))
         self.assertIsNone(self.hook(root, "stop", session="fresh-session"))
+
+    def test_output_is_bounded(self):
+        # Finding B: drive Stop's message past LIMIT with long ids in TWO
+        # categories at once (invalid + stale) — each category shows at most
+        # 5 ids, so this is the genuinely falsifiable input (a handful of
+        # short ids, however many claims exist, would never approach 2000).
+        root = make_repo(self.tmp / "stopbig", use_git=False)
+        write(root, "a.py", "one\n")
+        stale_ids = [f"stale-{'x' * 220}-{i}" for i in range(6)]
+        for cid in stale_ids:
+            write(root, f"claims/{cid}.md", claim_text(cid, area="s", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", *stale_ids)[0], 0)  # fresh, pinned to "one\n"
+        self.hook(root, "session-start")  # baseline: no invalid, no stale yet
+        invalid_ids = [f"bad-{'y' * 220}-{i}" for i in range(6)]
+        for cid in invalid_ids:
+            write(root, f"claims/{cid}.md", claim_text(cid, status="maybe", area="i"))
+        write(root, "a.py", "two!\n")  # stales all 6 verified claims
+        out = self.hook(root, "stop")
+        self.assertEqual(set(out), {"systemMessage"})
+        self.assertEqual(len(out["systemMessage"]), 2000)  # proves truncation actually happened
 
 
 @NEED_GIT
@@ -156,6 +226,60 @@ class HeadMovement(HookCase):
         msg = self.hook(root, "stop")["systemMessage"]
         self.assertIn("HEAD moved", msg)
 
+    def test_transient_git_failure_does_not_lose_the_head_range(self):
+        # Finding C: head_check used to read gitio.head twice per check (once
+        # itself, once again inside _init_head) and _init_head unconditionally
+        # overwrote last_head with whatever the second read returned. A
+        # transient git failure on that second read wiped a known last_head
+        # to None, so the NEXT successful check would diff only the newest
+        # commit (changed_paths(None, new)) instead of the whole missed
+        # range — silently dropping any commit sandwiched in between.
+        root = self.store(use_git=True)
+        self.hook_inprocess(root, "session-start")
+        write(root, "a.py", "two!\n")  # stales "c" once committed
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "first")
+        real_head = gitio_mod.head
+        calls = {"n": 0}
+
+        def flaky_head(root_):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else real_head(root_)
+
+        with mock.patch("claimlock.gitio.head", side_effect=flaky_head):
+            # The transient failure makes this check look like nothing moved.
+            self.assertIsNone(self.hook_inprocess(root, "post-tool-use"))
+        # A second commit moves HEAD again. The next (unpatched) check must
+        # report BOTH commits' changes — proving the failed check above did
+        # not clobber the previously known last_head to None, which would
+        # otherwise make this diff only the second commit and miss "c".
+        write(root, "claims/late.md", claim_text("late", area="x"))
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "second")
+        out = self.hook_inprocess(root, "post-tool-use")
+        ctx = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("c (stale)", ctx)
+
+    def test_output_is_bounded(self):
+        # Finding B: drive PostToolUse's message past LIMIT with >10 long ids
+        # sharing one source — head_check shows at most 10 "hit" claims, so
+        # 12 long ids sourcing the same file (all going stale on one commit)
+        # is the genuinely falsifiable input.
+        root = make_repo(self.tmp / "ptubig", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "a.py", "one\n")
+        ids = [f"ptu-{'z' * 175}-{i:02d}" for i in range(12)]
+        for cid in ids:
+            write(root, f"claims/{cid}.md", claim_text(cid, area="p", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", *ids)[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        self.hook(root, "session-start")
+        write(root, "a.py", "two!\n")  # stales all 12
+        git(root, "commit", "-qam", "invalidate")
+        ctx = self.hook(root, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(len(ctx), 2000)  # proves truncation actually happened
+
 
 class NotGit(HookCase):
     def test_post_tool_use_is_silent_outside_git(self):
@@ -163,6 +287,47 @@ class NotGit(HookCase):
         self.hook(root, "session-start")
         write(root, "a.py", "two!\n")
         self.assertIsNone(self.hook(root, "post-tool-use"))
+
+
+@NEED_GIT
+class Concurrency(HookCase):
+    def test_sixteen_concurrent_post_tool_use_serialise_on_one_session(self):
+        # Finding A: nothing coordinated hooks of the same session, so N
+        # concurrent post-tool-use processes each independently loaded the
+        # same stale on-disk state, all saw the same HEAD move, and all
+        # reported it — plus a fixed "<sid>.tmp" temp-file name meant two
+        # writers could collide mid-write. Sixteen concurrent processes,
+        # one real HEAD move, must produce exactly one report.
+        root = self.store(use_git=True)
+        self.hook(root, "session-start", session="concurrent")
+        write(root, "a.py", "two!\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "stale it")
+        payload = json.dumps({"session_id": "concurrent", "cwd": str(root)})
+        env = dict(os.environ)
+        env["NO_COLOR"] = "1"
+        env["CLAUDE_PROJECT_DIR"] = str(root)
+        env["CLAUDE_PLUGIN_DATA"] = str(self.data)
+        n = 16
+        procs = [subprocess.Popen([sys.executable, str(BIN), "hook", "post-tool-use"],
+                                   cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, env=env)
+                 for _ in range(n)]
+        # Feed every process's stdin before reading any output, so all n are
+        # actually running concurrently rather than one at a time.
+        for p in procs:
+            p.stdin.write(payload)
+            p.stdin.close()
+        outs = []
+        for p in procs:
+            out = p.stdout.read()
+            err = p.stderr.read()
+            rc = p.wait(timeout=30)
+            self.assertEqual(rc, 0, f"hooks must always exit 0; stderr={err}")
+            outs.append(out)
+        moved = [o for o in outs if o.strip() and "HEAD moved" in o]
+        self.assertEqual(len(moved), 1, f"expected exactly one HEAD-moved report, got: {moved}")
+        self.assertFalse((self.data / "hook-errors.log").exists())
 
 
 if __name__ == "__main__":
