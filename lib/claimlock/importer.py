@@ -1,10 +1,11 @@
 """Import claims written in the original ground-truth format.
 
-That format lists `sources` as plain paths and has no pins. Every imported
-claim therefore arrives UNPINNED, and `check` fails until each one is
-re-checked and verified. That is deliberate: an import must not launder old
-verifications into fresh pins. Everything except the sources block is copied
-byte-for-byte.
+That format lists `sources` as plain paths and has no pins. Everything except
+the sources block is copied byte-for-byte, `status` included. A claim imported
+as `verified` therefore arrives UNPINNED, and `check` fails until it is
+re-checked and verified. An imported `unverified` or `refuted` claim has no
+freshness state and fails `check` only if it is invalid. That is deliberate: an
+import must not launder old verifications into fresh pins.
 """
 from pathlib import Path
 

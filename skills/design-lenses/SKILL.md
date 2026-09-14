@@ -17,8 +17,20 @@ Claim integrity is enforced mechanically by `using-claimlock`.
 
 ## The output
 
-One line per lens: what you checked, what you found — including the lenses that
-found nothing, so a reader knows they were applied rather than skipped.
+End every assessment with this block — all eight lines, in this order, even when
+the reply must be short and even when a lens found nothing. A length limit
+shortens the lines, never the list.
+
+    Correctness: <what you checked> → <what you found, or "nothing">
+    Scale: …
+    Concurrency: …
+    Falsifiability: …
+    Cost accounting: …
+    Consumer experience: …
+    Operability: …
+    Claim integrity: …
+
+A lens missing from the block reads as a lens that was never applied.
 
 ## The eight lenses
 
@@ -56,8 +68,8 @@ applying a lens harder. They are caught by pointing it somewhere else.
 A lens pass is almost always scoped to *the change in front of you*, and that is
 the wrong scope the moment a measurement points at something you did not touch.
 
-A load run showed a per-client concurrency ceiling that does not grow with
-capacity — ten times the workers, still 8. The fact was observed, written into a
+A load run showed a per-client concurrency ceiling that stayed fixed when
+capacity was raised. The fact was observed, written into a
 commit message, and then classified as "a deliberate fairness bound" because the
 subsystem was not the one under review. The scale lens had already answered the
 question; the consumer-experience lens answered it more sharply, since the
@@ -88,8 +100,8 @@ honest answer is "nothing, because they cannot see it", it is a platform defect
 
 ### Both were supplied by a person, not by the process
 
-Repeatedly, the missing lens arrived as a question from a human rather than from
-a pass. That ratio is the argument for these two entries existing: the pass keeps
+This was not the first time the missing lens arrived as a question from a human
+rather than from a pass. That pattern is the argument for these two entries existing: the pass keeps
 finding what it is aimed at, and keeps missing what it is not.
 
 ## Common mistakes

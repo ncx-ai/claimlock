@@ -21,8 +21,11 @@ back to a default.
 
     claimlock self-test && claimlock check && claimlock refs
 
-Exit codes: 0 clean, 1 findings, 2 the store could not be read. `check` always
-prints `N claims, M sources hashed`. If N is 0 in a repo you believe has
+Exit codes: 0 clean, 1 findings, 2 the store could not be read (no claims
+directory, or a bad `.claimlock.toml`) — exit 2 prints only an error. When the
+store is readable, plain `check` ends with a summary line
+`claimlock: N claims, M sources hashed — …`, and `check --json` carries the same
+numbers as `claims` and `sources_hashed`. If N is 0 in a repo you believe has
 claims, the gate is pointed at the wrong directory — that is a failure of the
 gate, not a pass.
 
@@ -34,8 +37,10 @@ package name.
 
     claimlock import <old-claims-dir>
 
-Every imported claim arrives **unpinned** and `check` fails until each is
-re-checked and verified. That is the point: an import must not launder old
+Import keeps each claim's `status` and drops every pin. Each claim that was
+`verified` arrives **unpinned**, and `check` fails until it is re-checked and
+verified. Imported `unverified` and `refuted` claims have nothing to pin and fail
+`check` only if they are invalid. That is the point: an import must not launder old
 verifications into fresh pins. Plan the re-check as work; do not bulk-verify
 to get green.
 
@@ -67,12 +72,18 @@ either side, re-check the claim, then `claimlock verify <id>`.
 
 | Hook | Who sees it | When |
 |---|---|---|
-| Session start | Claude | Counts of non-fresh claims and affected areas |
-| After Bash / MCP tool calls | Claude | HEAD moved and the commits changed sources of now-non-fresh claims, or added dangling markers |
-| End of turn | The user | Problems this session introduced (not pre-existing ones), and commits made outside any tool |
+| Session start | Claude | Counts of invalid, unpinned, stale and missing claims and of dangling markers, with the affected areas |
+| After Bash / MCP tool calls | Claude | Only when HEAD moved (commit, merge, rebase, pull, checkout): now-non-fresh claims backed by files changed anywhere in that commit range, and markers naming no claim |
+| End of turn | The user | Problems that appeared since the previous end of turn (not pre-existing ones), plus a HEAD-moved report no tool call delivered |
 
-Hooks never block and exit 0 always. In a project without a store they print
-nothing. Errors go to `hook-errors.log` in the plugin data directory.
+Hooks exit 0 always and never set a blocking decision. Each message is capped at
+2,000 characters; the HEAD-moved report names at most 10 claims and the
+end-of-turn report 5 per category, with `…` when there are more — run
+`claimlock check` for the full list. Hook runs in one session are serialised,
+and a run that cannot take the session lock within 5 s is skipped without output.
+In a project without a store they print nothing. Internal errors, and hook input
+that was not valid JSON, are recorded in `hook-errors.log` in the plugin data
+directory.
 
 ## Red flags
 

@@ -41,7 +41,7 @@ claim with no falsifier is an opinion.
 **A run is evidence only with a non-zero pass count matching what you expected
 to run.** Green exits are produced by: a runner over skipped or disabled tests
 (`0 passed`), a filter that excluded everything (`N deselected`), a
-self-skipping test that returns early (most runners count it a **pass**), and a
+self-skipping test that returns early (counted as a **pass**), and a
 harness that rejects its own arguments while the wrapper around it still exits
 0. Read the count, and compare it to what you expected.
 

@@ -18,8 +18,9 @@ Before stating a number, limit, default or guarantee — anywhere durable:
 
     claimlock search <topic>
 
-- **Fresh hit** (`verified`, no `[stale]`/`[missing]`/`[unpinned]` flag) → you
-  may rely on it; cite the claim id.
+- **Fresh hit** — `verified`, no `[stale]`/`[missing]`/`[unpinned]` flag, **and**
+  `claimlock show <id>` prints no `INVALID` line (search never flags an invalid
+  claim) → you may rely on it; cite the claim id.
 - **Stale / missing / unpinned hit** → it is owed a re-check. Do not repeat it
   as fact until you have re-checked (below).
 - **Unverified hit, or no hit** → nobody has established it. Check the code now,
@@ -51,11 +52,11 @@ else; anything else makes the claim `invalid`, which fails `check`:
 | Field | Rule |
 |---|---|
 | Claim text | One sentence, present tense, **one fact**. A file stating three things cannot go stale for one of them. |
-| `evidence` | A test name, a measurement with its numbers, or a run. "I read the code" is not evidence: `kind: source` entries say *where* the behaviour lives, and cannot make a claim verified on their own. |
+| `evidence` | A test name, a measurement with its numbers, or a run. "I read the code" is not evidence. `kind: source` entries say *where* the behaviour lives. `claimlock verify` will accept a claim whose only evidence is `source` entries — the tool does not enforce this rule, you do: never verify on `source` evidence alone. |
 | `sources` | Every file whose change could falsify the claim — the enforcement site, not just the constant. |
 
 Then `claimlock verify <id>` pins every source and marks it verified. Nothing
-run yet? Leave it `unverified` — `check` does not fail on an unverified claim,
+run yet? Leave it `unverified` — `check` does not fail on a valid unverified claim,
 so there is no gate to keep green by verifying. A `verified` claim you did not
 verify is worse than silence.
 
@@ -84,14 +85,16 @@ and if the diff shows the claim no longer holds, do not verify: report it.
 
 ## Hook messages
 
-- **Session start** (you see it): how many claims are not fresh, and in which
-  areas. Search before asserting in those areas.
-- **After a Bash or MCP tool call** (you see it): a "HEAD moved" note naming
-  claims whose sources the new commits changed. Re-check them before relying on
-  them.
-- **End of turn** (only the user sees it; you do not): a warning that this
-  session made claims stale or added dangling markers. If the user relays it,
-  answer each named claim with `claimlock diff <id>`.
+- **Session start** (you see it): counts of invalid, unpinned, stale and missing
+  claims and of dangling markers, and the affected areas. Search before
+  asserting in those areas.
+- **After a Bash or MCP tool call** (you see it), only when HEAD has moved: up
+  to 10 claims, backed by files changed anywhere in the commit range, that are
+  now not fresh, plus markers naming no claim. `…` means there are more — run
+  `claimlock stale`. Re-check them before relying on them.
+- **End of turn** (only the user sees it; you do not): problems that appeared
+  since the previous end of turn. If the user relays it, answer each named claim
+  with `claimlock diff <id>`.
 
 ## Red flags
 
