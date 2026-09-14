@@ -2,7 +2,7 @@ import json
 import os
 import unittest
 
-from helpers import REPO
+from helpers import BIN, REPO
 
 
 class Manifest(unittest.TestCase):
@@ -24,6 +24,18 @@ class Manifest(unittest.TestCase):
 
     def test_launcher_is_executable(self):
         self.assertTrue(os.access(REPO / "bin/claimlock", os.X_OK))
+
+    def test_readme_documents_install_and_every_command(self):
+        import re, subprocess, sys
+        from helpers import BIN
+        readme = (REPO / "README.md").read_text()
+        self.assertIn("/plugin marketplace add", readme)
+        self.assertIn("/plugin install claimlock@claimlock", readme)
+        help_text = subprocess.run([sys.executable, str(BIN), "--help"], capture_output=True, text=True).stdout
+        for cmd in re.findall(r"^\s{4}([a-z-]+)\s", help_text, re.M):
+            self.assertIn(f"claimlock {cmd}", readme, cmd)
+        self.assertTrue((REPO / "LICENSE").read_text().startswith("MIT License"))
+        self.assertTrue((REPO / "docs/format.md").is_file())
 
 
 if __name__ == "__main__":
