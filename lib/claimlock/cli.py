@@ -62,6 +62,10 @@ def _find(project, cid):
 
 def cmd_init(args):
     root = Path(args.dir) if args.dir else Path.cwd()
+    if not root.is_dir():
+        kind = "does not exist" if not root.exists() else "is not a directory"
+        print(f"claimlock: {root} {kind}", file=sys.stderr)
+        return 2
     for item in ops.init_store(root):
         print(f"created {item}")
     print()

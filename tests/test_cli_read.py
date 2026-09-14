@@ -21,6 +21,14 @@ class Init(TmpCase):
         self.assertIn("already exists", err)
         self.assertEqual((d / ".gitignore").read_text().count(".claimlock/"), 1)
 
+    def test_init_into_missing_directory_is_exit_2(self):
+        nope = self.tmp / "nope"
+        rc, _, err = run_cli(self.tmp, "-C", str(nope), "init")
+        self.assertEqual(rc, 2)
+        self.assertIn(str(nope), err)
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(nope.exists())
+
 
 class New(TmpCase):
     def test_new_scaffolds_a_valid_unverified_claim(self):
@@ -98,6 +106,18 @@ class Check(TmpCase):
         self.assertIn("[test] s::c", out)
         self.assertIn("b.py — stale", out)
         self.assertEqual(run_cli(self.root, "show", "nope")[0], 1)
+
+    def test_show_works_on_malformed_claims(self):
+        rc, out, err = run_cli(self.root, "show", "invalid-one")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("INVALID:", out)
+        self.assertIn("status 'maybe'", out)
+
+        write(self.root, "claims/broken.md", "---\nid: broken\nsources: [x]\n---\nb\n")
+        rc, out, err = run_cli(self.root, "show", "broken")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("broken.md:3", out)
+        self.assertNotIn("Traceback", err)
 
 
 class Unreadable(TmpCase):
