@@ -24,6 +24,8 @@ converge to the same freshness state; `.claimlock/` never needs to.
 ```
 
 Requires Python ≥ 3.11 (standard library only — nothing to `pip install`).
+On an older `python3` the CLI exits 2 with a message, and the hooks stay
+silent and log one line to `hook-errors.log` rather than fail.
 Git is optional: it improves `claimlock diff` (reading prior content straight
 from git's object store) and powers commit/HEAD-movement detection in the
 hooks, but the CLI works fully in a plain, non-git directory.
@@ -75,7 +77,9 @@ field-level and format detail: [`docs/format.md`](docs/format.md).
 | PostToolUse (after Bash / MCP tool calls) | Claude (as context) | HEAD moved since the last check, and the commits in that range changed sources of now-non-fresh claims or introduced dangling markers. |
 | Stop | The user (a `systemMessage`) | Problems *since the last check* in this clone (not pre-existing ones) — new stale/invalid claims or dangling markers, whether this session's edits or a `git pull` caused them — plus any HEAD movement. A claim named in the HEAD-moved report is not listed twice. |
 
-Hooks **never block**: they always exit 0, never set `decision`, and a Stop
+Hooks **never block**: they always exit 0 — including under a `python3` older
+than 3.11, where they print nothing and log one line to `hook-errors.log` in
+the plugin data directory — never set `decision`, and a Stop
 warning does not continue the turn — it is shown to the user only, after
 Claude has already finished responding. Hooks are active only in a project
 that has a `.claimlock.toml` — in the project directory Claude Code opened, or
@@ -116,6 +120,12 @@ requiring git at all. That's deliberate:
   *racy-timestamp guard*, the same one git uses: an entry whose mtime is under
   2 seconds old is never cached, so a same-size edit within one filesystem
   clock tick can't be missed by trusting a stale cache entry.
+  **The trade-off:** an entry at least 2 seconds old is trusted whenever the
+  file has the same size and the same `mtime_ns`, without re-reading it. A tool
+  that rewrites content but restores the timestamp — `cp -p`, `rsync -a`, a
+  build cache that restores mtimes — can therefore hide a same-size edit from a
+  warm cache. A fresh clone or a CI run has no cache and always hashes;
+  deleting `.claimlock/cache/` forces the same locally.
 
 ## CI
 
@@ -134,6 +144,14 @@ gate; `refs` fails on any prose marker naming no claim.
   large shared file all make every claim citing it stale, whether or not the
   cited behavior changed. Prefer the narrowest file that actually enforces
   the behavior when writing `sources`.
+- **Line endings across clones.** A pin hashes a file's exact working-tree
+  bytes. If one clone checks a file out with LF and another with CRLF
+  (`core.autocrlf=true`, or a Windows runner), every claim citing it is stale
+  in the other clone — and re-verifying there makes it stale for everyone
+  else. This fails safe (never a false fresh), but it never settles. In a
+  repository used across platforms, commit `* text=auto eol=lf` to
+  `.gitattributes` (or set `core.autocrlf=false`) so every clone holds the
+  same bytes.
 - **Pin conflicts on merge.** Two branches that both verified the same claim
   conflict on its `blob:` lines in a text merge. Resolve by taking either
   side, then re-check and re-`verify` — never trust a merged pin you didn't

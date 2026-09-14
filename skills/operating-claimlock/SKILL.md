@@ -68,6 +68,14 @@ that actually enforces the behaviour when writing `sources`.
 Two branches that verified the same claim conflict on its `blob` lines. Take
 either side, re-check the claim, then `claimlock verify <id>`.
 
+## Across platforms
+
+Pins hash working-tree bytes. A clone that checks files out with CRLF
+(`core.autocrlf=true`, a Windows runner) sees every claim pinned on an LF clone
+as stale, and verifying there stales it for the LF clones. In a repository used
+across platforms, commit `* text=auto eol=lf` to `.gitattributes` (or set
+`core.autocrlf=false`) before verifying claims.
+
 ## Hooks (installed with the plugin)
 
 | Hook | Who sees it | When |

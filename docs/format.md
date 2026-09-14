@@ -229,6 +229,12 @@ This is byte-identical to `git hash-object --no-filters <file>`. Consequences:
 - Where a repository does exist, `claimlock diff` can ask git for a blob's
   content directly (`git cat-file blob <sha>`) instead of needing its own
   copy.
+- A source that is a symlink (to a file inside the root) pins the **target's**
+  content, because the file is read through the link. Git stores a symlink's
+  link text as its blob, not the target's bytes, so `claimlock diff` will not
+  find that pinned blob in git; it falls back to the snapshot under
+  `.claimlock/objects/`, or reports the prior content unavailable in a clone
+  that has no snapshot.
 - The formula hashes exact bytes: a whitespace-only edit, a line-ending
   change, or a single re-saved byte all produce a different hash and make
   the claim stale. See "Limits" in the README.
@@ -292,4 +298,8 @@ refs` prints each one and exits 1 if any exist, 0 otherwise.
 | `2` | The store could not be read at all: bad `.claimlock.toml`, or no `claims/` directory (`init`/`import` into a target directory that doesn't exist also exit 2). |
 
 `claimlock hook <event>` **always exits 0** — a hook must never fail the
-tool call that invoked it (see `docs/hook-semantics.md`).
+tool call that invoked it (see `docs/hook-semantics.md`). That includes a
+`python3` older than 3.11: the launcher checks for `hook` before its version
+check, appends one line to `$CLAUDE_PLUGIN_DATA/hook-errors.log`, prints
+nothing and exits 0. (If `python3` itself is missing, claimlock never runs:
+the shell's own non-zero exit is outside what claimlock can control.)

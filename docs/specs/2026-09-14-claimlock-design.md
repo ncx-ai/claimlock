@@ -21,12 +21,12 @@ miss.
 
 ### Origin, and what this fixes
 
-Extracted from a private project's `scripts/truth` + `docs/truth/` claim store.
-The extraction fixes defects found while reading it (2026-09-14):
+Extracted from a private project's claim store. The extraction fixes defects
+found while reading it (2026-09-14):
 
 | Defect in the original | Resolution here |
 |---|---|
-| `truth show` raises `NameError` on every claim (`is_stale` is a string, `state` undefined) | Rewritten; `show` is covered by a test |
+| The original's `show` command raises `NameError` on every claim (`is_stale` is a string, `state` undefined) | Rewritten; `show` is covered by a test |
 | README says both "timestamp-granular" and "by DATE, not by timestamp" | Staleness is content-based; no time comparison exists to describe |
 | Staleness reads only committed history — an uncommitted edit to a source is invisible | Pins hash working-tree content |
 | Same-day ambiguity (`unproven` state) and rebase/cherry-pick rewriting commit dates | No dates in the staleness decision |
@@ -137,9 +137,15 @@ raw bytes — identical to `git hash-object --no-filters`. Computed in Python, s
 - pins written before `git init` remain valid after it;
 - the git object store can serve prior content for `diff` when it has the blob.
 
-(Under `core.autocrlf` or clean filters the index blob may differ from this hash.
-Staleness is unaffected — it compares this hash with itself; only `diff`'s git
-lookup misses, and falls back to the snapshot cache.)
+(Under `core.autocrlf` or clean filters the index blob may differ from this hash,
+so `diff`'s git lookup misses and falls back to the snapshot cache. Within one
+clone staleness is unaffected — it compares this hash with itself. **Across
+clones it is not:** a pin verified on an LF checkout never matches the CRLF bytes
+of an `autocrlf=true` clone or a Windows runner, so the claim is permanently
+stale there, and verifying there makes it stale for every LF clone. This fails
+safe — never a false fresh. Normalisation is deferred to the multi-editor design;
+for v1, repositories used across platforms should set `* text=auto eol=lf` in
+`.gitattributes` or `core.autocrlf=false`.)
 
 **Stat cache.** `(path, size, mtime_ns) → blob`, stored at
 `.claimlock/cache/stat.json` — so the Stop hook re-reads only files whose
@@ -192,16 +198,20 @@ store could not be read (bad config, no store where one was required).
 | `verify <id>...` | Refuses a claim with problems, no evidence, or `status: refuted` (un-refuting is a manual edit). Sets `status: verified`, pins every source to its current blob, writes `verified_at` (local offset, seconds), refreshes the snapshot cache. Prints what was pinned |
 | `diff <id>` | For each changed source: unified diff from pinned content (git object, else snapshot) to current. If neither has it, says so explicitly |
 | `affected <path>...` | Claims whose sources include any given path |
-| `refs` | Scan `marker_globs`, always excluding `claims_dir`, hidden directories (`.git/`, `.claimlock/`, …) and `node_modules/`; exit 1 on any marker naming no claim; census line `K markers in F files` |
+| `refs` | Scan `marker_globs`, always excluding `claims_dir`, hidden directories (`.git/`, `.claimlock/`, …), `node_modules/` and — inside a git work tree — gitignored files (amendment 10); exit 1 on any marker naming no claim; census line `K markers in F files` |
 | `import <dir>` | Convert the origin format (`sources` as plain strings, date/timestamp `verified_at`): writes claims with unpinned sources, so every imported `verified` claim reports `unpinned` — and `check` exits 1 — until each is re-checked and verified. Deliberate: an import must not launder old verifications into fresh pins |
 | `self-test` | In a temp dir: pin a source then edit it → must report `stale`; delete it → `missing`; dangling marker → `refs` exits 1; repeat after `git init`. Exit 1 if any detector fails to fire |
 | `hook <event>` | Hook entry points (§5). Always exit 0 |
 
 ## 5. Hooks
 
-Every hook exits 0 with no output when the project (`$CLAUDE_PROJECT_DIR`) has
-no `.claimlock.toml` and no `claims/` directory — an installed plugin is inert in
-repositories that do not use it. No hook ever exits 2 or sets `decision`. A hook
+Every hook exits 0 with no output when neither the project directory
+(`$CLAUDE_PROJECT_DIR`) nor any of its ancestors contains `.claimlock.toml` — an
+installed plugin is inert in repositories that do not use it. A bare `claims/`
+directory is not a store for hooks (amendment 8), and the decision is made with
+plain `stat` calls, before any git subprocess or data-directory write. No hook ever exits 2 or sets `decision` — including under a `python3` older than
+3.11, where the launcher logs one line and exits 0 before its version check
+can fail the hook. A hook
 that fails internally prints nothing to Claude and writes the error to
 `${CLAUDE_PLUGIN_DATA}/hook-errors.log` (a crashing warning must not become a
 blocking error).
@@ -228,7 +238,7 @@ intent, not of behaviour.
 | Hook output strings capped at 10,000 characters | hooks.md, JSON output |
 | `bin/` is added to the Bash tool's PATH; `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `CLAUDE_PROJECT_DIR` exported to hooks | plugins-reference.md |
 
-### SessionStart (`startup|resume|clear|compact`)
+### SessionStart (`startup|resume|clear|compact|fork`)
 
 Compute the baseline, record it and `last_head`, and emit
 `additionalContext` (≤ 2,000 chars):
@@ -243,10 +253,14 @@ When everything is fresh, one line.
 
 Recompute. Emit `systemMessage` (user-facing; the turn ends normally) **only for
 problems not in the baseline** — so pre-existing drift does not repeat every
-turn, but drift introduced this session does:
+turn, but drift that appeared since the last check does. That includes drift
+that arrived by `git pull` or any other change to the checkout, so the message
+says "since the last check", never "this session" (amendment 11). A claim or
+marker already named in the same output's HEAD-moved report is omitted from
+this line, and the line is dropped if nothing remains:
 
-> claimlock: this session made 2 claims stale: ledger-conserves-money
-> (ops.rs), … — run `claimlock diff <id>`.
+> claimlock: since the last check, 2 claims became stale (ledger-conserves-money,
+> …). Inspect with `claimlock diff <id>` or `claimlock refs`.
 
 After warning, the baseline is replaced by the current survey (not unioned) so
 the same warning is not repeated immediately — but a problem that is fixed and
@@ -311,7 +325,8 @@ origin project.
   line, dangling marker → `refs` exit 1, id ≠ filename → invalid.
 - `verify` round-trip: body and unrelated lines byte-identical after rewrite.
 - `diff` from git object, from snapshot cache, and with neither.
-- Hooks as subprocesses fed recorded stdin JSON: inert without a store; exit 0
+- Hooks as subprocesses fed recorded stdin JSON: inert without `.claimlock.toml`
+  (including beside a bare `claims/` directory); exit 0
   always (including an injected internal error); SessionStart emits
   `additionalContext`; Stop emits `systemMessage` only for new problems and not
   twice; HEAD movement via `git commit`, via a commit made by a non-git-named
@@ -343,3 +358,21 @@ origin project.
 5. Stat cache skips entries with mtime < 2 s old.
 6. Dangling-marker identity is `path:id`.
 7. `claims_dir/README.md` is not loaded as a claim.
+
+## Amendments (2026-09-14, final review)
+
+8. Hooks are active only when `.claimlock.toml` exists in the project directory
+   or one of its ancestors; a bare claims directory is not a store for hooks.
+   The check is plain `stat` calls made before `project.load`, so an inactive
+   project spawns no git and touches no data directory. The CLI's root
+   discovery is unchanged.
+9. A file that cannot be read is reported, never raised: an unreadable source
+   is `missing`, an unreadable claim file is `invalid`, `verify` refuses, and
+   `diff` says so.
+10. Inside a git work tree, marker candidates come from `git ls-files --cached
+    --others --exclude-standard` (gitignored files are not scanned); outside
+    git the tree is walked as before.
+11. Stop reports problems not present at the previous Stop check in this clone
+    ("since the last check"), not problems "this session introduced": drift
+    that arrives by `git pull` is reported too, and a claim already named in
+    the same output's HEAD-moved report is not repeated.
