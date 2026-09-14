@@ -140,6 +140,13 @@ def load_claims(project):
             # must not hide the state of every other claim.
             out.append(Claim(p, "", {}, "", f"{p.name}:1: cannot be read: {e.strerror or e}"))
             continue
+        # A clone checked out with core.autocrlf=true delivers claim files as
+        # CRLF; normalize to LF before anything else looks at the text (a
+        # lone "\r" not part of a "\r\n" pair is left in place and still
+        # rejected below — that is not a line-ending convention, it's a
+        # malformed file).
+        if "\r\n" in text:
+            text = text.replace("\r\n", "\n")
         if _CONFLICT_START.search(text) and _CONFLICT_END.search(text):
             out.append(Claim(p, text, {}, "", None, conflicted=True))
             continue

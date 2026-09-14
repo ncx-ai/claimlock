@@ -52,6 +52,17 @@ def init_store(root) -> list:
         sep = "" if (not existing or existing.endswith("\n")) else "\n"
         gi.write_text(existing + sep + ".claimlock/\n", encoding="utf-8")
         created.append(".gitignore (+ .claimlock/)")
+    # Default claims dir name — init always writes the default config, so the
+    # store it creates is always "claims/". A clone checked out with
+    # core.autocrlf=true otherwise delivers claim files as CRLF, which every
+    # claimlock command that parses them rejects (spec amendment T9).
+    ga = root / ".gitattributes"
+    ga_line = "claims/*.md text eol=lf"
+    ga_existing = ga.read_text(encoding="utf-8") if ga.exists() else ""
+    if ga_line not in ga_existing.splitlines():
+        sep = "" if (not ga_existing or ga_existing.endswith("\n")) else "\n"
+        ga.write_text(ga_existing + sep + ga_line + "\n", encoding="utf-8")
+        created.append(f".gitattributes (+ {ga_line})")
     return created
 
 

@@ -31,8 +31,20 @@ class Load(TmpCase):
         self.assertIn("bad.md:3", msg)
         self.assertIn("unsupported", msg)
 
-    def test_crlf_rejected(self):
-        write(self.root, "claims/c.md", claim_text("c").replace("\n", "\r\n"))
+    def test_crlf_is_accepted_and_loads_the_same_meta_as_its_lf_form(self):
+        lf_text = claim_text("c")
+        write(self.root, "claims/c.md", lf_text)
+        [lf_claim] = load_claims(load(self.root))
+
+        write(self.root, "claims/c.md", lf_text.replace("\n", "\r\n"))
+        p = load(self.root)
+        [crlf_claim] = load_claims(p)
+        self.assertEqual(problems(crlf_claim, p), [])
+        self.assertEqual(crlf_claim.meta, lf_claim.meta)
+        self.assertNotIn("\r", crlf_claim.text)
+
+    def test_lone_cr_is_still_rejected(self):
+        write(self.root, "claims/c.md", claim_text("c").replace("holds.", "hol\rds."))
         p = load(self.root)
         [c] = load_claims(p)
         self.assertIn("CR line endings", problems(c, p)[0])

@@ -12,16 +12,20 @@ class Init(TmpCase):
         d = self.tmp / "p"
         d.mkdir()
         write(d, ".gitignore", "node_modules/")
+        write(d, ".gitattributes", "*.png binary\n")
         rc, out, err = run_cli(d, "init")
         self.assertEqual(rc, 0, err)
         self.assertTrue((d / ".claimlock.toml").is_file())
         self.assertTrue((d / "claims").is_dir())
         self.assertEqual((d / ".gitignore").read_text(), "node_modules/\n.claimlock/\n")
+        ga = (d / ".gitattributes").read_text()
+        self.assertEqual(ga, "*.png binary\nclaims/*.md text eol=lf\n")
         self.assertIn("claimlock check", out)
         rc, _, err = run_cli(d, "init")
         self.assertEqual(rc, 1)
         self.assertIn("already exists", err)
         self.assertEqual((d / ".gitignore").read_text().count(".claimlock/"), 1)
+        self.assertEqual((d / ".gitattributes").read_text().count("claims/*.md text eol=lf"), 1)
 
     def test_init_into_missing_directory_is_exit_2(self):
         nope = self.tmp / "nope"

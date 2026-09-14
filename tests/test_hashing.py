@@ -32,13 +32,12 @@ class LineEndingsAcrossClones(TmpCase):
         clone(bare, a)
         git(a, "config", "core.autocrlf", "false")
         run_cli(a, "init")
-        # The claim STORE format (unlike a hashed source) is parsed as literal
-        # text and rejects CR outright (tests/test_claims.py), so it needs its
-        # own LF-normalizing attribute — the same thing README already advises
-        # for a team that spans line-ending settings — independent of whether
-        # a cited source hashes the same on both clones, which is what this
-        # test actually exercises.
-        write(a, ".gitattributes", "claims/*.md text eol=lf\n")
+        # `claimlock init` itself writes a "claims/*.md text eol=lf" .gitattributes
+        # entry (spec amendment T9) — no manual workaround needed here; the
+        # claim STORE format (unlike a hashed source) is parsed as literal text
+        # and rejects a lone CR outright (tests/test_claims.py), independent of
+        # whether a cited source hashes the same on both clones, which is what
+        # this test actually exercises.
         write(a, "src/limit.py", "MAX = 5\n\ndef clamp(n):\n    return min(n, MAX)\n")
         write(a, "claims/c.md", claim_text("c", sources=("src/limit.py",)))
         git(a, "add", "-A")
@@ -60,9 +59,33 @@ class LineEndingsAcrossClones(TmpCase):
         before = pins_of()
         self.assertEqual(len(before), 1)
         self.assertEqual(run_cli(b, "verify", "c")[0], 0)
-        # Compare pins only: until Task 4, verify still rewrites verified_at.
         self.assertEqual(pins_of(), before,
                          "re-verifying on the CRLF clone must not change the shared pin")
+
+    def test_init_alone_protects_a_teammate_clone_with_autocrlf(self):
+        """No manual `.gitattributes` beyond what `claimlock init` writes: the
+        point is that init's own entry is what protects clone B. Without it
+        (spec amendment T9), B's checkout of claims/c.md picks up CRLF and
+        `check` there reports the claim invalid."""
+        bare = self.tmp / "origin2.git"
+        subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(bare)], check=True, capture_output=True)
+        a = self.tmp / "a2"
+        clone(bare, a)
+        git(a, "config", "core.autocrlf", "false")
+        run_cli(a, "init")
+        write(a, "src/limit.py", "MAX = 5\n\ndef clamp(n):\n    return min(n, MAX)\n")
+        write(a, "claims/c.md", claim_text("c", sources=("src/limit.py",)))
+        git(a, "add", "-A")
+        self.assertEqual(run_cli(a, "verify", "c")[0], 0)
+        git(a, "add", "-A")
+        git(a, "commit", "-qm", "verified on LF")
+        git(a, "push", "-q", "origin", "main")
+
+        b = self.tmp / "b2"
+        clone(bare, b, "-c", "core.autocrlf=true")
+        git(b, "config", "core.autocrlf", "true")
+        rc, out, err = run_cli(b, "check")
+        self.assertEqual(rc, 0, out + err)
 
 
 @NEED_GIT
