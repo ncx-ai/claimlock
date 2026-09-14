@@ -2,11 +2,15 @@
 
 Observed with `claude --version` = `2.1.270 (Claude Code)`.
 
+Machine-specific paths (the local checkout path, and the `mktemp -d` scratch
+directory) have been redacted below to placeholders (`<claimlock-repo>`,
+`<scratch>`); nothing else in the quoted output was changed.
+
 ## `claude plugin validate`
 
 ```
-$ claude plugin validate ~/projects/claimlock
-Validating marketplace manifest: ~/projects/claimlock/.claude-plugin/marketplace.json
+$ claude plugin validate <claimlock-repo>
+Validating marketplace manifest: <claimlock-repo>/.claude-plugin/marketplace.json
 
 ✔ Validation passed
 ```
@@ -27,9 +31,9 @@ MAX = 5
 def clamp(n):
     return min(n, MAX)
 EOF
-python3 ~/projects/claimlock/bin/claimlock init
+python3 <claimlock-repo>/bin/claimlock init
 # claims/retries-are-capped.md: sources: [path: src/limit.py], evidence: [kind: run, ...]
-python3 ~/projects/claimlock/bin/claimlock verify retries-are-capped
+python3 <claimlock-repo>/bin/claimlock verify retries-are-capped
 git add -A && git commit -q -m "initial: capped retries claim"
 ```
 
@@ -42,7 +46,7 @@ git add -A && git commit -q -m "initial: capped retries claim"
 ```bash
 cd "$SCRATCH/work"
 timeout 180 claude -p "1) Quote any line in your context starting with 'claimlock:'. 2) Run: sh -c 'sed -i s/MAX = 5/MAX = 9/ src/limit.py && git commit -qam bump'. 3) Quote any new 'claimlock:' line you can now see. 4) Run: claimlock check" \
-  --plugin-dir ~/projects/claimlock --output-format stream-json --verbose \
+  --plugin-dir <claimlock-repo> --output-format stream-json --verbose \
   --allowedTools "Bash(claimlock:*)" "Bash(sh:*)" "Bash(git:*)" \
   > "$SCRATCH/accept.jsonl" 2>&1
 ```
@@ -79,7 +83,7 @@ which covers both sessions' data).
 ```bash
 cd "$SCRATCH/work"
 timeout 180 claude -p "1) Quote any line in your context starting with 'claimlock:'. 2) Run: sh -c 'sed -i \"s/MAX = 5/MAX = 9/\" src/limit.py && git commit -qam bump'. 3) Quote any new 'claimlock:' line you can now see. 4) Run: claimlock check" \
-  --plugin-dir ~/projects/claimlock --output-format stream-json --verbose \
+  --plugin-dir <claimlock-repo> --output-format stream-json --verbose \
   --allowedTools "Bash(claimlock:*)" "Bash(sh:*)" "Bash(git:*)" \
   > "$SCRATCH/accept2.jsonl" 2> "$SCRATCH/accept2.stderr"
 ```

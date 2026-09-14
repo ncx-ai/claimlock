@@ -264,6 +264,10 @@ Excluded from every scan, unconditionally:
   (used by the PostToolUse hook to scan only what a commit touched), a path
   outside the project root, or one that does not match `marker_globs`, or one
   that is otherwise excluded, is silently skipped rather than raising.
+- A matching file that is not valid UTF-8, or that cannot be read at all
+  (permissions, a race with deletion), is skipped and **not** counted in the
+  scanned-files total — `scan`'s per-file `scanned += 1` only runs after a
+  successful read, so such a file contributes neither markers nor a count.
 
 A marker naming an id with no matching claim file is **dangling**; `claimlock
 refs` prints each one and exits 1 if any exist, 0 otherwise.

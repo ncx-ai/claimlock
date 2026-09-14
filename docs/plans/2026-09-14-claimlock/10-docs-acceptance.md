@@ -57,7 +57,7 @@ Expected: `OK`, `Ran 80 tests`.
 Create a scratch project (`mktemp -d`): `git init`, a source file `src/limit.py` containing `MAX = 5` and a `clamp` function using it, `claimlock init`, a claim `retries-are-capped` citing `src/limit.py` with a `run` evidence entry, `claimlock verify retries-are-capped`, commit. Then run a headless session with the plugin loaded (the flag Task 1 confirmed, expected `--plugin-dir <repo>`):
 
 ```bash
-claude -p --plugin-dir ~/projects/claimlock --output-format stream-json --verbose \
+claude -p --plugin-dir <claimlock-repo> --output-format stream-json --verbose \
   --allowedTools "Bash(claimlock:*)" "Bash(sh:*)" "Bash(git:*)" \
   "1) Quote any line in your context starting with 'claimlock:'. 2) Run: sh -c 'sed -i s/MAX = 5/MAX = 9/ src/limit.py && git commit -qam bump'. 3) Quote any new 'claimlock:' line you can now see. 4) Run: claimlock check" \
   > "$SCRATCH/accept.jsonl" 2>&1
@@ -73,7 +73,7 @@ Observe and record in `docs/acceptance-2026-09-14.md` (verbatim excerpts, the `c
 | Stop warned the user, did not continue the turn | stream shows the Stop hook's `systemMessage` with `introduced 1 stale` and no further assistant turn after it |
 | No hook error | `hook-errors.log` absent in the plugin data dir |
 
-Also run `claude plugin validate ~/projects/claimlock` if that subcommand exists (`claude plugin --help`); record its output.
+Also run `claude plugin validate <claimlock-repo>` if that subcommand exists (`claude plugin --help`); record its output.
 
 Any FAIL: report DONE_WITH_CONCERNS with the row and excerpt; do not paper over it.
 

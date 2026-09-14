@@ -309,22 +309,28 @@ class Concurrency(HookCase):
         env["CLAUDE_PROJECT_DIR"] = str(root)
         env["CLAUDE_PLUGIN_DATA"] = str(self.data)
         n = 16
-        procs = [subprocess.Popen([sys.executable, str(BIN), "hook", "post-tool-use"],
-                                   cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True, env=env)
-                 for _ in range(n)]
-        # Feed every process's stdin before reading any output, so all n are
-        # actually running concurrently rather than one at a time.
-        for p in procs:
-            p.stdin.write(payload)
-            p.stdin.close()
-        outs = []
-        for p in procs:
-            out = p.stdout.read()
-            err = p.stderr.read()
-            rc = p.wait(timeout=30)
-            self.assertEqual(rc, 0, f"hooks must always exit 0; stderr={err}")
-            outs.append(out)
+        # ExitStack (not a bare list) so every process's stdin/stdout/stderr
+        # pipe is closed on the way out, whatever happens — a Popen with PIPE
+        # streams read-to-EOF but never closed otherwise leaks its
+        # TextIOWrapper file objects until the next GC cycle notices them.
+        with contextlib.ExitStack() as stack:
+            procs = [stack.enter_context(subprocess.Popen(
+                        [sys.executable, str(BIN), "hook", "post-tool-use"],
+                        cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, env=env))
+                     for _ in range(n)]
+            # Feed every process's stdin before reading any output, so all n are
+            # actually running concurrently rather than one at a time.
+            for p in procs:
+                p.stdin.write(payload)
+                p.stdin.close()
+            outs = []
+            for p in procs:
+                out = p.stdout.read()
+                err = p.stderr.read()
+                rc = p.wait(timeout=30)
+                self.assertEqual(rc, 0, f"hooks must always exit 0; stderr={err}")
+                outs.append(out)
         moved = [o for o in outs if o.strip() and "HEAD moved" in o]
         self.assertEqual(len(moved), 1, f"expected exactly one HEAD-moved report, got: {moved}")
         self.assertFalse((self.data / "hook-errors.log").exists())

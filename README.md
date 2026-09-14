@@ -61,7 +61,10 @@ claimlock diff retries-are-capped     # see exactly what changed since verificat
 | `claimlock self-test` | Prove the freshness/dangling-marker detectors actually fire, on this machine. |
 | `claimlock hook` | The Claude Code hook entry point (`claimlock hook <event>`); always exits 0. |
 
-Every command accepts `-C <dir>` to run as though started in `<dir>`. Full
+Every command accepts `-C <dir>` to run as though started in `<dir>` — but
+`-C` is an option of `claimlock` itself, not of the subcommand, so it must
+come **before** the subcommand name: `claimlock -C <dir> check` works,
+`claimlock check -C <dir>` errors (`unrecognized arguments: -C <dir>`). Full
 field-level and format detail: [`docs/format.md`](docs/format.md).
 
 ## Hooks
@@ -142,10 +145,23 @@ gate; `refs` fails on any prose marker naming no claim.
   storage. On such a repository the stat gate never trips, so hooks silently
   stop reporting commits (`claimlock check` run directly is unaffected — it
   always re-evaluates from scratch).
-- **Coarse filesystem mtimes.** The stat cache's racy-timestamp guard assumes
-  a reasonably fine mtime clock; on a filesystem with second-or-coarser
-  resolution, a commit landing within the same tick as the last HEAD-movement
-  probe can be reported only at the *next* HEAD move rather than immediately.
+- **Coarse filesystem mtimes.** HEAD-movement detection (`hooks.py`'s
+  `_stat_marks`/`head_check`) gates on a raw `os.stat().st_mtime_ns` snapshot
+  of git's `HEAD`, current-ref and reflog files, with **no** racy-timestamp
+  guard — that guard belongs to a different mechanism (the content stat cache
+  above). On a filesystem with second-or-coarser mtime resolution, a commit
+  landing within the same tick as the last probe can leave that snapshot
+  looking unchanged, so the hook doesn't notice it that turn. Nothing is
+  lost, only delayed: the stale comparison keeps failing to match until a
+  later tick's stat can tell the two apart, at which point the report covers
+  the whole range since the last one actually seen — the same reason a
+  transient git failure mid-check also only delays rather than drops commits
+  (the marks are restated and moved forward, but the last known HEAD is held
+  onto until git succeeds again). `claimlock check` run directly is
+  unaffected, since it always re-evaluates from scratch. (The content stat
+  *cache's* racy guard is unrelated to HEAD detection: it exists so a
+  same-tick **content** edit is never missed by `check` — an entry younger
+  than 2 seconds is never cached, so it's re-hashed instead of trusted.)
 - **Lock files accumulate.** The per-session hook lock
   (`<plugin data dir>/sessions/<session-id>.lock`) is left in place after use
   rather than removed — harmless (an empty file, reused by session id) but it

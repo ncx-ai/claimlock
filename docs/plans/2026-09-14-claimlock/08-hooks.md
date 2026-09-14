@@ -526,12 +526,12 @@ Expected: `OK`; new tests: Contract 2, SessionStart 2, Stop 2, HeadMovement 4, N
 The claimlock repo itself has no store, so measuring there would time the inert path. Build a scratch store with a baseline first, then time the common path (HEAD unchanged):
 ```bash
 B=$(mktemp -d) && cd "$B" && git init -q && git config user.email b@b && git config user.name b \
-  && ~/projects/claimlock/bin/claimlock init >/dev/null && echo x > a.py \
+  && <claimlock-repo>/bin/claimlock init >/dev/null && echo x > a.py \
   && git add -A && git commit -qm init
 P='{"session_id":"bench"}'
-echo "$P" | CLAUDE_PROJECT_DIR=$B CLAUDE_PLUGIN_DATA=$B/data ~/projects/claimlock/bin/claimlock hook session-start >/dev/null
+echo "$P" | CLAUDE_PROJECT_DIR=$B CLAUDE_PLUGIN_DATA=$B/data <claimlock-repo>/bin/claimlock hook session-start >/dev/null
 test -f "$B/data/sessions/bench.json" || echo "BASELINE NOT WRITTEN — the timing below would be meaningless"
-for i in $(seq 10); do /usr/bin/time -f %e sh -c "echo '$P' | CLAUDE_PROJECT_DIR=$B CLAUDE_PLUGIN_DATA=$B/data ~/projects/claimlock/bin/claimlock hook post-tool-use >/dev/null"; done
+for i in $(seq 10); do /usr/bin/time -f %e sh -c "echo '$P' | CLAUDE_PROJECT_DIR=$B CLAUDE_PLUGIN_DATA=$B/data <claimlock-repo>/bin/claimlock hook post-tool-use >/dev/null"; done
 ```
 Record the median in the commit message body. If it exceeds 150 ms, report DONE_WITH_CONCERNS with the number.
 

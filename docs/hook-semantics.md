@@ -6,6 +6,10 @@ docs/plans/2026-09-14-claimlock/01-hook-semantics-spike.md). Built and run
 entirely under a `mktemp -d` scratch directory (`<scratch>`), never
 inside this repo; nothing from it is committed.
 
+Machine-specific paths (the scratch directory, and the local plugin-data
+directory) have been redacted below to placeholders (`<scratch>`, a
+`~`-relative path); nothing else in the quoted output was changed.
+
 ## Step 1 — CLI support
 
 `claude --help 2>&1 | grep -iE "plugin-dir|output-format|allowedTools|verbose"`
