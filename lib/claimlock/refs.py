@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .project import is_within
+from .project import is_within, safe_source
 
 SKIP_DIRS = {"node_modules"}
 
@@ -39,8 +39,9 @@ def _excluded(project, rel):
 def _files(project, only):
     if only is not None:
         for rel in sorted(only):
-            p = project.root / rel
-            if p.is_file() and _matches(rel, project.marker_globs) and not _excluded(project, rel):
+            p = safe_source(project.root, rel)
+            if (p is not None and p.is_file() and _matches(rel, project.marker_globs)
+                    and not _excluded(project, rel)):
                 yield p, rel
         return
     for dirpath, dirnames, filenames in os.walk(project.root):

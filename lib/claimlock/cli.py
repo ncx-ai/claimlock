@@ -36,8 +36,13 @@ def _paint(code, s):
     return s
 
 
+def _base(args):
+    """Where a relative path on the command line is resolved from."""
+    return Path(args.dir) if args.dir else Path.cwd()
+
+
 def _project(args):
-    return P.load(Path(args.dir) if args.dir else Path.cwd())
+    return P.load(_base(args))
 
 
 def _evaluate(args):
@@ -255,7 +260,7 @@ def cmd_refs(args):
 
 def cmd_affected(args):
     project = _project(args)
-    base = Path(args.dir) if args.dir else Path.cwd()
+    base = _base(args)
     wanted = set()
     for a in args.paths:
         p = Path(a)
@@ -275,7 +280,13 @@ def cmd_affected(args):
 
 def cmd_import(args):
     project = _project(args)
-    ids, errors = importer.import_dir(project, Path(args.src))
+    raw = Path(args.src)
+    src = (raw if raw.is_absolute() else _base(args) / raw).resolve()
+    if not src.is_dir():
+        kind = "does not exist" if not src.exists() else "is not a directory"
+        print(f"claimlock: {src} {kind}", file=sys.stderr)
+        return 2
+    ids, errors = importer.import_dir(project, src)
     for e in errors:
         print(f"claimlock: {e}", file=sys.stderr)
     noun = "claim" if len(ids) == 1 else "claims"

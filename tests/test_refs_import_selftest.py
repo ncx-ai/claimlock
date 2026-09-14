@@ -47,6 +47,19 @@ class Refs(TmpCase):
         markers, files = refs.scan(load(root))
         self.assertEqual((files, [m.id for m in markers]), (1, ["nope"]))
 
+    def test_only_rejects_paths_outside_the_root(self):
+        outside = write(self.tmp, "outside/secret.md", "Claim: `zzz`\n")
+        self.assertTrue(outside.is_file())
+        markers, files = refs.scan(load(self.root), only={str(outside)})
+        self.assertEqual((files, markers), (0, []))
+
+    def test_only_rejects_dotdot_escape(self):
+        # self.root is <tmp>/r; "a/../../x.md" resolves to <tmp>/x.md, outside root.
+        escape_target = write(self.tmp, "x.md", "Claim: `zzz`\n")
+        self.assertTrue(escape_target.is_file())
+        markers, files = refs.scan(load(self.root), only={"a/../../x.md"})
+        self.assertEqual((files, markers), (0, []))
+
 
 class Affected(TmpCase):
     def test_lists_claims_citing_a_path_from_any_cwd(self):
@@ -78,6 +91,23 @@ The per-attempt timeout is clamped to the configured maximum.
 """
 
 
+ORIGIN_BLANK_SOURCES = """---
+id: {id}
+area: api
+status: verified
+verified_at: 2026-09-08T10:00:00-04:00
+evidence:
+  - kind: test
+    ref: api::tests::timeout_is_clamped
+sources:
+  - src/engine.py
+
+  - src/limits.py
+---
+The per-attempt timeout is clamped to the configured maximum.
+"""
+
+
 class Import(TmpCase):
     def test_imports_as_unpinned_and_keeps_everything_else(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -101,6 +131,47 @@ class Import(TmpCase):
         rc, out, _ = run_cli(root, "check")
         self.assertEqual(rc, 1)
         self.assertIn("UNPINNED timeout-clamped", out)
+
+    def test_origin_sources_with_interior_blank_line_is_not_corrupted(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/engine.py", "e\n")
+        write(root, "src/limits.py", "l\n")
+        old = self.tmp / "old"
+        write(old, "timeout-clamped.md", ORIGIN_BLANK_SOURCES.format(id="timeout-clamped"))
+        rc, out, err = run_cli(root, "import", str(old))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("imported 1 claim", out)
+        text = (root / "claims/timeout-clamped.md").read_text()
+        self.assertIn("sources:\n  - path: src/engine.py\n  - path: src/limits.py\n---", text)
+        rc, out, _ = run_cli(root, "check")
+        self.assertNotIn("listed twice", out)
+
+    def test_dash_c_resolves_src_relative_to_the_dir_flag(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/engine.py", "e\n")
+        write(root, "src/limits.py", "l\n")
+        write(root, "legacy/timeout-clamped.md", ORIGIN.format(id="timeout-clamped"))
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        rc, out, err = run_cli(elsewhere, "-C", str(root), "import", "legacy")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("imported 1 claim", out)
+        self.assertTrue((root / "claims/timeout-clamped.md").exists())
+
+    def test_missing_src_is_exit_2_with_no_traceback(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        rc, out, err = run_cli(root, "import", "nope")
+        self.assertEqual(rc, 2)
+        self.assertIn(str((root / "nope")), err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(out, "")
+
+    def test_src_that_is_a_file_not_a_directory_is_exit_2(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "notadir.md", "x\n")
+        rc, out, err = run_cli(root, "import", "notadir.md")
+        self.assertEqual(rc, 2)
+        self.assertIn(str((root / "notadir.md")), err)
 
 
 class SelfTest(TmpCase):

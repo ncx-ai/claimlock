@@ -153,6 +153,28 @@ def _sources_block(sources):
     return out
 
 
+def _skip_list_block(head, i):
+    """Advance `i` past a list under a `key:` header, exactly as `parse`
+    consumes one: an indented line is always part of it; a blank or comment
+    line is part of it only when, after any further blank/comment run,
+    another indented line follows. A blank line that precedes a column-0 key
+    or the end of the frontmatter is left in place (not consumed)."""
+    n = len(head)
+    while i < n:
+        if head[i][:1] in (" ", "\t"):
+            i += 1
+            continue
+        if _blank_or_comment(head[i]):
+            j = i
+            while j < n and _blank_or_comment(head[j]):
+                j += 1
+            if j < n and head[j][:1] in (" ", "\t"):
+                i = j
+                continue
+        break
+    return i
+
+
 def rewrite(text, name, *, status=None, verified_at=None, sources=None):
     """Replace only the named fields; every other line is preserved in place.
 
@@ -169,9 +191,7 @@ def rewrite(text, name, *, status=None, verified_at=None, sources=None):
         out, i, placed = [], 0, False
         while i < len(head):
             if re.match(r"^sources:", head[i]):
-                i += 1
-                while i < len(head) and head[i][:1] in (" ", "\t"):
-                    i += 1
+                i = _skip_list_block(head, i + 1)
                 out.extend(_sources_block(sources))
                 placed = True
                 continue

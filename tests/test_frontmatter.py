@@ -109,6 +109,19 @@ class Rewrite(unittest.TestCase):
     def test_none_leaves_field_untouched(self):
         self.assertEqual(rewrite(DOC, "a-claim.md"), DOC)
 
+    def test_sources_block_absorbs_interior_blank_lines_but_preserves_trailing_ones(self):
+        # `parse` tolerates a blank line inside a list (it's absorbed as long as
+        # another indented item follows); `rewrite`'s block-consumption must
+        # match that exactly, or the blank line's item gets left behind as a
+        # stray line and re-appears as a duplicate on the next parse.
+        text = "---\nid: x\nsources:\n  - src_a.py\n\n  - src_b.py\n\nstatus: unverified\n---\nb\n"
+        new = rewrite(text, "x.md", sources=[{"path": "src_a.py"}, {"path": "src_b.py"}])
+        self.assertEqual(new, "---\nid: x\nsources:\n  - path: src_a.py\n  - path: src_b.py"
+                              "\n\nstatus: unverified\n---\nb\n")
+        # and re-parsing the result finds exactly two sources, not three
+        fm, _ = split(new, "x.md")
+        self.assertEqual(parse(fm, "x.md")["sources"], [{"path": "src_a.py"}, {"path": "src_b.py"}])
+
 
 if __name__ == "__main__":
     unittest.main()
