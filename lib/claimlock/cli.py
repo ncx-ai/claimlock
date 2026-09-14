@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import VERSION
 from . import claims as C
-from . import ops
+from . import importer, ops, refs, selftest
 from . import project as P
 from . import snapshots
 
@@ -241,6 +241,51 @@ def cmd_diff(args):
     return 0
 
 
+def cmd_refs(args):
+    project = _project(args)
+    ids = {c.id for c in C.load_claims(project)}
+    markers, scanned = refs.scan(project)
+    dangling = [m for m in markers if m.id not in ids]
+    for m in dangling:
+        print(f"DANGLING {m.path}:{m.line}  Claim `{m.id}` names no claim")
+    print(f"claimlock: {len(markers)} markers in {scanned} files scanned, {len(dangling)} dangling")
+    return 1 if dangling else 0
+
+
+def cmd_affected(args):
+    project = _project(args)
+    base = Path(args.dir) if args.dir else Path.cwd()
+    wanted = set()
+    for a in args.paths:
+        p = Path(a)
+        p = (p if p.is_absolute() else base / p).resolve()
+        try:
+            wanted.add(p.relative_to(project.root).as_posix())
+        except ValueError:
+            print(f"claimlock: {a} is outside the project root; ignored", file=sys.stderr)
+    hasher = C.open_hasher(project)
+    for r in C.evaluate(project, hasher):
+        for s in r.claim.sources:
+            if s.path in wanted:
+                print(f"{r.claim.id}\t{r.state or r.claim.status}\t{s.path}")
+    hasher.save()
+    return 0
+
+
+def cmd_import(args):
+    project = _project(args)
+    ids, errors = importer.import_dir(project, Path(args.src))
+    for e in errors:
+        print(f"claimlock: {e}", file=sys.stderr)
+    noun = "claim" if len(ids) == 1 else "claims"
+    print(f"imported {len(ids)} {noun}; each is UNPINNED until re-checked and verified")
+    return 1 if errors else 0
+
+
+def cmd_self_test(args):
+    return selftest.run()
+
+
 def build_parser():
     ap = argparse.ArgumentParser(prog="claimlock",
                                  description="Claims pinned to the content that could falsify them.")
@@ -273,6 +318,12 @@ def build_parser():
     p.add_argument("ids", nargs="+")
     p = add("diff", cmd_diff, "show what changed in a claim's sources since it was verified")
     p.add_argument("id")
+    add("refs", cmd_refs, "fail on Claim markers that name no claim")
+    p = add("affected", cmd_affected, "claims whose sources include these paths")
+    p.add_argument("paths", nargs="+")
+    p = add("import", cmd_import, "import claims from the original ground-truth format")
+    p.add_argument("src")
+    add("self-test", cmd_self_test, "prove the detectors can fail")
     return ap, sub, add
 
 
