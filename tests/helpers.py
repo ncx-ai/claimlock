@@ -48,6 +48,16 @@ def claim_text(cid, status="unverified", evidence=(("test", "suite::case"),), so
     return "\n".join(lines)
 
 
+def pinned_text(cid, pins, status="verified"):
+    lines = ["---", f"id: {cid}", "area: core", f"status: {status}",
+             "evidence:", "  - kind: test", "    ref: s::c", "sources:"]
+    for path, blob in pins:
+        lines.append(f"  - path: {path}")
+        if blob:
+            lines.append(f"    blob: {blob}")
+    return "\n".join(lines + ["---", "Holds.", ""])
+
+
 def run_cli(cwd, *args, stdin=None, env=None):
     e = dict(os.environ)
     e["NO_COLOR"] = "1"

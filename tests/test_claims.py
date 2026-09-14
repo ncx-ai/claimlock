@@ -1,19 +1,9 @@
 import unittest
 
-from helpers import TmpCase, claim_text, make_repo, write
+from helpers import TmpCase, claim_text, make_repo, pinned_text, write
 from claimlock.claims import StoreMissing, evaluate, freshness, load_claims, open_hasher, problems
 from claimlock.pins import Hasher, blob_of_bytes
 from claimlock.project import load
-
-
-def pinned_text(cid, pins, status="verified"):
-    lines = ["---", f"id: {cid}", "area: core", f"status: {status}",
-             "evidence:", "  - kind: test", "    ref: s::c", "sources:"]
-    for path, blob in pins:
-        lines.append(f"  - path: {path}")
-        if blob:
-            lines.append(f"    blob: {blob}")
-    return "\n".join(lines + ["---", "Holds.", ""])
 
 
 class Load(TmpCase):
