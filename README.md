@@ -65,7 +65,7 @@ claimlock diff retries-are-capped     # see exactly what changed since verificat
 | `claimlock verify` | Re-hash every source (cache bypassed), pin it, and mark the claim verified — clearing `owed_by`/`owed_since`. Refuses a conflicted, refuted or incomplete claim. |
 | `claimlock owe` | Hand off a claim's re-check to someone (`--to <email>`, default your git `user.email`; `--reason "<one line>"`); status becomes `owed`. |
 | `claimlock resolve` | Settle conflicted `sources` pins after a merge: keep a pin only when it equals the merged content, else mark the claim owed by the merger; leave every other conflict for a person. |
-| `claimlock diff` | Show what changed in a verified claim's sources since it was pinned, reading the pinned content from git. |
+| `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. |
 | `claimlock who` | Who verified each of a claim's pins, from git history (email, timestamp, commit), tab-separated. |
 | `claimlock refs` | Fail if any `` Claim: `id` `` marker in prose names no claim. |
 | `claimlock affected` | List claims whose sources include the given path(s). |
@@ -120,9 +120,10 @@ and does not block. `owed` claims are listed (`OWED     <id> → <email> since
 
 The scope is **committed changes only** — an uncommitted edit is not in it. Run
 plain `claimlock check` to gate the whole working tree (locally, or in a
-pre-commit hook). `--changed` exits 2 outside a git repository or when git cannot
+pre-commit hook). `--changed` exits 2 outside a git repository, when git cannot
 find a merge base with `<base>` (in CI, the base branch must be fetched with
-enough history to reach it).
+enough history to reach it), or when git fails to list the changes since that
+merge base — an exit 2 is never a pass.
 
 ### Hand a re-check to someone
 
@@ -154,10 +155,15 @@ claimlock stale --mine                          # owed to your git user.email
 claimlock list --owed-by amy@example.com
 ```
 
-An owed claim is not compared with its sources, so `diff` prints only
-`claimlock: <id> is owed; only verified claims have pins`;
-its pins are still in the file, and `git cat-file -p <blob>` shows the content
-that was verified.
+An owed claim keeps its pins, so `claimlock diff <id>` still shows what moved
+since it was last verified, and `claimlock show <id>` lists each source's state —
+both read the pins as if the claim were verified. `check` gives an owed claim no
+verdict and never fails on it; a non-fresh one's `OWED` line ends with its worst
+source state, e.g. `(stale)` or `(missing)`.
+
+Emails are compared case-insensitively (and ignoring surrounding spaces) wherever
+claimlock asks whether a claim is owed to someone — `owe`, `--mine`, `--owed-by`
+and the hooks — while `owed_by` keeps the case it was written with.
 
 ### After a merge
 
@@ -204,9 +210,9 @@ counts). A verified source whose pin is neither reads `unanchored`, which fails
 
 The usual cause is running `verify` after editing a source and before `git add`.
 Once the source is staged the pin is anchored, so a pre-commit `check` after
-`git add` reads fresh. In CI the index is the checked-out commit and only pushed
-refs exist, so a pin anchored only by your unpushed branch or stash still reads
-`unanchored` there and blocks. Sources git ignores are exempt, and anchoring is
+`git add` reads fresh. A pin anchored only by your unpushed branch or stash reads
+`stale` in CI (CI's checkout does not contain that content) and blocks there.
+Sources git ignores are exempt, and anchoring is
 not evaluated at all when the store root lies inside a directory an enclosing
 repository ignores, or outside git.
 
@@ -281,7 +287,10 @@ That's deliberate:
   the timestamp — `cp -p`, `rsync -a`, a build cache that restores mtimes — can
   therefore hide a same-size edit from a warm cache. A fresh clone or a CI run
   has no cache and always hashes; deleting `.claimlock/cache/` forces the same
-  locally.
+  locally. After a change to `.gitattributes` or `core.autocrlf`, a warm cache
+  keeps the old normalization for a file until that file's mtime changes — which
+  fails safe (a stale pin, never a false fresh); run `claimlock check` after
+  touching the file, or delete `.claimlock/cache/`.
 
 ## CI
 
@@ -293,6 +302,11 @@ claimlock self-test && claimlock check --changed origin/main && claimlock refs
 trusting `check`/`refs` to mean anything; `check --changed` is the
 freshness/validity gate scoped to what the change touched (plain `claimlock
 check` gates the whole store); `refs` fails on any prose marker naming no claim.
+
+The CI checkout must fetch the base branch with enough history for `git
+merge-base` to find the common ancestor — in GitHub Actions, `fetch-depth: 0` on
+`actions/checkout` — or `check --changed` cannot compute its scope and exits 2.
+It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
 
 ## Migrating from earlier claimlock
 
@@ -335,11 +349,13 @@ check` gates the whole store); `refs` fails on any prose marker naming no claim.
   `.gitattributes` rule) reports every pin `uncommitted`.
 - **Local-only refs anchor.** Your unpushed branches, your stash and a
   conflicted merge's index stages all count as anchors, so a pin can read fresh
-  in your clone on content only your clone has. CI, which has only pushed refs,
-  still reports it `unanchored`.
-- **A symlinked source reads `unanchored` inside git.** A pin hashes the link
-  target's content, while git stores a symlink as its link text, so that content
-  never appears at the link's path in history. Cite the target file instead.
+  in your clone on content only your clone has. In CI it reads `stale` (CI's
+  checkout does not contain that content).
+- **A symlinked source is anchored at its target.** A pin hashes the link
+  target's content, while git stores a symlink as its link text, so anchoring
+  also looks up the target's path (for a target that is a regular file inside
+  the project root). Changing where the link points is a content change at the
+  target, not at the link; citing the target file directly is still clearer.
 - **Source paths starting with `:`.** The ignore check reads a leading `:` as
   git pathspec syntax, so a gitignored source named `:x` is not recognised as
   ignored and reads `unanchored`. Avoid such filenames.

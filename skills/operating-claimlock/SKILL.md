@@ -40,8 +40,9 @@ the claim file itself changed in committed history since the merge base with
 - `OWED <id> → <email> since <commit>` lines never block.
 
 It sees committed changes only; uncommitted edits need plain `check`. It exits 2
-outside git or when no merge base with `<base>` exists — fetch the base branch
-with enough history in CI.
+outside git, when no merge base with `<base>` exists, or when git fails to list
+the changes since it — fetch the base branch with enough history in CI (e.g.
+`fetch-depth: 0` in GitHub Actions). An exit 2 is never a pass.
 
 Exit codes: 0 clean, 1 findings, 2 the store could not be read (no claims
 directory, or a bad `.claimlock.toml`) or `--changed` could not run — exit 2
@@ -54,8 +55,8 @@ directory — that is a failure of the gate, not a pass.
 
 A pre-commit `check` after `git add` is fresh for newly verified content: the
 staged blob anchors the pin. Without `git add`, a source edited and then verified
-reads `unanchored`. In CI only pushed refs exist, so a pin anchored only by an
-unpushed branch or a stash blocks there.
+reads `unanchored`. A pin anchored only by an unpushed branch or a stash reads
+`stale` in CI (CI's checkout does not contain that content) and blocks there.
 
 In CI, install claimlock from wherever your team actually gets it. If you do not
 know the install source, say so and leave a placeholder — do not invent a

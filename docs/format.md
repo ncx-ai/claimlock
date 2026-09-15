@@ -297,11 +297,16 @@ Consequences:
   always re-hash from disk.
 - `claimlock diff` reads the pinned content from git only (`git cat-file blob
   <sha>`); there is no local copy. When git does not have it, `diff` says the
-  prior content is unavailable.
+  prior content is unavailable. It works for a verified or an `owed` claim (an
+  owed claim's pins are evaluated as if verified). Lines are compared without
+  their endings, so a CRLF checkout of LF content diffs only the lines that
+  changed; when only line endings differ, it prints `--- <path>: only line
+  endings differ from the pinned content`.
 - A source that is a symlink (to a file inside the root) pins the **target's**
-  content. Git stores a symlink as its link text, so inside git that content
-  never appears at the link's path in history: the source reads `unanchored`,
-  and `diff` cannot show its prior content.
+  content. Git stores a symlink as its link text, so that content never appears
+  at the link's own path in history; anchoring therefore also looks at the
+  target's path (see Anchoring), and `diff` reads the pinned target content from
+  git like any other.
 - A whitespace-only edit or a single re-saved byte produces a different pin
   and makes the claim stale. See "Limits" in the README.
 
@@ -318,7 +323,12 @@ set of cited source paths, one run computes the anchor set:
   ls-files -s`), so a conflicted merge's stages 1–3 count.
 
 Both commands run with `--literal-pathspecs`, so a source named `src/[id].ts`
-never matches `src/i.ts`. A pin is anchored when its blob is in that set. A
+never matches `src/i.ts`. A pin is anchored when its blob is in that set — a
+union across every cited path, since anchoring asks whether git can serve the
+content by sha. A cited source that is a symlink to a regular file inside the
+root (found with `lstat`, no git) adds the target's root-relative path to the
+query, so a committed target anchors the link's pin. The index is read first;
+history is walked only when some pin being checked is not staged. A
 blob written to the object store by other means (`git hash-object -w`, or staged
 and then unstaged) is not anchored.
 
@@ -332,8 +342,8 @@ Exemptions:
 - Outside git, or if the anchoring git call fails, anchoring is not evaluated.
 
 Because local-only refs anchor, a pin can read `fresh` in a clone that has
-content nobody else has yet; a CI checkout, which has only pushed refs, reports
-it `unanchored`. A pre-commit `check` after `git add` reads fresh, because the
+content nobody else has yet; in CI it reads `stale` (CI's checkout does not
+contain that content). A pre-commit `check` after `git add` reads fresh, because the
 staged blob anchors.
 
 ## `claimlock check` output
@@ -360,7 +370,11 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
   - `missing`: `a source does not exist or cannot be read — fix its sources (or the file's permissions), re-check, then: claimlock verify <id>`
 - An `OWED` line is printed for every owed claim without problems. `, N
   commits ago` (commits from `owed_since` to HEAD) is omitted when
-  `owed_since` is `none` or cannot be counted.
+  `owed_since` is `none` or cannot be counted; it is counted once per distinct
+  `owed_since`. When the claim's pins, evaluated as if it were verified, are
+  not fresh, the line ends with the worst source state: ` (unpinned)`,
+  ` (unanchored)`, ` (stale)` or ` (missing)`. This is a listing only: an owed
+  claim never blocks and `--json` gives it `state: null`.
 - `, F owed` is appended to the census only when F > 0. The other counts are
   always present, in that order, and count only the claims that block.
 - "sources hashed" counts the source files looked at this run, including those
@@ -387,8 +401,10 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
 5. The census names the scope: `claimlock: N claims (K in scope), M sources
    hashed — …`.
 6. Exit 2, printing only an error, when the store is not in a git repository
-   (`--changed needs a git repository`) or no merge base exists (`cannot find a
-   merge base between '<base>' and HEAD`).
+   (`--changed needs a git repository`), no merge base exists (`cannot find a
+   merge base between '<base>' and HEAD`), or git fails to list the changed
+   paths (`could not list changes since <merge-base> (git failed)`) — never an
+   empty scope that would pass.
 
 `check --json` prints one object: `claims`, `sources_hashed`, `counts` (the
 five blocking counts), `scope` (sorted in-scope ids, or `null` without
@@ -424,6 +440,11 @@ the non-fresh ones (`<id>\t<area>\t<state>\t<paths>`); it exits 1 only when a
 non-fresh verified claim is listed. `--owed-by <email>` and `--mine` (your git
 `user.email`; exit 2 if none is set) restrict `stale` and `list` to claims owed
 by that person.
+
+Every "owed to this person" comparison — `--owed-by`, `--mine`, `owe`'s
+`already owed` refusal, and the hooks' owed-to-you notices — compares emails
+stripped of surrounding spaces and casefolded, so `Bob@Example.com` is
+`bob@example.com`. The value written into `owed_by` keeps the case given.
 
 ## `claimlock resolve`
 
@@ -471,7 +492,9 @@ tab-separated line per source:
 
 `show` prints the same after each source: `— verified by <email> at <time>
 (<sha>)`, `— uncommitted (verifier known once committed)`, or `— verified by
-unknown (no git)`. Because attribution is by pin line, a commit that only
+unknown (no git)`. Each source's state column is its freshness; for an `owed`
+claim the pins are evaluated as if it were verified, so the recipient sees
+which sources moved (`check` still gives an owed claim no verdict). Because attribution is by pin line, a commit that only
 reorders `sources:` is credited, and a claim file committed with CRLF line
 endings reads `uncommitted`. `who`, `show` and `diff` exit 1 for an id with no
 claim.
@@ -534,7 +557,7 @@ refs` prints each one and exits 1 if any exist, 0 otherwise.
 |---|---|
 | `0` | Clean: no blocking claims (for `check`; `owed` never blocks), no non-fresh verified claims (for `stale`), no dangling markers (for `refs`), no `LEFT` outcome (for `resolve`), and successful read-only commands. |
 | `1` | Findings or a refusal: `check` found a blocking claim; `stale` found a non-fresh verified claim; `refs` found a dangling marker; `search` found nothing; `show`/`who`/`diff` named no claim; `import` reported per-file errors; `verify`, `owe`, `new` or `init` was refused; `resolve` left a claim or named no claim. |
-| `2` | Cannot run: bad `.claimlock.toml`, no claims directory, or a claims directory that cannot be listed; `init`/`import` into a target directory that doesn't exist; `check --changed` outside git or with no merge base; `owe` with no `--to` and no git `user.email`; `--mine` with no git `user.email`. |
+| `2` | Cannot run: bad `.claimlock.toml`, no claims directory, or a claims directory that cannot be listed; `init`/`import` into a target directory that doesn't exist; `check --changed` outside git, with no merge base, or when git fails to list the changes; `owe` with no `--to` and no git `user.email`; `--mine` with no git `user.email`. |
 
 `claimlock hook <event>` **always exits 0** — a hook must never fail the
 tool call that invoked it (see `docs/hook-semantics.md`). That includes a

@@ -83,7 +83,8 @@ can prove the marker resolves.
 - `unanchored` → the content matches the pin, but it was never committed or
   staged. Stage or commit the source; do not re-verify to clear it.
 - `owed` → someone was handed its re-check; `claimlock show <id>` says who.
-  `diff` shows nothing for an owed claim, so read its sources as they are now.
+  An owed claim keeps its pins: `claimlock diff <id>` shows what moved since it
+  was last verified, and `show` lists each source's state.
   Re-check it like a stale claim before any `verify`.
 - Conflict markers (`contains git conflict markers`) → run `claimlock resolve`.
   Never pick a `blob:` line by hand.
@@ -105,8 +106,9 @@ who verified each pin. You have two honest moves:
    result, fix the body or `sources` if your change moved the behaviour, then
    `claimlock verify <id>`. The same bar as your own claims: reading the new code
    is where the re-check starts, not where it ends.
-2. **If you cannot run the evidence, do not `verify`.** No permission, no
-   environment, no time: hand it off in the same change,
+2. **If you cannot run the evidence here, do not `verify`.** Hand off only when
+   the evidence is unrunnable here — no permission, no environment for it — not
+   merely slow or inconvenient. Then hand it off in the same change,
 
        claimlock owe <id> --to <verifier's email> --reason "<what your change did>"
 

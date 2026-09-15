@@ -340,3 +340,33 @@ T9. **Claim files survive CRLF checkouts.** A clone with `core.autocrlf=true`
     LF (a lone CR not followed by LF is still invalid), and `claimlock init`
     writes a `.gitattributes` entry `<claims_dir>/*.md text eol=lf` (appended,
     never duplicated) so new stores keep LF claim files in every clone.
+
+## Amendments (2026-09-14, final review)
+
+T10. **Follow-up, NOT implemented on this branch: a pin-set digest.** Open
+     question: two branches that each re-verify a multi-source claim after
+     changing *different* sources merge their pin lines without a conflict, and
+     the claim reads fresh for a combination of contents that no single
+     verification covered (README "Limits"). Proposed design: `verify` writes
+     one claim-level `pins:` line holding a digest of the whole ordered
+     `(path, blob)` set; a claim whose digest does not match its pins is
+     invalid; because every re-verify rewrites that one line, git then
+     conflicts whenever two branches re-verify different content, and `resolve`
+     becomes whole-side — keep one side's entire pin set (and its digest) only
+     when every source matches that side, else owed. Unresolved: migration of
+     existing claims (no digest), hand edits to `sources:`, and the cost of
+     spurious conflicts when both sides re-verify identical content with
+     different orderings. This branch does not implement it.
+T11. **The anchor set is a union of blobs across all cited paths.** Anchoring
+     asks whether git can serve the pinned content, by sha, so one query covers
+     every cited path and a pin is anchored when its blob is in the union. For
+     a source that is a symlink to a regular file inside the root, the target's
+     root-relative path is part of that query (found with `lstat`, no git), so
+     a committed target anchors the link's pin. The index is read first and
+     history is walked only when some pin being checked is not staged.
+T12. **`diff` and `show` evaluate an owed claim's pins as if verified**, and a
+     non-fresh owed claim's `OWED` line in `check` ends with its worst source
+     state; `evaluate`, `check`'s verdicts and the hooks still give an owed
+     claim none (T3). **`check --changed` exits 2 when git cannot list the
+     changes** since the merge base (`could not list changes since <base> (git
+     failed)`), rather than passing on an empty scope.
