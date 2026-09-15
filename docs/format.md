@@ -2,8 +2,9 @@
 
 This is the normative reference, derived from the implementation
 (`lib/claimlock/claims.py`, `lib/claimlock/frontmatter.py`,
-`lib/claimlock/pins.py`, `lib/claimlock/gitio.py`, `lib/claimlock/ops.py`,
-`lib/claimlock/merge.py`, `lib/claimlock/cli.py`, `lib/claimlock/project.py`).
+`lib/claimlock/pins.py`, `lib/claimlock/regions.py`, `lib/claimlock/gitio.py`,
+`lib/claimlock/ops.py`, `lib/claimlock/merge.py`, `lib/claimlock/cli.py`,
+`lib/claimlock/project.py`).
 If this document and the code ever disagree, the code is right and this file
 has drifted — file an issue.
 
@@ -98,7 +99,7 @@ allowed between keys and inside list blocks.
 | `verified_at` | string | Accepted for older claims and **ignored**; must be a single scalar if present. `claimlock verify` removes it. Who verified a pin and when is read from git (`claimlock who`). |
 | `evidence` | list | A list of `{kind, ref}` maps. `kind` must be one of `test`, `measurement`, `source`, `run`. No other keys are allowed on an evidence entry. |
 | `sources` | list | A list of source entries — see below. |
-| `pins` | string | Optional. The digest of the whole pin set, written by `claimlock verify` directly after the `sources` block: sha1 of the JSON array of `[path, blob]` pairs sorted by path (an unpinned source's blob is `""`). Must be 40 lowercase hex and equal that digest of the listed sources, else the claim is invalid; reordering sources keeps it. A claim with no `pins` line (verified before it existed) is valid. Every `verify` rewrites this one line, so two branches that re-verify one claim to different contents conflict on it even when they changed different sources. |
+| `pins` | string | Optional. The digest of the whole pin set, written by `claimlock verify` directly after the `sources` block: sha1 of the JSON array of the sorted entries below (an unpinned source's blob/hash is `""`). Must be 40 lowercase hex and equal that digest of the listed sources, else the claim is invalid; reordering sources keeps it. A claim with no `pins` line (verified before it existed) is valid. Every `verify` rewrites this one line, so two branches that re-verify one claim to different contents conflict on it even when they changed different sources. |
 
 Any frontmatter key outside this set is `unknown field '<k>' (allowed: id, area, status, verified_at, owed_by, owed_since, evidence, sources, pins)`.
 
@@ -115,6 +116,10 @@ sources:
   - src/legacy.py                # no pin yet — "unpinned"
   - path: src/client.py
     blob: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  - path: src/retry.py
+    region: retry-cap
+    blob: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+    hash: da39a3ee5e6b4b0d3255bfef95601890afd80709
 ```
 
 - `path` is required and must be a project-root-relative POSIX path that
@@ -122,15 +127,88 @@ sources:
   letter, no `..` segment. A path that fails this is
   `source path '<p>' must be relative and stay inside the project root`.
 - `blob`, if present, must be 40 lowercase hex characters, or
-  `source '<p>' has a malformed blob (expected 40 lowercase hex)`.
-- Any other key on a source map is `source '<p>' has unknown keys [...]`.
-- The same `path` listed twice is `source '<p>' is listed twice`.
+  `source '<p>' has a malformed blob (expected 40 lowercase hex)`. For a
+  region source, `blob` is still the pin of the **whole file** (used for
+  anchoring and `who`), never the region.
+- `region`, if present, must match `^[a-z0-9][a-z0-9-]*$` (see "Regions"
+  below), or `source '<p>' has a malformed region name`.
+- `hash`, if present, must be 40 lowercase hex characters, or
+  `source '<p>' has a malformed hash`. `hash` is the pin the region's
+  content is judged against.
+- `hash` without `region` is `source '<p>' has a hash but no region` — `hash`
+  only makes sense on a region entry.
+- A region entry (one with a valid `region`) must pin both `blob` and `hash`
+  together or neither: exactly one present is
+  `source '<p>#<r>' must pin both blob and hash`.
+- Any other key on a source map — anything outside `path`, `blob`, `region`,
+  `hash` — is `source '<p>' has unknown keys [...]`.
+- Duplicates are judged by the pair `(path, region)`: the same `path` may be
+  listed once whole and once per region, but not twice with the same
+  `region` (or twice whole). `source '<p>#<r>' is listed twice`, or
+  `source '<p>' is listed twice` for two whole-file entries. Judged by the
+  raw `region` value as written, even a malformed one — so a malformed
+  region name never falls back to colliding with a genuine whole-file entry
+  for the same path, while two identical malformed entries still collide
+  with each other.
 - A source entry with no usable `path` at all is
   `source entry needs a 'path': <repr>`.
 
-`verify` and `resolve` write each pin as a map whose `blob:` line is exactly
-four spaces, `blob: `, and the 40-hex id — the line `claimlock who` searches
-history for.
+A source's **key** — how every per-source listing (`check`, `stale`, `show`,
+`diff`, `--json`, hooks) names it — is `path` for a whole-file source, or
+`path#region` for a region source (`src/retry.py#retry-cap` above). The
+**pin** a source is judged against is `hash` for a region source, `blob` for
+a whole-file one.
+
+`verify` and `resolve` write each pin as a map whose `blob:`/`hash:` line is
+exactly four spaces, the field name, `: `, and the 40-hex id — the line
+`claimlock who` searches history for; a region entry's lines are written in
+the order `path`, `region`, `blob`, `hash`.
+
+The `pins:` digest (see the Fields table above) is computed over one entry
+per source, sorted: `[path, blob or ""]` for a whole-file source (unchanged
+from before regions existed, so every digest ever written stays valid), or
+`[path, region, blob or "", hash or ""]` for a region source.
+
+### Regions
+
+A `region` source pins the text of a named, marker-delimited region of the
+file instead of the whole file (`lib/claimlock/regions.py`). A line
+containing `claimlock:begin <name>` opens the region named `<name>`; a line
+containing `claimlock:end <name>` closes it. The markers may sit inside any
+comment syntax — a line matches when it contains `claimlock:begin` or
+`claimlock:end`, then whitespace, then the name, and the name is not
+followed by another `[a-z0-9-]` character (so `claimlock:begin r1-extra`
+never opens region `r1`). Names match `^[a-z0-9][a-z0-9-]*$`.
+
+The region is the lines **strictly between** the two marker lines — the
+marker lines themselves are never part of it, so restyling the marker
+comments never changes the pin. Regions of different names may nest or
+overlap. Extracting one name from a file fails, with a reason, when:
+
+- there is no `begin` line for it — `region '<name>' not found`
+- there is a second `begin` for it — `region '<name>' begins more than once`
+- there is no `end` after its `begin` — `region '<name>' has no end marker`
+- an `end` for it appears before any `begin` — `region '<name>' ends before it begins`
+- there is a second `end` for it, with no matching second `begin` —
+  `region '<name>' ends more than once`
+- the file is not valid UTF-8 — `not UTF-8, so regions cannot be read`
+
+A failed extraction reads the source `missing` (or `renamed`, if the file
+itself is also missing and traced to a new path — see "Renames" below); `diff`
+and `show` print the reason, and `verify` refuses with it
+(`<id>: source <p>#<r>: <reason>`).
+
+The file's bytes are decoded as UTF-8; lines are split at `\n` only, and a
+trailing `\r` is removed from each (an empty region is the empty string). The
+region **hash** — the value written as `hash` — is `sha1("blob <len>\0" +
+text)`, the region's lines each followed by `\n`, using the same formula as a
+whole-file `blob` but applied to the region text rather than the file's raw
+bytes. Git clean filters never apply to region text, only this line-ending
+normalization does.
+
+Region hashes use the same stat cache as whole-file blobs, keyed
+`"<path>\0<region>"`; `verify` and `resolve` bypass it, same as for whole
+files.
 
 ### `evidence` entries
 
@@ -192,8 +270,13 @@ written; it does not stop at the first one. The complete set of message
 - `source entry needs a 'path': <repr>`
 - `source '<p>' has unknown keys [...]`
 - `source '<p>' has a malformed blob (expected 40 lowercase hex)`
+- `source '<p>' has a malformed region name`
+- `source '<p>' has a malformed hash`
+- `source '<p>' has a hash but no region`
+- `source '<p>#<r>' must pin both blob and hash`
 - `source path '<p>' must be relative and stay inside the project root`
-- `source '<p>' is listed twice`
+- `source '<p>' is listed twice` (or `source '<p>#<r>' is listed twice` for a
+  region source — duplicates are judged by `(path, region)`)
 - `'pins' must be a pin-set digest (40 lowercase hex), as written by claimlock verify`
 - `pins digest does not match the listed sources — they were edited by hand or combined from different verifications; re-check the claim, then claimlock verify`
   (`claimlock verify` does not raise this one: it rewrites the digest)
@@ -240,7 +323,7 @@ A claims directory that exists but cannot be listed is not a claim problem:
 every command that reads the store exits 2 (`claims directory <dir> cannot be
 read: <reason>`), because reading it as empty would be a false clean.
 
-## Freshness: the five states
+## Freshness: the six states
 
 Freshness is evaluated only for a claim whose `status` is `verified`, that is
 not conflicted, and whose frontmatter parses cleanly; every other claim's
@@ -249,25 +332,99 @@ one, is neither fresh nor stale — it simply isn't being compared with its
 sources.
 
 For each source of a verified claim (a source whose path fails the
-root-relative rule is skipped here; `problems()` reports it):
+root-relative rule is skipped here; `problems()` reports it) — a region
+source is judged by its **region hash** against `hash`; every other source is
+judged by its **whole-file pin** against `blob`:
 
 | State | Meaning |
 |---|---|
-| `fresh` | The file exists, its current pin equals the pinned `blob`, and that pin is anchored, its path is one git ignores, or anchoring is not evaluated (see "Anchoring"). |
-| `unpinned` | The source has no `blob` at all (e.g. imported, or added by hand without running `verify`). |
-| `unanchored` | The current pin equals the pinned `blob`, but inside git that content was never committed or staged at that path (see "Anchoring"). |
-| `stale` | The file exists but its current pin differs from the pinned `blob`. |
-| `missing` | The file does not exist, is not a regular file, or cannot be read at that path (deleted, renamed, a directory, or unreadable permissions). An unreadable source is reported this way, never raised, so one bad file cannot hide every other claim's state. |
+| `fresh` | The file exists (and, for a region source, its region can be extracted), its current pin equals the pinned value, and that pin is anchored, its path is one git ignores, or anchoring is not evaluated (see "Anchoring"). |
+| `unpinned` | The source has no pin at all — no `blob` for a whole-file source, no `hash` for a region source (e.g. imported, or added by hand without running `verify`). |
+| `unanchored` | The current pin equals the pinned value, but inside git that content was never committed or staged at that path — for a region source, see the anchoring fallback below (see "Anchoring"). |
+| `stale` | The file exists (and, for a region source, its region can be extracted) but its current pin differs from the pinned value. |
+| `missing` | The file does not exist, is not a regular file, or cannot be read at that path (deleted, a directory, or unreadable permissions) — or, for a region source, its region cannot be extracted (see "Regions" above for the reasons). |
+| `renamed` | The file does not exist at the cited path, but git traces it to a new path (see "Renames" below); takes the place `missing` would otherwise read. |
 
 A claim's overall state is the **worst of its sources' states**, in this
-precedence (worst wins): `missing` > `stale` > `unanchored` > `unpinned` >
-`fresh`. A claim with no sources at all is `fresh` by convention — but
-`verified` claims are required to have at least one source (see above), so
-this only arises for a hand-edited file that bypassed that check.
+precedence (worst wins): `missing` > `renamed` > `stale` > `unanchored` >
+`unpinned` > `fresh`. A claim with no sources at all is `fresh` by
+convention — but `verified` claims are required to have at least one source
+(see above), so this only arises for a hand-edited file that bypassed that
+check.
 
-`unpinned`, `unanchored`, `stale` and `missing` are collectively `NON_FRESH`:
-these four are what `claimlock check` fails on, alongside any `invalid`
-(including conflicted) claim. `owed` never fails `check`.
+`unpinned`, `unanchored`, `stale`, `missing` and `renamed` are collectively
+`NON_FRESH`: these five are what `claimlock check` fails on, alongside any
+`invalid` (including conflicted) claim. `owed` never fails `check`.
+
+## Renames (git only)
+
+For each cited path whose file does not exist — only these; the common path
+(nothing missing) runs no extra git at all — `gitio.find_renames` looks for a
+rename, in the project root:
+
+1. `git log -1 --format=%H --diff-filter=D -- <path>` names the commit `C`
+   that last deleted it. If one exists, `git diff -M --name-status -z
+   --diff-filter=R C^` — `C`'s parent diffed against the current working
+   tree, over all tracked paths — is searched for a rename whose old path is
+   `<path>`; the reported commit is `C`, shortened to 7 characters. Because
+   the comparison runs from before the first deletion to the current working
+   tree, a chain of renames (`a` → `b` → `c`) is reported end to end as `a` →
+   `c`.
+2. If no commit ever deleted it, `git diff -M --name-status -z
+   --diff-filter=R --cached HEAD` is searched instead (a staged but
+   uncommitted `git mv`); the reported commit is the literal string
+   `uncommitted`.
+3. A rename counts only when the new path exists right now and lies inside
+   the project root.
+
+Detection uses git's default similarity threshold (50%), so a rename with
+edits is still found (and then reads `stale` after `follow` rewrites the
+path). A plain `mv` that is neither committed nor staged is invisible to git
+— it shows as a deletion plus an untracked file — and the source still reads
+`missing`, not `renamed`.
+
+A source whose file is missing and that `find_renames` maps to a new path
+reads `renamed` instead of `missing` (see the state table above). `check`'s
+per-source line for it reads `<key>: renamed → <new> (<sha7 | uncommitted>)`,
+and the hint (also in `show`) is
+`a source was renamed — run: claimlock follow <id>`. A `check --json` source
+entry for it gains `"renamed_to": "<new-path>"`. `diff` prints
+`--- <key>: renamed to <new> in <sha7 | uncommitted> — run: claimlock follow <id>`.
+
+See `claimlock follow` below for how to act on it.
+
+## `claimlock follow`
+
+`claimlock follow <id>...` rewrites the `path` of every `renamed` source of
+each named claim to its new path, keeping `region`, `blob` and `hash`
+unchanged — works for any status, not only `verified`. If the claim's `pins`
+digest matched its old sources exactly, it is recomputed over the new ones;
+if it was mismatched or absent, it is left exactly as it was (never invented,
+never dropped). Every other field is unchanged. The claim is then
+re-evaluated and each followed source prints:
+
+```
+followed <id>: <old> → <new> (<new state>)
+```
+
+`<old>`/`<new>` are keys (`path`, or `path#region` for a region source);
+`<new state>` is that source's freshness right after the rewrite — `fresh`
+for an unchanged move, `stale` when the content changed in the same commit
+or staging as the rename.
+
+Refused with exit 1 (the file is left untouched):
+
+- `no claim '<id>'`
+- `<id> has merge conflicts — run claimlock resolve first`
+- the claim's own parse error, if it has one
+- `<id> has problems that must be fixed first (run: claimlock check)` — a
+  `pins` value that is present but not a 40-hex digest (an already-invalid
+  claim; a mismatched-but-valid digest is fine and is left as is)
+- `follow needs a git repository`
+- `<id>: no renamed sources`
+- `<id>: <new-path> is already cited` — the new path (with the source's
+  region, if any) would collide with a key another of the claim's sources
+  already uses, including two renamed sources landing on the same new path
 
 ## The blob pin
 
@@ -308,12 +465,23 @@ Consequences:
   `resolve` always re-hash from disk.
 - `claimlock diff` reads the pinned content from git only (`git cat-file blob
   <sha>`); there is no local copy. When git does not have it, `diff` says the
-  prior content is unavailable. It works for a verified or an `owed` claim (an
-  owed claim's pins are evaluated as if verified). Lines are compared without
-  their endings, so a CRLF checkout of LF content diffs only the lines that
-  changed; when only line endings differ, it prints `--- <path>: only line
-  endings differ from the pinned content`. Lines break at `\n` only — a form
-  feed or other Unicode line separator stays inside its line, as in git.
+  prior content is unavailable (`--- <key>: changed, but the pinned content
+  <blob12> is not in git (never committed, or no repository) — prior content
+  unavailable; re-read the claim against the current file`). It works for a
+  verified or an `owed` claim (an owed claim's pins are evaluated as if
+  verified). Lines are compared without their endings, so a CRLF checkout of
+  LF content diffs only the lines that changed; when only line endings
+  differ, it prints `--- <key>: only line endings differ from the pinned
+  content`. Lines break at `\n` only — a form feed or other Unicode line
+  separator stays inside its line, as in git. A unified diff's headers are
+  `<key> @ <pin12> (verified)` and `<key> (now)`.
+- For a **region** source, `diff` reads the pinned `blob` (the whole file, as
+  it was verified) from git and extracts the region from it — if that fails,
+  it prints `--- <key>: the region cannot be found in the pinned content
+  (<reason>)` — then extracts the region from the current file the same way
+  (the source's state is already `missing` when that fails, so this is a
+  loud fallback, not the expected path) and diffs the two regions'
+  text — never the whole file's.
 - A source reached through a symlink — the source itself, or a directory above
   it — pins the content at the **resolved** path. Git stores a symlink as its
   link text, so that content never appears at the cited path in history;
@@ -359,6 +527,18 @@ content nobody else has yet; in CI it reads `stale` (CI's checkout does not
 contain that content). A pre-commit `check` after `git add` reads fresh, because the
 staged blob anchors.
 
+**A region source anchors with a fallback.** It is anchored the same way as
+above (via its whole-file `blob`) when that blob is in the anchor set or its
+path is git-ignored; only when it **isn't** does the fallback run: the file's
+currently staged content (index stage 0, read straight from git with no
+commit needed) is fetched and the region is extracted from it — if that
+still has the same region with the same `hash`, the pin is anchored. This
+fallback runs only when the whole-file blob is unanchored, so the common
+case (an already-anchored blob) never pays for the extra git read. Without
+it, verifying a region and staging just that file, while other uncommitted
+edits sit elsewhere in it, would leave the region pin `unanchored` until the
+whole file was committed.
+
 ## `claimlock check` output
 
 Plain `check` prints each failing claim, then the owed claims, then a census
@@ -368,10 +548,13 @@ line, and exits 1 if any claim failed:
 INVALID  <id>
          <problem>
 STALE    <id>
-         <path>: stale
+         <key>: stale
          re-check it (claimlock diff <id>), then: claimlock verify <id>
+RENAMED  <id>
+         <key>: renamed → <new> (<sha7 | uncommitted>)
+         a source was renamed — run: claimlock follow <id>
 OWED     <id> → <owed_by> since <owed_since>, N commits ago
-claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D stale, E missing, F owed
+claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D stale, E missing, R renamed, F owed
 ```
 
 - The state label is the state in capitals, padded to 8 characters
@@ -381,15 +564,23 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
   - `unanchored`: `the pinned content was never committed or staged — commit the source so every clone can see it (if it changed since, re-check, then: claimlock verify <id>)`
   - `stale`: `re-check it (claimlock diff <id>), then: claimlock verify <id>`
   - `missing`: `a source does not exist or cannot be read — fix its sources (or the file's permissions), re-check, then: claimlock verify <id>`
+  - `renamed`: `a source was renamed — run: claimlock follow <id>`
+- A source's per-source line is `<key>: <state>` for every state except
+  `renamed`, which instead prints
+  `<key>: renamed → <new> (<sha7 | uncommitted>)` — the new path and, in
+  parentheses, the 7-character commit that renamed it, or the literal
+  `uncommitted` for a staged-but-uncommitted `git mv`.
 - An `OWED` line is printed for every owed claim without problems. `, N
   commits ago` (commits from `owed_since` to HEAD) is omitted when
   `owed_since` is `none` or cannot be counted; it is counted once per distinct
   `owed_since`. When the claim's pins, evaluated as if it were verified, are
   not fresh, the line ends with the worst source state: ` (unpinned)`,
-  ` (unanchored)`, ` (stale)` or ` (missing)`. This is a listing only: an owed
-  claim never blocks and `--json` gives it `state: null`.
-- `, F owed` is appended to the census only when F > 0. The other counts are
-  always present, in that order, and count only the claims that block.
+  ` (unanchored)`, ` (stale)`, ` (missing)` or ` (renamed)`. This is a
+  listing only: an owed claim never blocks and `--json` gives it
+  `state: null`.
+- `, F owed` is appended to the census only when F > 0. The other counts,
+  `renamed` included, are always present, in that order, and count only the
+  claims that block.
 - "sources hashed" counts the source files looked at this run, including those
   answered from the stat cache.
 
@@ -420,10 +611,12 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
    empty scope that would pass.
 
 `check --json` prints one object: `claims`, `sources_hashed`, `counts` (the
-five blocking counts), `scope` (sorted in-scope ids, or `null` without
-`--changed`), and `results`, one per claim, with `id`, `area`, `status`,
-`problems`, `state`, `sources` (`path`, `state`), `in_scope`, `blocking` and
-`owed_by`. `--area <a>` limits every output to that area.
+five blocking counts, `renamed` included), `scope` (sorted in-scope ids, or
+`null` without `--changed`), and `results`, one per claim, with `id`, `area`,
+`status`, `problems`, `state`, `sources` (`path` — the source's **key**,
+`path` or `path#region` — and `state`; a `renamed` entry gains
+`renamed_to: "<new-path>"`), `in_scope`, `blocking` and `owed_by`.
+`--area <a>` limits every output to that area.
 
 ## `claimlock owe`
 
@@ -449,7 +642,8 @@ pass --to <email> or set git config user.email`. Owing an owed claim to a
 different person rewrites `owed_since` to the current HEAD.
 
 `claimlock stale` lists owed claims as `<id>\t<area>\towed\t<owed_by>` beside
-the non-fresh ones (`<id>\t<area>\t<state>\t<paths>`); it exits 1 only when a
+the non-fresh ones (`<id>\t<area>\t<state>\t<keys>`, comma-separated source
+keys); it exits 1 only when a
 non-fresh verified claim is listed. `--owed-by <email>` and `--mine` (your git
 `user.email`; exit 2 if none is set) restrict `stale` and `list` to claims owed
 by that person.
@@ -468,8 +662,8 @@ not conflicted`. Each processed claim prints `<OUTCOME> <id>  <message>`:
 
 | Outcome | Rule | Message |
 |---|---|---|
-| `KEPT` | Every conflict hunk lies wholly inside the frontmatter `sources` block (its `pins:` line included), both sides cite the same paths, and one side is whole: every source's current working-tree pin (cache bypassed) equals that side's pin, and that side's `pins:` digest, if it has one, matches its pins ("ours" is tried first). A side's pins and digest are read from its own version of the claim — index stage 2 (ours) or 3 (theirs) — because lines that merged cleanly from the other branch appear on both sides of the conflicted file; when git has no such stage, the side is read from the conflicted file and can be kept only if its digest matches. The claim is rewritten with that side's pins and digest; a side without a digest stays without one. | `every source matches what one side verified` |
-| `OWED` | As `KEPT`, but neither side is whole. Each source keeps the pin of the side it matches, else the "ours" pin; the `pins:` line is removed (nobody verified that set as a whole), and the claim becomes `status: owed`, `owed_by` = git `user.email`, `owed_since` = HEAD. | `<why> — owed by <email>`, where `<why>` is `a source matches neither side`, or, when every source matches some side but no one side matches them all, `the sources match pins from two verifications that never checked them together` |
+| `KEPT` | Every conflict hunk lies wholly inside the frontmatter `sources` block (its `pins:` line included), both sides cite the same **keys** (`path`, or `path#region`), and one side is whole: every key's current working-tree pin — a region hash for a region source, a blob for a whole file, both cache-bypassed — equals that side's pin for the same key, and that side's `pins:` digest, if it has one, matches its pins ("ours" is tried first). A side's pins and digest are read from its own version of the claim — index stage 2 (ours) or 3 (theirs) — because lines that merged cleanly from the other branch appear on both sides of the conflicted file; when git has no such stage, the side is read from the conflicted file and can be kept only if its digest matches. The claim is rewritten with that side's pins and digest; a side without a digest stays without one. A region entry's `blob` always travels with its `hash` from the same side — the two are never mixed from different sides. | `every source matches what one side verified` |
+| `OWED` | As `KEPT`, but neither side is whole. Each key keeps the pin(s) of the side it matches (for a region entry, `blob` and `hash` together, from that same side), else the "ours" pin; the `pins:` line is removed (nobody verified that set as a whole), and the claim becomes `status: owed`, `owed_by` = git `user.email`, `owed_since` = HEAD. | `<why> — owed by <email>`, where `<why>` is `a source matches neither side`, or, when every source matches some side but no one side matches them all, `the sources match pins from two verifications that never checked them together` |
 | `LEFT` | The file is not written. | one of the messages below |
 
 `LEFT` messages:
@@ -491,26 +685,34 @@ when any claim is `LEFT` or a named id does not exist, and 0 otherwise.
 ## `claimlock who` and `claimlock show`
 
 For each source, the verifier is the author email, ISO-8601 author time and
-short id of the latest commit whose diff added or removed the exact line
-`    blob: <sha>` in the claim file (`git log --follow -1 -G '^    blob: <sha>$'
--- <claim file>`, so renames of the claim file are followed). `who` prints one
-tab-separated line per source:
+short id of the latest commit whose diff added or removed the exact pin line
+in the claim file — `    blob: <sha>` for a whole-file source, `    hash:
+<sha>` for a region source (`git log --follow -1 -G '^    <field>: <sha>$'
+-- <claim file>`, so renames of the claim file are followed; `<field>` is
+`blob` or `hash`, whichever the source is judged by — `gitio.verifier(root,
+claim_rel, field, value)` takes the field name). `who` prints one
+tab-separated line per source, keyed like every other per-source listing
+(`path`, or `path#region`):
 
 ```
-<path>	<email>	<iso time>	<short sha>
-<path>	uncommitted          # no commit added that pin line
-<path>	unknown              # not in a git repository
-<path>	unpinned             # the source has no pin
+<key>	<email>	<iso time>	<short sha>
+<key>	uncommitted          # no commit added that pin line
+<key>	unknown              # not in a git repository
+<key>	unpinned             # the source has no pin
 ```
 
-`show` prints the same after each source: `— verified by <email> at <time>
-(<sha>)`, `— uncommitted (verifier known once committed)`, or `— verified by
-unknown (no git)`. Each source's state column is its freshness; for an `owed`
-claim the pins are evaluated as if it were verified, so the recipient sees
-which sources moved (`check` still gives an owed claim no verdict). Because attribution is by pin line, a commit that only
-reorders `sources:` is credited, and a claim file committed with CRLF line
-endings reads `uncommitted`. `who`, `show` and `diff` exit 1 for an id with no
-claim.
+`show` prints one line per source, in the same form `who` reads: `<key> —
+<state> (<pin12>)`, with the same verifier note appended to the end of that
+line — `— verified by <email> at <time> (<sha>)`, `— uncommitted (verifier
+known once committed)`, or `— verified by unknown (no git)`. The pin shown
+is `hash` for a region source, `blob` otherwise, truncated to its first 12
+characters (`unpinned` if there is none). Each source's state
+column is its freshness; for an `owed` claim the pins are evaluated as if it
+were verified, so the recipient sees which sources moved (`check` still
+gives an owed claim no verdict). Because attribution is by pin line, a
+commit that only reorders `sources:` is credited, and a claim file committed
+with CRLF line endings reads `uncommitted`. `who`, `show` and `diff` exit 1
+for an id with no claim.
 
 ## `.claimlock.toml`
 
@@ -569,7 +771,7 @@ refs` prints each one and exits 1 if any exist, 0 otherwise.
 | Code | Meaning |
 |---|---|
 | `0` | Clean: no blocking claims (for `check`; `owed` never blocks), no non-fresh verified claims (for `stale`), no dangling markers (for `refs`), no `LEFT` outcome (for `resolve`), and successful read-only commands. |
-| `1` | Findings or a refusal: `check` found a blocking claim; `stale` found a non-fresh verified claim; `refs` found a dangling marker; `search` found nothing; `show`/`who`/`diff` named no claim; `import` reported per-file errors; `verify`, `owe`, `new` or `init` was refused; `resolve` left a claim or named no claim. |
+| `1` | Findings or a refusal: `check` found a blocking claim; `stale` found a non-fresh verified claim; `refs` found a dangling marker; `search` found nothing; `show`/`who`/`diff` named no claim; `import` reported per-file errors; `verify`, `follow`, `owe`, `new` or `init` was refused; `resolve` left a claim or named no claim. |
 | `2` | Cannot run: bad `.claimlock.toml`, no claims directory, or a claims directory that cannot be listed; `init`/`import` into a target directory that doesn't exist; `check --changed` outside git, with no merge base, or when git fails to list the changes; `owe` with no `--to` and no git `user.email`; `--mine` with no git `user.email`. |
 
 `claimlock hook <event>` **always exits 0** — a hook must never fail the

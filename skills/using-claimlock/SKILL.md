@@ -53,7 +53,7 @@ else; anything else makes the claim `invalid`, which fails `check`:
 |---|---|
 | Claim text | One sentence, present tense, **one fact**. A file stating three things cannot go stale for one of them. |
 | `evidence` | A test name, a measurement with its numbers, or a run. "I read the code" is not evidence. `kind: source` entries say *where* the behaviour lives. `claimlock verify` will accept a claim whose only evidence is `source` entries — the tool does not enforce this rule, you do: never verify on `source` evidence alone. |
-| `sources` | Every file whose change could falsify the claim — the enforcement site, not just the constant. |
+| `sources` | Every file whose change could falsify the claim — the enforcement site, not just the constant. Prefer a `region` (`- path: <file>` / `region: <name>`, marked in the file with `claimlock:begin <name>` / `claimlock:end <name>`) when the enforcing code is a small part of a large or shared file — an unrelated edit elsewhere in it then leaves the claim `fresh` instead of noise. |
 
 Then `claimlock verify <id>` pins every source and marks it verified. Commit the
 claim together with the sources it pins: inside git, a pin whose content was
@@ -78,8 +78,12 @@ can prove the marker resolves.
   now lives in another file too), then verify.
 - No longer true → set `status: refuted` and say what replaced it. **Never
   delete** — the record of what was believed and why is the point.
-- `missing` → a source does not exist or cannot be read (deleted, renamed, or
+- `missing` → a source does not exist or cannot be read (deleted, or
   unreadable permissions); fix `sources` or the file, re-check, verify.
+- `renamed` → a source moved and git can trace it (a committed or staged
+  `git mv`). Run `claimlock follow <id>` — it rewrites the path and keeps the
+  pins; if the move also changed the content, `follow` reports the source
+  `stale` instead of `fresh` — re-read the claim against it before verifying.
 - `unanchored` → the content matches the pin, but it was never committed or
   staged. Stage or commit the source; do not re-verify to clear it.
 - `owed` → someone was handed its re-check; `claimlock show <id>` says who.
@@ -163,5 +167,6 @@ records that *you* checked it, now; once committed, `claimlock who` names you.
 | "The test passed, so it's verified" | Did you ever see it fail? A test never seen red is evidence of nothing. See `evidence-standards`. |
 | "The cited test doesn't exist, but verify anyway" | Evidence that cannot be run is not evidence. Leave it unverified and say so. |
 | "The claim has a merge conflict; I'll keep one side's blob" | Run `claimlock resolve`: it keeps pins only when the merged content is exactly what one side verified. |
+| "The file was only moved; I'll just edit the path" | Run `claimlock follow`: it keeps the pins honestly and updates the digest. |
 | "One claim for the whole subsystem" | It can't go stale for one part. Split it. |
 | "It's false now, delete it" | Refute it and say what replaced it. |

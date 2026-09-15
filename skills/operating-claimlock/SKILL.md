@@ -33,8 +33,8 @@ Locally, or in a pre-commit hook after `git add`, gate the whole working tree:
 the claim file itself changed in committed history since the merge base with
 `<base>`. Read its output in three parts:
 
-- claims printed as `INVALID`, `STALE`, `MISSING`, `UNPINNED` or `UNANCHORED` are
-  in scope and block (exit 1);
+- claims printed as `INVALID`, `STALE`, `MISSING`, `RENAMED`, `UNPINNED` or
+  `UNANCHORED` are in scope and block (exit 1);
 - `pre-existing (not changed here):` lists drift the change did not touch — it
   does not block, and it is still owed a re-check by someone;
 - `OWED <id> → <email> since <commit>` lines never block.
@@ -95,7 +95,9 @@ claim against its enforcement site; verify only the ones you re-checked. For a
 claim you cannot re-check, route it to the person `who` names: they re-check it,
 or you record the hand-off with `claimlock owe <id> --to <email> --reason "…"`.
 A large shared file stales every claim citing it — prefer the narrowest file
-that actually enforces the behaviour when writing `sources`.
+(or a `region` inside it — see the README) that actually enforces the
+behaviour when writing `sources`. A `RENAMED` claim isn't drift to route to
+anyone: run `claimlock follow <id>` to rewrite its path and keep its pins.
 
 ## After a merge
 

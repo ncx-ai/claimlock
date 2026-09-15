@@ -23,6 +23,7 @@ with the same `claims/` history converge to the same freshness state;
 - [Thirty-second tour](#thirty-second-tour)
 - [Statuses and states](#statuses-and-states)
 - [Commands](#commands)
+- [Regions](#regions)
 - [Using claimlock as a team](#using-claimlock-as-a-team)
   - [Claims are committed; `.claimlock/` is a per-clone cache](#claims-are-committed-claimlock-is-a-per-clone-cache)
   - [Gate a change in CI](#gate-a-change-in-ci)
@@ -86,7 +87,7 @@ A claim's **status** is written in its file:
 | `refuted` | Checked and found false; kept as a record. `verify` refuses it. | No |
 
 A verified claim's **state** is computed on every run, per source; the worst source wins
-(`missing` > `stale` > `unanchored` > `unpinned` > `fresh`):
+(`missing` > `renamed` > `stale` > `unanchored` > `unpinned` > `fresh`):
 
 | State | Means |
 |---|---|
@@ -95,6 +96,7 @@ A verified claim's **state** is computed on every run, per source; the worst sou
 | `unanchored` | Content matches its pin but was never committed or staged, so other clones can't recover it. |
 | `stale` | A source's content changed since it was pinned. Run `claimlock diff <id>`. |
 | `missing` | A source doesn't exist or can't be read. |
+| `renamed` | A source was moved (committed or staged); `check` names the new path. Run `claimlock follow <id>`. |
 
 Two **problems** fail `check` whatever the status:
 
@@ -109,7 +111,7 @@ Two **problems** fail `check` whatever the status:
 |---|---|
 | `claimlock init` | Create `.claimlock.toml` and `claims/`, add `.claimlock/` to `.gitignore`, and add `claims/*.md text eol=lf` to `.gitattributes`. |
 | `claimlock new` | Scaffold an unverified claim (`claimlock new <id> --area <area>`). |
-| `claimlock check` | The gate: exit 1 if any claim is invalid (including conflicted), or verified and `stale`, `missing`, `unpinned` or `unanchored`. `owed` claims are listed and never fail it. `--changed <base>` blocks only on claims whose sources or claim file changed in committed history since the merge base with `<base>` — see [Using claimlock as a team](#using-claimlock-as-a-team). |
+| `claimlock check` | The gate: exit 1 if any claim is invalid (including conflicted), or verified and `stale`, `missing`, `renamed`, `unpinned` or `unanchored`. `owed` claims are listed and never fail it. `--changed <base>` blocks only on claims whose sources or claim file changed in committed history since the merge base with `<base>` — see [Using claimlock as a team](#using-claimlock-as-a-team). |
 | `claimlock stale` | List non-fresh verified claims (exit 1 if any) and `owed` claims, tab-separated. `--owed-by <email>` / `--mine` list only claims owed by that person. |
 | `claimlock list` | List every claim with its status and flags. `--status <s>`, `--owed-by <email>`, `--mine` filter it. |
 | `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs. |
@@ -131,6 +133,55 @@ Every command accepts `-C <dir>` to run as though started in `<dir>` — but
 come **before** the subcommand name: `claimlock -C <dir> check` works,
 `claimlock check -C <dir>` errors (`unrecognized arguments: -C <dir>`). Full
 field-level and format detail: [`docs/format.md`](docs/format.md).
+
+## Regions
+
+A source can pin a marker-delimited **region** of a file instead of the whole
+file, so an edit elsewhere in that file doesn't stale the claim. Wrap the part
+that matters in a `claimlock:begin <name>` / `claimlock:end <name>` pair, in
+whatever comment syntax the file uses:
+
+```python
+# claimlock:begin retry-cap
+def clamp(requested, max_timeout):
+    return min(requested, max_timeout)
+# claimlock:end retry-cap
+```
+
+```javascript
+// claimlock:begin retry-cap
+function clamp(requested, maxTimeout) {
+  return Math.min(requested, maxTimeout);
+}
+// claimlock:end retry-cap
+```
+
+The name matches `^[a-z0-9][a-z0-9-]*$`. The pinned region is the lines
+**strictly between** the two marker lines, so restyling the marker comments
+themselves never changes the pin. Cite it in `sources` with a `region`:
+
+```yaml
+sources:
+  - path: src/retry.py
+    region: retry-cap
+```
+
+`claimlock verify` fills in `blob` (the whole file's pin, for anchoring and
+`who`) and `hash` (the region's own pin) alongside it. Every per-source
+listing — `check`, `stale`, `show`, `diff`, `--json` — names a region source
+by its **key**, `path#region` (e.g. `src/retry.py#retry-cap`).
+
+**Prefer a region** when the file that enforces a claim is large or shared —
+a config module, a router, a file several claims already cite — and the
+claim only depends on a small part of it. A whole-file pin on such a file
+goes stale on every unrelated edit; a region pin only goes stale when the
+marked lines change.
+
+A region that cannot be extracted unambiguously reads `missing` (`diff` and
+`show` print the reason): the marker is absent, duplicated (a second `begin`
+or an orphan second `end`), unterminated (a `begin` with no matching `end`),
+or out of order (an `end` before any `begin`) — or the file isn't valid
+UTF-8, so it can't be scanned for markers at all.
 
 ## Using claimlock as a team
 
@@ -322,6 +373,20 @@ Each pinned source records a **git blob id**:
   in a plain directory stays valid after `git init` for every file git applies
   no conversion to.
 
+A **region** source ([Regions](#regions)) is pinned the same way, applied to
+the region's text instead of the whole file: `sha1("blob <len>\0" + text)`,
+where `text` is the lines strictly between the markers, decoded as UTF-8 with
+a trailing `\r` stripped from each line — git's clean filters never run on
+that extracted text, only this line-ending normalization does. Inside git, a
+region pin still needs anchoring, and the check has a fallback: it first asks
+whether the whole file's blob is anchored (as for a whole-file source), and
+only when it isn't does it read the file's currently **staged** content
+straight from git and check whether that still contains the same region with
+the same hash. That second check is what keeps a region pin anchored right
+after `verify` and `git add` on the file it came from — without it, an
+uncommitted edit anywhere else in the same file would leave the region pin
+`unanchored` until the whole file was committed.
+
 That's deliberate:
 
 - **Not timestamps.** An mtime survives a checkout, a copy, or an editor
@@ -395,10 +460,30 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
 
 ## Limits
 
-- **File-level granularity.** A pin covers a whole file's content; a whitespace
-  reformat or an unrelated edit elsewhere in a large shared file makes every
-  claim citing it stale, whether or not the cited behavior changed. Prefer the
-  narrowest file that actually enforces the behavior when writing `sources`.
+- **File-level granularity, unless you pin a region.** A whole-file pin covers
+  the whole file's content; a whitespace reformat or an unrelated edit
+  elsewhere in a large shared file makes every claim citing it stale, whether
+  or not the cited behavior changed. Prefer the narrowest file that actually
+  enforces the behavior when writing `sources`, or pin a [region](#regions) of
+  it.
+- **Marker drift.** A region pin only knows the lines between its markers; a
+  refactor that moves the enforcing code out from between them (or moves other
+  code in) leaves a `fresh` region that no longer holds what the claim is
+  about. Nothing catches this automatically — review it, the same way you'd
+  review any other diff to a cited source.
+- **An unstaged plain `mv` is not detected.** Renaming a source with a plain
+  `mv` — not `git mv`, and not staged with `git add` afterward — is invisible
+  to git (it shows as a deletion plus an untracked file), so the source still
+  reads `missing`, not `renamed`. Stage the move (`git add -A` covers it) and
+  it's found.
+- **Clean filters don't apply to regions.** A region's pin is computed from
+  the file's raw bytes with only line-ending normalization applied, never a
+  `.gitattributes` clean filter — unlike a whole-file pin, which is exactly
+  what git would store. Only matters for a file with a clean filter configured.
+- **A file that isn't UTF-8 can't have regions.** Marker scanning decodes the
+  file as UTF-8; a source with a `region` on a non-UTF-8 file always reads
+  `missing`, with the reason `not UTF-8, so regions cannot be read`. A
+  whole-file pin on the same file has no such restriction.
 - **Line endings, only outside git or when clones convert differently.** Inside
   git a line-ending difference git normalizes does not change a pin. A pin still
   differs between clones outside git (raw bytes), and when git would convert a
