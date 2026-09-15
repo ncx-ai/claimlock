@@ -19,6 +19,7 @@ case ${variant%%-*} in
   s2) fixture=$fixtures/s2; tools=("${base[@]}" Edit) ;;
   s3) fixture=$fixtures/s3; tools=("${base[@]}" Edit Write) ;;
   s4) fixture=$fixtures/s4; tools=("${base[@]}" Edit Write) ;;
+  s7) fixture=$fixtures/s7; tools=("${base[@]}" Edit Write) ;;
   s5|s6) fixture=none; tools=(Read) ;;
   *) echo "unknown variant $variant" >&2; exit 2 ;;
 esac

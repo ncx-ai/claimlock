@@ -127,4 +127,84 @@ jobs:
       - run: python3 -m pytest
 EOF
 g add -A && g commit -qm "existing project"
+
+# ---- s7: the agent's refactor stales a teammate's claim; CI gates with --changed.
+# amy@example.com wrote and verified the claim on main; the repository's own
+# identity (sam@example.com, the session's) moved MAX into a config file on
+# branch `refactor`.
+amy() { git -c user.email=amy@example.com -c user.name=amy -c commit.gpgsign=false "$@"; }
+R=$BASE/s7; mkdir -p $R/src $R/tests $R/.github/workflows && cd $R && git init -q -b main
+cat > src/limit.py <<'EOF'
+MAX = 5
+
+
+def clamp(retries):
+    """Never retry more than MAX times, whatever the caller asks for."""
+    return min(retries, MAX)
+EOF
+cat > src/client.py <<'EOF'
+from limit import clamp
+
+
+def call(op, retries):
+    limit = clamp(retries)
+    for attempt in range(limit + 1):
+        try:
+            return op()
+        except IOError:
+            if attempt == limit:
+                raise
+EOF
+cat > tests/test_limit.py <<'EOF'
+from limit import clamp
+
+
+def test_clamp_caps_at_max():
+    assert clamp(100) == 5
+EOF
+cat > .github/workflows/ci.yml <<'EOF'
+name: ci
+on: [pull_request]
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: claimlock self-test && claimlock check --changed main && claimlock refs
+EOF
+claimlock init >/dev/null
+cat > claims/retries-are-capped.md <<'EOF'
+---
+id: retries-are-capped
+area: core
+status: unverified
+evidence:
+  - kind: test
+    ref: tests/test_limit.py::test_clamp_caps_at_max
+sources:
+  - path: src/limit.py
+---
+`clamp()` caps every retry count at `MAX` (5), whatever the caller asks for.
+EOF
+claimlock verify retries-are-capped >/dev/null
+amy add -A && amy commit -qm "retry cap, and a claim for it"
+git config user.email sam@example.com && git config user.name sam
+git checkout -qb refactor
+cat > src/config.py <<'EOF'
+MAX_RETRIES = 5
+EOF
+cat > src/limit.py <<'EOF'
+from config import MAX_RETRIES
+
+
+def clamp(retries):
+    """Never retry more than MAX_RETRIES times, whatever the caller asks for."""
+    return min(retries, MAX_RETRIES)
+EOF
+git -c commit.gpgsign=false add -A && git -c commit.gpgsign=false commit -qm "refactor: move MAX into config"
+if claimlock check --changed main >/dev/null; then
+  echo "s7 precondition failed: check --changed main passed" >&2; exit 1
+fi
 echo "$BASE"

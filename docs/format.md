@@ -2,8 +2,10 @@
 
 This is the normative reference, derived from the implementation
 (`lib/claimlock/claims.py`, `lib/claimlock/frontmatter.py`,
-`lib/claimlock/project.py`). If this document and the code ever disagree, the
-code is right and this file has drifted — file an issue.
+`lib/claimlock/pins.py`, `lib/claimlock/gitio.py`, `lib/claimlock/ops.py`,
+`lib/claimlock/merge.py`, `lib/claimlock/cli.py`, `lib/claimlock/project.py`).
+If this document and the code ever disagree, the code is right and this file
+has drifted — file an issue.
 
 A claim is one Markdown file in the claims directory (`claims/` by default),
 named `<id>.md`, holding a strict-YAML-subset frontmatter block followed by
@@ -21,6 +23,13 @@ represent is never silently misread.
 A claim file must start with a `---` line (line 1) and have a later `---` line
 closing the frontmatter block; everything after the closing `---` is the claim
 body.
+
+**Line endings.** A claim file with CRLF line endings is accepted and read
+exactly as its LF form (every `\r\n` becomes `\n` before anything else looks at
+the text). A lone `\r` that is not part of a `\r\n` pair is still a parse error.
+`claimlock init` appends `claims/*.md text eol=lf` to `.gitattributes` (never
+twice) so claim files stay LF in every clone; the rule names the default claims
+directory, so a store configured with another `claims_dir` needs its own rule.
 
 Every value is one of:
 
@@ -72,6 +81,7 @@ plain scalar starting with one of `[{&*!|>%@\`` is rejected
 (`unsupported YAML syntax starting with '<char>'; quote the value`) rather
 than guessed at, because those characters mean something in real YAML and
 silently treating them as literal text would misread a file that looks valid.
+(That is why `claimlock owe` writes `owed_by: "amy@example.com"` quoted.)
 
 Blank lines and full-line comments (`#...` after stripping) are always
 allowed between keys and inside list blocks.
@@ -82,12 +92,18 @@ allowed between keys and inside list blocks.
 |---|---|---|
 | `id` | string | Required. Must match `^[a-z0-9][a-z0-9-]*$` (kebab-case) and equal the filename stem (`retries-are-capped.md` → `id: retries-are-capped`). Missing `id` → `missing 'id'`. |
 | `area` | string | Optional; defaults to `"unfiled"` if absent. Must be a single scalar, not a list. |
-| `status` | string | One of `verified`, `unverified`, `refuted`. Defaults to `"unverified"` if absent. |
-| `verified_at` | string | Optional; an ISO-8601 timestamp written by `claimlock verify`. Must be a single scalar. Not otherwise validated as a date. |
+| `status` | string | One of `verified`, `unverified`, `refuted`, `owed`. Defaults to `"unverified"` if absent. |
+| `owed_by` | string | Only with `status: owed`, where it is required: an email address (`^[^@\s]+@[^@\s]+$`). |
+| `owed_since` | string | Only with `status: owed`, where it is required: a commit id (7–40 lowercase hex) or `none`. `claimlock owe` writes HEAD's 7-character id, or `none` outside git. |
+| `verified_at` | string | Accepted for older claims and **ignored**; must be a single scalar if present. `claimlock verify` removes it. Who verified a pin and when is read from git (`claimlock who`). |
 | `evidence` | list | A list of `{kind, ref}` maps. `kind` must be one of `test`, `measurement`, `source`, `run`. No other keys are allowed on an evidence entry. |
 | `sources` | list | A list of source entries — see below. |
 
-Any frontmatter key outside this set is `unknown field '<k>' (allowed: id, area, status, verified_at, evidence, sources)`.
+Any frontmatter key outside this set is `unknown field '<k>' (allowed: id, area, status, verified_at, owed_by, owed_since, evidence, sources)`.
+
+An `owed` claim keeps its `sources` pins exactly as they were; `claimlock
+verify` sets `status: verified`, re-pins every source and removes `owed_by`,
+`owed_since` and `verified_at`.
 
 ### `sources` entries
 
@@ -111,6 +127,10 @@ sources:
 - A source entry with no usable `path` at all is
   `source entry needs a 'path': <repr>`.
 
+`verify` and `resolve` write each pin as a map whose `blob:` line is exactly
+four spaces, `blob: `, and the 40-hex id — the line `claimlock who` searches
+history for.
+
 ### `evidence` entries
 
 ```yaml
@@ -127,7 +147,24 @@ evidence:
 ### The body
 
 Everything after the closing `---`, stripped of leading/trailing blank lines.
-Empty body → `no claim text after the frontmatter`.
+Empty body → `no claim text after the frontmatter`. `claimlock owe --reason
+<text>` appends one line to it: `Owed <YYYY-MM-DD> by <git user.email, or
+"unknown">: <text>`.
+
+## Conflicted claims
+
+A claim file is **conflicted** when it contains both a line starting with
+`<<<<<<< ` (seven `<` and a space) and a line starting with `>>>>>>> ` (seven
+`>` and a space), anywhere in the file. The check runs after CRLF
+normalization and before frontmatter parsing, so a conflicted claim carries no
+parse error, no metadata and no freshness. Its only problem is
+``<file>: contains git conflict markers — run `claimlock resolve` ``.
+
+Because the whole file is scanned, a body that quotes both marker lines (inside
+a code fence, for example) also reads as conflicted.
+
+`claimlock verify` and `claimlock owe` refuse a conflicted claim; `claimlock
+resolve` is the command for it (see below).
 
 ## Every message `problems()` can emit
 
@@ -135,14 +172,16 @@ Empty body → `no claim text after the frontmatter`.
 written; it does not stop at the first one. The complete set of message
 *prefixes* (some interpolate the offending value):
 
+- A conflicted file short-circuits everything else and is the claim's only
+  problem: ``<file>: contains git conflict markers — run `claimlock resolve` ``.
 - A parse error short-circuits everything else and is the claim's only
   problem: `<file>:<line>: <message>` — see "Parse errors" below.
-- `unknown field '<k>' (allowed: id, area, status, verified_at, evidence, sources)`
+- `unknown field '<k>' (allowed: id, area, status, verified_at, owed_by, owed_since, evidence, sources)`
 - `missing 'id'`
 - `id '<id>' is not kebab-case ([a-z0-9][a-z0-9-]*)`
 - `id '<id>' does not match filename '<file>'`
-- `'<area|verified_at>' must be a single value`
-- `status '<s>' is not one of verified, unverified, refuted`
+- `'<area|verified_at|owed_by|owed_since>' must be a single value`
+- `status '<s>' is not one of verified, unverified, refuted, owed`
 - `no claim text after the frontmatter`
 - `'evidence' must be a list`
 - `evidence entry needs 'kind' and 'ref': <repr>`
@@ -154,13 +193,19 @@ written; it does not stop at the first one. The complete set of message
 - `source '<p>' has a malformed blob (expected 40 lowercase hex)`
 - `source path '<p>' must be relative and stay inside the project root`
 - `source '<p>' is listed twice`
+- `status is 'owed' but 'owed_by' is not an email address`
+- `status is 'owed' but 'owed_since' is not a commit id (7-40 hex) or 'none'`
+- `status is 'owed' but no sources are listed`
+- `'<owed_by|owed_since>' is only valid with status: owed`
 - `status is 'verified' but no evidence is cited`
 - `status is 'verified' but no sources are listed, so it can never go stale`
 
 The last two only fire when checking (or attempting to set) `status:
 verified` — `claimlock verify` runs `problems()` with `as_status="verified"`
 so a claim with no evidence or sources yet is refused verification even while
-it is still nominally `unverified` on disk.
+it is still nominally `unverified` or `owed` on disk. In that mode the
+"only valid with status: owed" check is skipped, because `verify` removes
+those fields.
 
 ### Parse errors (frontmatter is unreadable at all)
 
@@ -170,9 +215,9 @@ other problems correctly. Reported as `<file>:<line>: <message>`:
 
 - `file must start with a '---' line` (line 1)
 - `no closing '---' line` (line 1)
-- `CR line endings are not supported; convert to LF` (line 1 — checked before
-  frontmatter parsing; the file is read as raw bytes specifically so a `\r`
-  survives to be caught here instead of being silently normalized away)
+- `CR line endings are not supported; convert to LF` (line 1 — a lone `\r`
+  left after CRLF normalization; the file is read as raw bytes specifically so
+  a `\r` is never silently translated away first)
 - `not valid UTF-8` (line 1 — the file could not be decoded at all)
 - `cannot be read: <reason>` (line 1 — the claim file itself could not be
   opened, e.g. permissions; reported as an invalid claim, never raised)
@@ -187,57 +232,249 @@ other problems correctly. Reported as `<file>:<line>: <message>`:
 - `unsupported YAML syntax starting with '<char>'; quote the value`
 - `unexpected indentation; list items are '  - ' and map continuations are 4 spaces`
 
-## Freshness: the four states
+A claims directory that exists but cannot be listed is not a claim problem:
+every command that reads the store exits 2 (`claims directory <dir> cannot be
+read: <reason>`), because reading it as empty would be a false clean.
 
-Freshness is evaluated only for a claim whose `status` is `verified` and whose
-frontmatter parses cleanly; every other claim's freshness is reported as
-`None` — an `unverified` or `refuted` claim, or an invalid one, is neither
-fresh nor stale, it simply isn't being checked yet.
+## Freshness: the five states
 
-For each source of a verified claim:
+Freshness is evaluated only for a claim whose `status` is `verified`, that is
+not conflicted, and whose frontmatter parses cleanly; every other claim's
+freshness is `None`. An `unverified`, `refuted` or `owed` claim, or an invalid
+one, is neither fresh nor stale — it simply isn't being compared with its
+sources.
+
+For each source of a verified claim (a source whose path fails the
+root-relative rule is skipped here; `problems()` reports it):
 
 | State | Meaning |
 |---|---|
-| `fresh` | The file exists and its current blob hash equals the pinned `blob`. |
+| `fresh` | The file exists, its current pin equals the pinned `blob`, and that pin is anchored (or anchoring is not evaluated). |
 | `unpinned` | The source has no `blob` at all (e.g. imported, or added by hand without running `verify`). |
-| `stale` | The file exists but its current blob hash differs from the pinned `blob`. |
-| `missing` | The file does not exist or cannot be read at that path (deleted, renamed, no longer a regular file, or unreadable permissions). An unreadable source is reported this way, never raised, so one bad file cannot hide every other claim's state. |
+| `unanchored` | The current pin equals the pinned `blob`, but inside git that content was never committed or staged at that path (see "Anchoring"). |
+| `stale` | The file exists but its current pin differs from the pinned `blob`. |
+| `missing` | The file does not exist, is not a regular file, or cannot be read at that path (deleted, renamed, a directory, or unreadable permissions). An unreadable source is reported this way, never raised, so one bad file cannot hide every other claim's state. |
 
 A claim's overall state is the **worst of its sources' states**, in this
-precedence (worst wins): `missing` > `stale` > `unpinned` > `fresh`. A claim
-with no sources at all is `fresh` by convention (there's nothing that could
-have gone stale) — but note `verified` claims are required to have at least
-one source (see above), so this only arises for a hand-edited file that
-bypassed that check.
+precedence (worst wins): `missing` > `stale` > `unanchored` > `unpinned` >
+`fresh`. A claim with no sources at all is `fresh` by convention — but
+`verified` claims are required to have at least one source (see above), so
+this only arises for a hand-edited file that bypassed that check.
 
-`unpinned`, `stale` and `missing` are collectively `NON_FRESH`: these three
-are what `claimlock check` fails on, alongside any `invalid` claim.
+`unpinned`, `unanchored`, `stale` and `missing` are collectively `NON_FRESH`:
+these four are what `claimlock check` fails on, alongside any `invalid`
+(including conflicted) claim. `owed` never fails `check`.
 
 ## The blob pin
 
-A pin is a git blob SHA1, computed **without invoking git**:
+A pin is a git blob id. How it is computed depends on where the store is:
 
-```
-sha1(b"blob " + str(len(data)).encode() + b"\0" + data)
-```
+- **Inside a git work tree** (`git rev-parse --is-inside-work-tree` is
+  `true`), the pins a run needs are computed by one `git hash-object
+  --stdin-paths`, which applies the file's clean filters and
+  `text`/`eol`/`core.autocrlf` normalization. The pin is the blob git would
+  store, so an LF checkout and a CRLF checkout of the same committed content
+  agree. If that call fails for a file, the raw formula below is used instead.
+- **Outside git**, the pin is computed without invoking git:
 
-This is byte-identical to `git hash-object --no-filters <file>`. Consequences:
+  ```
+  sha1(b"blob " + str(len(data)).encode() + b"\0" + data)
+  ```
 
-- A store can be created and verified in a plain directory with no `.git` at
-  all; running `git init` afterward does not invalidate any existing pin,
-  because the hash never depended on git being present.
-- Where a repository does exist, `claimlock diff` can ask git for a blob's
-  content directly (`git cat-file blob <sha>`) instead of needing its own
-  copy.
+  byte-identical to `git hash-object --no-filters <file>`.
+
+Consequences:
+
+- Where git applies no conversion to a file, both modes give the same pin, so
+  a store created in a plain directory stays valid after `git init`. A file git
+  does convert reads `stale` once after moving into git; one `verify` settles
+  it.
+- Pins still differ between clones when git would convert a file differently
+  in them (for example content committed with CRLF bytes, checked out with
+  `core.autocrlf=true` in one clone only).
+- The stat cache (`.claimlock/cache/stat.json`) stores each entry with the mode
+  that produced it and is trusted only in that mode. `verify` and `resolve`
+  always re-hash from disk.
+- `claimlock diff` reads the pinned content from git only (`git cat-file blob
+  <sha>`); there is no local copy. When git does not have it, `diff` says the
+  prior content is unavailable.
 - A source that is a symlink (to a file inside the root) pins the **target's**
-  content, because the file is read through the link. Git stores a symlink's
-  link text as its blob, not the target's bytes, so `claimlock diff` will not
-  find that pinned blob in git; it falls back to the snapshot under
-  `.claimlock/objects/`, or reports the prior content unavailable in a clone
-  that has no snapshot.
-- The formula hashes exact bytes: a whitespace-only edit, a line-ending
-  change, or a single re-saved byte all produce a different hash and make
-  the claim stale. See "Limits" in the README.
+  content. Git stores a symlink as its link text, so inside git that content
+  never appears at the link's path in history: the source reads `unanchored`,
+  and `diff` cannot show its prior content.
+- A whitespace-only edit or a single re-saved byte produces a different pin
+  and makes the claim stale. See "Limits" in the README.
+
+## Anchoring
+
+Inside git, a pin whose content matches is additionally required to be
+**anchored**: every clone must be able to recover the content it pins. For the
+set of cited source paths, one run computes the anchor set:
+
+- every blob that appeared at exactly one of those paths in any commit
+  reachable from any ref — full history (`git rev-list --objects --all
+  --full-history`), including local branches and `refs/stash`; and
+- every blob staged in the index for those paths, at every stage (`git
+  ls-files -s`), so a conflicted merge's stages 1–3 count.
+
+Both commands run with `--literal-pathspecs`, so a source named `src/[id].ts`
+never matches `src/i.ts`. A pin is anchored when its blob is in that set. A
+blob written to the object store by other means (`git hash-object -w`, or staged
+and then unstaged) is not anchored.
+
+Exemptions:
+
+- A source path git ignores (`git check-ignore --stdin`) is exempt: content that
+  can never be committed or staged is not owed a commit. A path starting with
+  `:` is not recognised as ignored by that check, so it gets no exemption.
+- When the store root itself lies inside a directory an enclosing repository
+  ignores (`git check-ignore -q .`), anchoring is not evaluated at all.
+- Outside git, or if the anchoring git call fails, anchoring is not evaluated.
+
+Because local-only refs anchor, a pin can read `fresh` in a clone that has
+content nobody else has yet; a CI checkout, which has only pushed refs, reports
+it `unanchored`. A pre-commit `check` after `git add` reads fresh, because the
+staged blob anchors.
+
+## `claimlock check` output
+
+Plain `check` prints each failing claim, then the owed claims, then a census
+line, and exits 1 if any claim failed:
+
+```
+INVALID  <id>
+         <problem>
+STALE    <id>
+         <path>: stale
+         re-check it (claimlock diff <id>), then: claimlock verify <id>
+OWED     <id> → <owed_by> since <owed_since>, N commits ago
+claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D stale, E missing, F owed
+```
+
+- The state label is the state in capitals, padded to 8 characters
+  (`UNANCHORED` is longer and is not truncated). Each non-fresh source is
+  listed, then one hint for the claim's overall state:
+  - `unpinned`: `never pinned — re-check it, then: claimlock verify <id>`
+  - `unanchored`: `the pinned content was never committed or staged — commit the source so every clone can see it (if it changed since, re-check, then: claimlock verify <id>)`
+  - `stale`: `re-check it (claimlock diff <id>), then: claimlock verify <id>`
+  - `missing`: `a source does not exist or cannot be read — fix its sources (or the file's permissions), re-check, then: claimlock verify <id>`
+- An `OWED` line is printed for every owed claim without problems. `, N
+  commits ago` (commits from `owed_since` to HEAD) is omitted when
+  `owed_since` is `none` or cannot be counted.
+- `, F owed` is appended to the census only when F > 0. The other counts are
+  always present, in that order, and count only the claims that block.
+- "sources hashed" counts the source files looked at this run, including those
+  answered from the stat cache.
+
+### `--changed <base>`
+
+1. The merge base of `<base>` and `HEAD` is found (`git merge-base <base>
+   HEAD`); the changed paths are `git diff --name-only --relative --no-renames
+   <merge-base> HEAD` — committed changes only, never the index or the working
+   tree.
+2. A claim is **in scope** when its claim file, or any of its cited source
+   paths, is among the changed paths.
+3. In-scope failing claims print as above and set exit 1. Out-of-scope failing
+   claims are printed under one heading and never block:
+
+   ```
+   pre-existing (not changed here):
+     <id>: invalid
+     <id>: stale
+   ```
+
+4. Owed claims are listed as above and never block.
+5. The census names the scope: `claimlock: N claims (K in scope), M sources
+   hashed — …`.
+6. Exit 2, printing only an error, when the store is not in a git repository
+   (`--changed needs a git repository`) or no merge base exists (`cannot find a
+   merge base between '<base>' and HEAD`).
+
+`check --json` prints one object: `claims`, `sources_hashed`, `counts` (the
+five blocking counts), `scope` (sorted in-scope ids, or `null` without
+`--changed`), and `results`, one per claim, with `id`, `area`, `status`,
+`problems`, `state`, `sources` (`path`, `state`), `in_scope`, `blocking` and
+`owed_by`. `--area <a>` limits every output to that area.
+
+## `claimlock owe`
+
+`claimlock owe <id>... [--to <email>] [--reason <text>]` rewrites each claim to
+`status: owed` with `owed_by` (`--to`, else `git config user.email`) and
+`owed_since` (HEAD's 7-character id, or `none`), leaves its pins and evidence
+unchanged, and prints `owed <id> → <email> (since <owed_since>)`.
+
+Refused with exit 1 (nothing written for that id):
+
+- `no claim '<id>'`
+- `--reason must be a single line`
+- `<id> has problems that must be fixed first (run: claimlock check)` —
+  including a conflicted claim
+- `<id> is <unverified|refuted>; only a verified or owed claim can be owed`
+- `'<email>' is not an email address`
+- `<id> is fresh — nothing is owed` (a verified claim in any non-fresh state
+  may be owed)
+- `<id> is already owed by <email>`
+
+With no `--to` and no git `user.email`, it exits 2: `nobody to hand this to —
+pass --to <email> or set git config user.email`. Owing an owed claim to a
+different person rewrites `owed_since` to the current HEAD.
+
+`claimlock stale` lists owed claims as `<id>\t<area>\towed\t<owed_by>` beside
+the non-fresh ones (`<id>\t<area>\t<state>\t<paths>`); it exits 1 only when a
+non-fresh verified claim is listed. `--owed-by <email>` and `--mine` (your git
+`user.email`; exit 2 if none is set) restrict `stale` and `list` to claims owed
+by that person.
+
+## `claimlock resolve`
+
+`claimlock resolve [<id>...]` settles conflicted claims; with no ids it
+processes every conflicted claim (and prints `claimlock: no conflicted claims`
+when there are none). A named claim that is not conflicted prints `-      <id>
+not conflicted`. Each processed claim prints `<OUTCOME> <id>  <message>`:
+
+| Outcome | Rule | Message |
+|---|---|---|
+| `KEPT` | Every conflict hunk lies wholly inside the frontmatter `sources` block, both sides cite the same paths, and each source's current working-tree pin (cache bypassed) equals the pin of one side. The claim is rewritten with those pins. | `every source matches one side's verified pin` |
+| `OWED` | As `KEPT`, but some source equals neither side's pin (or is missing). Matching pins are kept, the rest keep the "ours" pin, and the claim becomes `status: owed`, `owed_by` = git `user.email`, `owed_since` = HEAD. | `a source matches neither side — owed by <email>` |
+| `LEFT` | The file is not written. | one of the messages below |
+
+`LEFT` messages:
+
+- `<file>: a frontmatter delimiter is inside a conflict — needs a person`
+- `<file>: a conflict outside the sources block (line N) needs a person` — a
+  hunk in the body, the evidence or any other field; one conflict outside the
+  block leaves the whole file
+- `<file>: the two sides cite different sources — resolve by hand`
+- `<file>: a source matches neither side, and there is no git user.email to record who owes the re-check — set one, then run claimlock resolve`
+- `<file>: a source matches neither side, and git user.email '<email>' is not an email address to record who owes the re-check — fix it, then run claimlock resolve`
+- `<file>: unterminated conflict hunk`, `<file>: conflict end marker without a
+  start (line N)`, or a frontmatter parse error of one side
+
+Hunks may include a diff3 base section (`||||||| `), which is discarded.
+`resolve` never stages, commits or touches any file but the claim. It exits 1
+when any claim is `LEFT` or a named id does not exist, and 0 otherwise.
+
+## `claimlock who` and `claimlock show`
+
+For each source, the verifier is the author email, ISO-8601 author time and
+short id of the latest commit whose diff added or removed the exact line
+`    blob: <sha>` in the claim file (`git log --follow -1 -G '^    blob: <sha>$'
+-- <claim file>`, so renames of the claim file are followed). `who` prints one
+tab-separated line per source:
+
+```
+<path>	<email>	<iso time>	<short sha>
+<path>	uncommitted          # no commit added that pin line
+<path>	unknown              # not in a git repository
+<path>	unpinned             # the source has no pin
+```
+
+`show` prints the same after each source: `— verified by <email> at <time>
+(<sha>)`, `— uncommitted (verifier known once committed)`, or `— verified by
+unknown (no git)`. Because attribution is by pin line, a commit that only
+reorders `sources:` is credited, and a claim file committed with CRLF line
+endings reads `uncommitted`. `who`, `show` and `diff` exit 1 for an id with no
+claim.
 
 ## `.claimlock.toml`
 
@@ -274,7 +511,9 @@ Excluded from every scan, unconditionally:
 - Inside a git work tree, any file git ignores: candidates come from `git
   ls-files --cached --others --exclude-standard` run at the project root
   (tracked plus untracked-but-not-ignored files; submodule contents are not
-  listed). Outside git, or if that command fails, the tree is walked instead.
+  listed). Outside git, if that command fails, or when the store root itself
+  lies inside a directory an enclosing repository ignores, the tree is walked
+  instead.
 - Anything inside the resolved `claims_dir` itself (so a claim file quoting
   its own marker syntax in an example doesn't self-match).
 - When `refs.scan(project, only={...})` is called with an explicit path set
@@ -293,9 +532,9 @@ refs` prints each one and exits 1 if any exist, 0 otherwise.
 
 | Code | Meaning |
 |---|---|
-| `0` | Clean: no invalid claims, no non-fresh claims (for `check`/`stale`), no dangling markers (for `refs`), successful read-only commands. |
-| `1` | Findings: `check` found an invalid or non-fresh claim; `stale` found a non-fresh claim; `refs` found a dangling marker; `search`/`show` found nothing to show; `import` reported per-file errors; `verify` was refused for at least one id. |
-| `2` | The store could not be read at all: bad `.claimlock.toml`, or no `claims/` directory (`init`/`import` into a target directory that doesn't exist also exit 2). |
+| `0` | Clean: no blocking claims (for `check`; `owed` never blocks), no non-fresh verified claims (for `stale`), no dangling markers (for `refs`), no `LEFT` outcome (for `resolve`), and successful read-only commands. |
+| `1` | Findings or a refusal: `check` found a blocking claim; `stale` found a non-fresh verified claim; `refs` found a dangling marker; `search` found nothing; `show`/`who`/`diff` named no claim; `import` reported per-file errors; `verify`, `owe`, `new` or `init` was refused; `resolve` left a claim or named no claim. |
+| `2` | Cannot run: bad `.claimlock.toml`, no claims directory, or a claims directory that cannot be listed; `init`/`import` into a target directory that doesn't exist; `check --changed` outside git or with no merge base; `owe` with no `--to` and no git `user.email`; `--mine` with no git `user.email`. |
 
 `claimlock hook <event>` **always exits 0** — a hook must never fail the
 tool call that invoked it (see `docs/hook-semantics.md`). That includes a

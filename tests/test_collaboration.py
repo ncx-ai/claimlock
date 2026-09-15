@@ -1,6 +1,6 @@
 """Two-clone collaboration: claims/ is committed and shared, so freshness must
 survive push/pull/merge exactly the way any other tracked file does. Only
-`.claimlock/` (stat cache + local snapshots) is per-clone and gitignored —
+`.claimlock/` (the stat cache) is per-clone and gitignored —
 these tests are what makes that split load-bearing rather than asserted.
 
 Skipped entirely (not individually) when git is not on PATH.
