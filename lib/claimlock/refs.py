@@ -76,11 +76,13 @@ def scan(project, only=None):
     markers, scanned = [], 0
     for p, rel in _files(project, only):
         try:
-            text = p.read_text(encoding="utf-8")
+            text = p.read_bytes().decode("utf-8")
         except (UnicodeDecodeError, OSError):
             continue
         scanned += 1
-        for n, line in enumerate(text.splitlines(), 1):
+        # Split at "\n" only, so a marker's line number is the one an editor
+        # or `git grep -n` shows: `splitlines` also breaks at form feeds.
+        for n, line in enumerate(text.split("\n"), 1):
             for m in project.marker_pattern.finditer(line):
                 markers.append(Marker(rel, n, m.group(1)))
     return markers, scanned

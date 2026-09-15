@@ -17,12 +17,35 @@ plugin data directory is not set). Deleting it costs only speed. Two clones
 with the same `claims/` history converge to the same freshness state;
 `.claimlock/` never needs to.
 
+## Contents
+
+- [Install](#install)
+- [Thirty-second tour](#thirty-second-tour)
+- [Statuses and states](#statuses-and-states)
+- [Commands](#commands)
+- [Using claimlock as a team](#using-claimlock-as-a-team)
+  - [Claims are committed; `.claimlock/` is a per-clone cache](#claims-are-committed-claimlock-is-a-per-clone-cache)
+  - [Gate a change in CI](#gate-a-change-in-ci)
+  - [Hand a re-check to someone](#hand-a-re-check-to-someone)
+  - [After a merge](#after-a-merge)
+  - [Who verified](#who-verified)
+  - [`unanchored`](#unanchored)
+- [Hooks](#hooks)
+- [Skills](#skills)
+- [How staleness works](#how-staleness-works)
+- [CI](#ci)
+- [Migrating from earlier claimlock](#migrating-from-earlier-claimlock)
+- [Limits](#limits)
+
 ## Install
 
 ```
-/plugin marketplace add <owner>/claimlock
+/plugin marketplace add ncx-ai/claimlock
 /plugin install claimlock@claimlock
 ```
+
+The repository is private: adding the marketplace needs read access to
+`ncx-ai/claimlock` on GitHub.
 
 Requires Python ≥ 3.11 (standard library only — nothing to `pip install`).
 On an older `python3` the CLI exits 2 with a message, and the hooks stay
@@ -51,6 +74,35 @@ claimlock check                       # STALE retries-are-capped — exit 1
 claimlock diff retries-are-capped     # see exactly what changed since verification
 ```
 
+## Statuses and states
+
+A claim's **status** is written in its file:
+
+| Status | Means | Fails `check`? |
+|---|---|---|
+| `unverified` | Written, not yet checked. The default for a new claim; nothing is pinned. | No |
+| `verified` | Checked against its evidence; `claimlock verify` pinned every source. Gets a state (below). | When not `fresh` |
+| `owed` | Its re-check is handed to the person in `owed_by` (by `owe`, or by `resolve` after a merge). Pins are kept so `diff` can show what moved. | No (listed) |
+| `refuted` | Checked and found false; kept as a record. `verify` refuses it. | No |
+
+A verified claim's **state** is computed on every run, per source; the worst source wins
+(`missing` > `stale` > `unanchored` > `unpinned` > `fresh`):
+
+| State | Means |
+|---|---|
+| `fresh` | Every source's content equals its pin, and (inside git) that content is committed or staged. |
+| `unpinned` | A source has no pin — usually added by hand after the last `verify`. |
+| `unanchored` | Content matches its pin but was never committed or staged, so other clones can't recover it. |
+| `stale` | A source's content changed since it was pinned. Run `claimlock diff <id>`. |
+| `missing` | A source doesn't exist or can't be read. |
+
+Two **problems** fail `check` whatever the status:
+
+| Problem | Means |
+|---|---|
+| `invalid` | The file breaks a format rule ([docs/format.md](docs/format.md)) — including a `pins:` digest that no longer matches the sources. |
+| `conflicted` | The file holds git conflict markers. Run `claimlock resolve`. |
+
 ## Commands
 
 | Command | Does |
@@ -62,7 +114,7 @@ claimlock diff retries-are-capped     # see exactly what changed since verificat
 | `claimlock list` | List every claim with its status and flags. `--status <s>`, `--owed-by <email>`, `--mine` filter it. |
 | `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs. |
 | `claimlock show` | One claim in full: status (and owner, if owed), freshness per source, who verified each pin, evidence, body. |
-| `claimlock verify` | Re-hash every source (cache bypassed), pin it, and mark the claim verified — clearing `owed_by`/`owed_since`. Refuses a conflicted, refuted or incomplete claim. |
+| `claimlock verify` | Re-hash every source (cache bypassed), pin it, write the `pins:` digest of the whole pin set, and mark the claim verified — clearing `owed_by`/`owed_since`. Refuses a conflicted, refuted or incomplete claim. |
 | `claimlock owe` | Hand off a claim's re-check to someone (`--to <email>`, default your git `user.email`; `--reason "<one line>"`); status becomes `owed`. |
 | `claimlock resolve` | Settle conflicted `sources` pins after a merge: keep a pin only when it equals the merged content, else mark the claim owed by the merger; leave every other conflict for a person. |
 | `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. |
@@ -241,6 +293,12 @@ one of its ancestors (a config in a *subdirectory* of the opened project is not
 seen). Anywhere else, including a repository that merely has a `claims/`
 directory, every hook prints nothing at all and runs no git command.
 
+Hooks keep per-session state (`sessions/<session>.json` and a `.lock`) in the
+plugin data directory, or in `.claimlock/` when no data directory is set. At
+SessionStart, the files of any other session idle for more than 7 days are
+removed (never while that session holds its lock), so they do not pile up.
+`hook-errors.log` is moved to `hook-errors.log.1` once it passes 1 MiB.
+
 ## Skills
 
 | Skill | Purpose |
@@ -287,10 +345,17 @@ That's deliberate:
   the timestamp — `cp -p`, `rsync -a`, a build cache that restores mtimes — can
   therefore hide a same-size edit from a warm cache. A fresh clone or a CI run
   has no cache and always hashes; deleting `.claimlock/cache/` forces the same
-  locally. After a change to `.gitattributes` or `core.autocrlf`, a warm cache
-  keeps the old normalization for a file until that file's mtime changes — which
-  fails safe (a stale pin, never a false fresh); run `claimlock check` after
-  touching the file, or delete `.claimlock/cache/`.
+  locally. Inside git an entry is also tied to the settings that decide how git
+  converts the file — the repository's `config`, `config.worktree` and
+  `info/attributes`, the global and system config and attributes files at their
+  default locations (or where `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` point),
+  the git config environment variables, and every `.gitattributes` from the work
+  tree top down to the file's directory. Changing any of them (by content, not
+  timestamp) re-hashes the affected files on the next run instead of trusting a
+  hash made under the old rules. Not covered: a file pulled in by a config
+  `include`, and a custom `core.attributesFile` edited in place (changing the
+  setting itself is covered); after editing one of those, delete
+  `.claimlock/cache/`.
 
 ## CI
 
@@ -317,6 +382,10 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
 - **Pins of files git converts** (line endings, clean filters) were raw-byte
   hashes and now read `stale` once, which fails safe. One `verify` settles them
   for every clone.
+- **`pins:`** — a claim verified before the pin-set digest existed has no
+  `pins:` line and stays valid; its next `verify` adds one. A hand edit that
+  already changed its `sources` (other than reordering them) is not caught
+  until then.
 
 ## Limits
 
@@ -337,12 +406,16 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
 - **Conflict detection scans the whole claim file.** A claim body that quotes
   both a `<<<<<<< ` line and a `>>>>>>> ` line — inside a code fence, say — reads
   as conflicted.
-- **A multi-source claim can be fresh for a combination nobody verified.** If
-  one branch re-verifies a claim after changing its first source and another
-  branch re-verifies it after changing its second, the two pin lines merge
-  without a conflict and the claim reads fresh. Every pin matches its content,
-  but no single verification covered those contents together; claimlock does
-  not yet require one to.
+- **Two re-verifications of one claim always conflict.** `verify` writes a
+  `pins:` digest of the claim's whole pin set, so a branch that re-verifies a
+  claim after changing its first source and another that re-verifies it after
+  changing its second conflict on that line, even though their `blob` lines
+  would merge cleanly — otherwise the merge would read fresh for a combination
+  of contents no single verification covered. `resolve` then keeps a side only
+  when the merged content is exactly that side's whole pin set; the combination
+  case becomes `owed`. Re-verifying identical content on both branches writes
+  identical lines and does not conflict. Hand edits to `sources` other than
+  reordering make the claim invalid until it is re-verified.
 - **`who` and `show` attribute by pin line.** A hand edit that only reorders
   `sources:` removes and re-adds pin lines, so it credits the person who
   reordered them. A claim file committed with CRLF line endings (no
@@ -351,11 +424,13 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
   conflicted merge's index stages all count as anchors, so a pin can read fresh
   in your clone on content only your clone has. In CI it reads `stale` (CI's
   checkout does not contain that content).
-- **A symlinked source is anchored at its target.** A pin hashes the link
-  target's content, while git stores a symlink as its link text, so anchoring
-  also looks up the target's path (for a target that is a regular file inside
-  the project root). Changing where the link points is a content change at the
-  target, not at the link; citing the target file directly is still clearer.
+- **A symlinked source is anchored at its target.** A pin hashes the content
+  reached by following links — the source itself being a symlink, or a directory
+  above it (`link/a.py` where `link` → `real`) — while git stores a symlink as
+  its link text, so no commit holds that content at the cited path. Anchoring
+  therefore also looks up the fully resolved path (for a regular file inside the
+  project root). Changing where a link points is a content change at the target,
+  not at the link; citing the resolved path directly is still clearer.
 - **Source paths starting with `:`.** The ignore check reads a leading `:` as
   git pathspec syntax, so a gitignored source named `:x` is not recognised as
   ignored and reads `unanchored`. Avoid such filenames.

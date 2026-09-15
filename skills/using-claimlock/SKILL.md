@@ -162,6 +162,6 @@ records that *you* checked it, now; once committed, `claimlock who` names you.
 | "I read the enforcing lines, so it's verified" | Reading is where evidence starts. Run something that could fail, or leave it `unverified`. |
 | "The test passed, so it's verified" | Did you ever see it fail? A test never seen red is evidence of nothing. See `evidence-standards`. |
 | "The cited test doesn't exist, but verify anyway" | Evidence that cannot be run is not evidence. Leave it unverified and say so. |
-| "The claim has a merge conflict; I'll keep one side's blob" | Run `claimlock resolve`: it keeps a pin only when it equals the merged content. |
+| "The claim has a merge conflict; I'll keep one side's blob" | Run `claimlock resolve`: it keeps pins only when the merged content is exactly what one side verified. |
 | "One claim for the whole subsystem" | It can't go stale for one part. Split it. |
 | "It's false now, delete it" | Refute it and say what replaced it. |

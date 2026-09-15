@@ -35,6 +35,8 @@ EMAIL_CAP = 80
 PROBE_EVERY_S = 30
 LOCK_TIMEOUT_S = 5.0
 LOCK_POLL_S = 0.05
+SESSION_IDLE_S = 7 * 24 * 3600
+LOG_MAX_BYTES = 1 << 20
 _UNSET = object()
 RECHECK = ("Before asserting a limit, default or guarantee, run `claimlock search <topic>`. "
            "A non-fresh claim is owed a re-check (`claimlock diff <id>`), never a bare re-stamp.")
@@ -75,6 +77,9 @@ def main(event, stdin_text, env) -> int:
                                     f"{LOCK_TIMEOUT_S:g} s; hook skipped")
         if out:
             print(json.dumps(out))
+        if event == "session-start":
+            # Once per session, not on every tool call.
+            _prune_sessions(data_dir, _sid(payload))
     except Exception:  # noqa: BLE001 — a hook must never fail loudly
         _log(data_dir or env.get("CLAUDE_PLUGIN_DATA"), event)
     return 0
@@ -122,27 +127,96 @@ def _session_lock(data_dir, sid):
         return
     lock_path = data_dir / "sessions" / f"{sid}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    f = open(lock_path, "a+")
-    acquired = False
+    deadline = time.monotonic() + LOCK_TIMEOUT_S
+    f, acquired = None, False
     try:
-        deadline = time.monotonic() + LOCK_TIMEOUT_S
         while True:
+            if f is None:
+                f = open(lock_path, "a+")
             try:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
             except OSError:
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(LOCK_POLL_S)
+                continue
+            # `_prune_sessions` may have removed this file while we waited. A
+            # lock on a removed file excludes nobody — the next process creates
+            # a new file at the path — so take the lock again on that one.
+            try:
+                held, now = os.fstat(f.fileno()), os.stat(lock_path)
+                same = (held.st_dev, held.st_ino) == (now.st_dev, now.st_ino)
+            except OSError:
+                same = False
+            if same:
+                acquired = True
+                try:
+                    os.utime(lock_path)  # the session's activity, for `_prune_sessions`
+                except OSError:
+                    pass
+                break
+            fcntl.flock(f, fcntl.LOCK_UN)
+            f.close()
+            f = None
+            if time.monotonic() >= deadline:
+                break
         yield acquired
     finally:
-        if acquired:
-            try:
-                fcntl.flock(f, fcntl.LOCK_UN)
-            except OSError:
-                pass
-        f.close()
+        if f is not None:
+            if acquired:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            f.close()
+
+
+def _prune_sessions(data_dir, keep):
+    """Remove the files of sessions idle longer than SESSION_IDLE_S.
+
+    Every hook run leaves `<sid>.lock` and `<sid>.json` (a crash can also leave
+    a `<sid>.json.*.tmp`), one set per session, which would otherwise pile up
+    forever. A session's idle time is measured from its newest file — the lock
+    is touched each time it is taken and the state file on each save. Its
+    files are removed only while this process holds its lock, so a session
+    resuming at that moment is never interleaved (`_session_lock` takes the
+    lock again on a file removed under it). The current session is kept.
+    Best effort: any error leaves the files for a later run."""
+    d = data_dir / "sessions"
+    try:
+        entries = list(os.scandir(d))
+    except OSError:
+        return
+    groups = {}
+    for e in entries:
+        if not e.name.endswith((".json", ".lock", ".tmp")):
+            continue
+        sid = e.name.split(".", 1)[0]
+        if sid == keep:
+            continue
+        try:
+            mtime = e.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            continue
+        newest, paths = groups.get(sid, (0.0, []))
+        groups[sid] = (max(newest, mtime), paths + [Path(e.path)])
+    cutoff = time.time() - SESSION_IDLE_S
+    for sid, (newest, paths) in groups.items():
+        if newest >= cutoff:
+            continue
+        lock = d / f"{sid}.lock"
+        f = None
+        try:
+            if fcntl is not None and lock.exists():
+                f = open(lock, "a+")
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)  # OSError: in use, keep it
+            for p in sorted(paths, key=lambda p: p == lock):  # the lock last
+                p.unlink(missing_ok=True)
+        except OSError:
+            pass
+        finally:
+            if f is not None:
+                f.close()  # closing releases the lock
 
 
 def _log_dir(where):
@@ -151,26 +225,32 @@ def _log_dir(where):
     return Path(where) if where else Path.home() / ".claimlock"
 
 
-def _log(where, event):
+def _append_log(where, text):
+    """Append to hook-errors.log, first moving a log over LOG_MAX_BYTES to
+    hook-errors.log.1 (replacing an older one), so it never grows unbounded."""
     try:
         d = _log_dir(where)
         d.mkdir(parents=True, exist_ok=True)
-        with open(d / "hook-errors.log", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().astimezone().isoformat()} {event}\n{traceback.format_exc()}\n")
+        path = d / "hook-errors.log"
+        try:
+            if path.stat().st_size > LOG_MAX_BYTES:
+                os.replace(path, d / "hook-errors.log.1")
+        except FileNotFoundError:
+            pass
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(text)
     except OSError:
         pass
+
+
+def _log(where, event):
+    _append_log(where, f"{datetime.now().astimezone().isoformat()} {event}\n{traceback.format_exc()}\n")
 
 
 def _log_note(where, text):
     """Append a plain one-line note (no traceback) — for a condition worth
     surfacing to an operator that is not itself a caught exception."""
-    try:
-        d = _log_dir(where)
-        d.mkdir(parents=True, exist_ok=True)
-        with open(d / "hook-errors.log", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().astimezone().isoformat()} {text}\n")
-    except OSError:
-        pass
+    _append_log(where, f"{datetime.now().astimezone().isoformat()} {text}\n")
 
 
 def _sid(payload):

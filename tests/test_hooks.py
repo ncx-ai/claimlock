@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 import unittest.mock as mock
 
@@ -141,6 +142,77 @@ class Contract(HookCase):
         log = (self.data / "hook-errors.log").read_text()
         self.assertIn("session-start", log)
         self.assertIn("session lock", log)
+
+
+IDLE = 8 * 24 * 3600  # older than hooks.SESSION_IDLE_S
+
+
+class Housekeeping(HookCase):
+    """Every hook run leaves per-session files; they must not pile up forever."""
+
+    def aged(self, name, age_s=IDLE):
+        p = self.data / "sessions" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}")
+        t = time.time() - age_s
+        os.utime(p, (t, t))
+        return p
+
+    def test_session_start_removes_only_long_idle_sessions(self):
+        root = self.store()
+        gone = [self.aged("gone.json"), self.aged("gone.lock"), self.aged("gone.json.x1.tmp")]
+        # A session's age is its NEWEST file: a recent state file keeps its old lock.
+        kept = [self.aged("recent.json", 60), self.aged("recent.lock"), self.aged("s1.lock")]
+        self.hook(root, "session-start")
+        for p in gone:
+            self.assertFalse(p.exists(), p.name)
+        for p in kept:
+            self.assertTrue(p.exists(), p.name)
+
+    def test_other_events_do_not_prune(self):
+        root = self.store()
+        old = self.aged("gone.json")
+        self.hook(root, "stop")
+        self.hook(root, "post-tool-use")
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(hooks_mod.fcntl is None, "no fcntl: session locking unavailable")
+    def test_a_held_lock_keeps_its_session(self):
+        root = self.store()
+        lock, state = self.aged("busy.lock"), self.aged("busy.json")
+        with open(lock, "a+") as held:
+            hooks_mod.fcntl.flock(held, hooks_mod.fcntl.LOCK_EX)
+            self.hook(root, "session-start")  # another process: the lock conflicts
+            self.assertTrue(lock.exists())
+            self.assertTrue(state.exists())
+
+    @unittest.skipIf(hooks_mod.fcntl is None, "no fcntl: session locking unavailable")
+    def test_a_lock_file_removed_while_acquiring_is_taken_again(self):
+        # A lock on a file that was unlinked excludes nobody: a second process
+        # would create and lock a new file at the same path.
+        lock_path = self.data / "sessions" / "s1.lock"
+        real, removed = hooks_mod.fcntl.flock, []
+
+        def flock(f, op):
+            real(f, op)
+            if op & hooks_mod.fcntl.LOCK_EX and not removed:
+                removed.append(True)
+                lock_path.unlink()
+
+        with mock.patch.object(hooks_mod.fcntl, "flock", side_effect=flock):
+            with hooks_mod._session_lock(self.data, "s1") as acquired:
+                self.assertTrue(acquired)
+                self.assertTrue(removed, "precondition: the file was removed once")
+                self.assertTrue(lock_path.exists())
+
+    def test_the_error_log_rotates_when_large(self):
+        self.data.mkdir(parents=True)
+        log = self.data / "hook-errors.log"
+        log.write_text("x" * (hooks_mod.LOG_MAX_BYTES + 1))
+        hooks_mod._log_note(self.data, "fresh note")
+        self.assertTrue(log.read_text().rstrip().endswith("fresh note"))
+        self.assertLess(log.stat().st_size, 1000)
+        self.assertEqual((self.data / "hook-errors.log.1").stat().st_size, hooks_mod.LOG_MAX_BYTES + 1)
 
 
 class SessionStart(HookCase):

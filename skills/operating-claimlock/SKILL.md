@@ -100,14 +100,15 @@ that actually enforces the behaviour when writing `sources`.
 ## After a merge
 
 Two branches that verified the same claim against different content conflict on
-its `blob` lines; `check` then fails the claim as `INVALID … contains git conflict
-markers`. Resolve the source files first, then:
+its `pins:` line (and on `blob` lines both changed); `check` then fails the claim
+as `INVALID … contains git conflict markers`. Resolve the source files first, then:
 
     claimlock resolve
 
-- `KEPT` — every source's merged content equals one side's pin; those pins stay.
-- `OWED` — some source matches neither side; the claim becomes `owed` by your git
-  `user.email`, to re-check.
+- `KEPT` — the merged content is exactly what one side verified; that side's pins stay.
+- `OWED` — some source matches neither side, or the sources match pins from
+  different sides (a combination nobody verified); the claim becomes `owed` by
+  your git `user.email`, to re-check.
 - `LEFT` (exit 1, file untouched) — a conflict outside the `sources` block (body,
   evidence, another field), sides citing different sources, or an `OWED` case
   with no usable git `user.email`. A person edits those. `KEPT` needs no email.
@@ -160,6 +161,6 @@ directory.
 | "I was told to carry the status over" | Report the red gate and the re-check list instead. A green gate built on stamps is worse than a red one. |
 | "`--changed` is green, so the store is healthy" | It ignores pre-existing drift by design. Run plain `claimlock check` and triage what it lists. |
 | "Owe everything so CI goes green" | Each hand-off goes to a person who can re-check that claim, with a reason. A pile of owed claims nobody accepted is a red gate hidden. |
-| "Take either side of the pin conflict" | Run `claimlock resolve`; it keeps a pin only when it equals the merged content. |
+| "Take either side of the pin conflict" | Run `claimlock resolve`; it keeps pins only when the merged content is exactly what one side verified. |
 | "0 claims, check passed" | Check `claims_dir`. Seeing nothing is not finding nothing. |
 | "Disable the hook, it's noisy" | Noise means sources are too broad. Narrow them. |

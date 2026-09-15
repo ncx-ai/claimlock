@@ -4,6 +4,8 @@ Validation (`problems`) and freshness are separate on purpose. A claim can be
 well-formed and stale, or malformed and fresh; reporting only one would hide
 the other.
 """
+import hashlib
+import json
 import os
 import re
 import stat
@@ -16,7 +18,7 @@ from .project import is_within, safe_source
 
 STATUSES = ("verified", "unverified", "refuted", "owed")
 KINDS = ("test", "measurement", "source", "run")
-FIELDS = ("id", "area", "status", "verified_at", "owed_by", "owed_since", "evidence", "sources")
+FIELDS = ("id", "area", "status", "verified_at", "owed_by", "owed_since", "evidence", "sources", "pins")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 BLOB_RE = re.compile(r"^[0-9a-f]{40}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
@@ -36,6 +38,19 @@ def normalize_email(s):
         return None
     s = s.strip()
     return s.casefold() if EMAIL_RE.match(s) else None
+
+
+def pin_digest(pairs):
+    """The digest of one verification's whole pin set, written as `pins:`.
+
+    sha1 over the sorted (path, blob) pairs, an unpinned source counting as an
+    empty blob. Sorted, so reordering `sources` by hand keeps it. Because every
+    `verify` rewrites this one line, two branches that re-verify a claim to
+    different contents conflict on it even when they changed different
+    sources — which is what stops a merge from producing a fresh-looking pin
+    set no single verification covered."""
+    data = json.dumps(sorted([p, b or ""] for p, b in pairs))
+    return hashlib.sha1(data.encode("ascii")).hexdigest()
 
 
 class StoreMissing(Exception):
@@ -174,8 +189,9 @@ def load_claims(project):
     return out
 
 
-def problems(claim, project, *, as_status=None):
-    """Every reason this claim cannot be trusted as written."""
+def problems(claim, project, *, as_status=None, digest=True):
+    """Every reason this claim cannot be trusted as written. `digest=False`
+    skips the `pins:` digest check — for `verify`, which rewrites it."""
     if claim.conflicted:
         return [f"{claim.path.name}: contains git conflict markers — run `claimlock resolve`"]
     if claim.parse_error:
@@ -237,6 +253,16 @@ def problems(claim, project, *, as_status=None):
             out.append(f"source {path!r} is listed twice")
         seen.add(path)
 
+    # A claim with no `pins:` line predates the digest and is accepted; its
+    # next verify writes one.
+    pins = m.get("pins")
+    if pins is not None and digest:
+        if not (isinstance(pins, str) and BLOB_RE.match(pins)):
+            out.append("'pins' must be a pin-set digest (40 lowercase hex), as written by claimlock verify")
+        elif pins != pin_digest((s.path, s.blob) for s in claim.sources):
+            out.append("pins digest does not match the listed sources — they were edited by hand or "
+                       "combined from different verifications; re-check the claim, then claimlock verify")
+
     if status == "owed":
         if not (isinstance(m.get("owed_by"), str) and EMAIL_RE.match(m["owed_by"])):
             out.append("status is 'owed' but 'owed_by' is not an email address")
@@ -293,26 +319,27 @@ def anchors_for(project, sources):
 
 
 def _symlink_targets(root, rels):
-    """Root-relative paths of the regular files that cited symlinks resolve to,
-    when those files lie inside the root. A pin hashes a symlink's target
-    content, while git stores the link text at the link's own path — so that
-    content can only ever be anchored at the target's path. Plain `lstat` and
-    `resolve`, no git; a link escaping the root is already refused by
+    """Root-relative paths of the regular files that cited paths reach through
+    a symlink — the file itself or any directory above it — when those files
+    lie inside the root. A pin hashes the content found by following the
+    links, while git stores a symlink as its link text, so no commit ever
+    holds that content at the cited path (`link/a.py` under a linked `link/`
+    has no blob in history): it can only be anchored at the resolved path.
+    Plain `resolve`, no git; a path escaping the root is already refused by
     `safe_source`, and one that is dangling or names a non-file adds nothing."""
     base = Path(root).resolve()
     out = set()
     for rel in rels:
-        p = Path(root) / rel
         try:
-            if not stat.S_ISLNK(os.lstat(p).st_mode):
-                continue
-            target = p.resolve(strict=True)
+            target = (base / rel).resolve(strict=True)
             if not stat.S_ISREG(os.stat(target).st_mode):
                 continue
         except (OSError, RuntimeError):
             continue
         if is_within(target, base):
-            out.add(target.relative_to(base).as_posix())
+            resolved = target.relative_to(base).as_posix()
+            if resolved != Path(rel).as_posix():
+                out.add(resolved)
     return out
 
 

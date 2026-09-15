@@ -343,7 +343,8 @@ T9. **Claim files survive CRLF checkouts.** A clone with `core.autocrlf=true`
 
 ## Amendments (2026-09-14, final review)
 
-T10. **Follow-up, NOT implemented on this branch: a pin-set digest.** Open
+T10. **Follow-up, NOT implemented on this branch: a pin-set digest.**
+     (Superseded by T13, which implements it.) Open
      question: two branches that each re-verify a multi-source claim after
      changing *different* sources merge their pin lines without a conflict, and
      the claim reads fresh for a combination of contents that no single
@@ -370,3 +371,33 @@ T12. **`diff` and `show` evaluate an owed claim's pins as if verified**, and a
      claim none (T3). **`check --changed` exits 2 when git cannot list the
      changes** since the merge base (`could not list changes since <base> (git
      failed)`), rather than passing on an empty scope.
+
+## Amendments (2026-09-15, follow-ups)
+
+T13. **The pin-set digest (T10) is implemented**, with these rulings on its
+     open questions. The digest is sha1 over the JSON array of `[path, blob]`
+     pairs **sorted by path** (an unpinned source counts as `""`), so a hand
+     reorder of `sources` keeps it and the ordering concern disappears.
+     **Migration:** a claim without `pins:` is valid; its next `verify` writes
+     one. This does not reopen the gap, because the gap needs two
+     re-verifications and each now writes a digest line that conflicts.
+     **Hand edits:** any other change to `sources` makes the claim invalid
+     (`pins digest does not match the listed sources`) until it is
+     re-verified; `verify` itself skips that check, since it is the repair.
+     **Placement:** `pins:` directly after the `sources` block, so a
+     conflict on it is inside the block `resolve` settles. **Resolve** is
+     whole-side: a side is kept only when every source's merged content
+     equals that side's pin and the side's digest (if any) matches its pins;
+     otherwise the claim is owed, and its `pins:` line is removed.
+T14. **Anchoring follows symlinked directories.** T11's target lookup now
+     resolves the whole cited path, so `link/a.py` under a symlinked `link/`
+     anchors at `real/a.py`; before, only a source that was itself a symlink
+     was looked up, and a source under a linked directory stayed `unanchored`
+     forever.
+T15. **The stat cache is tied to conversion settings.** A git-mode entry's tag
+     includes a digest of the contents of the config and attributes files git
+     reads by default, the git config environment variables, and each
+     `.gitattributes` from the work tree top to the file's directory. A
+     settings change re-hashes instead of trusting a hash made under the old
+     rules, which could read fresh when a fresh clone reads stale. Read from
+     disk, no git call. `diff` and `refs` break lines at `\n` only.

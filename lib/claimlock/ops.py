@@ -104,7 +104,7 @@ def verify(project, cid) -> list:
         raise Refused(f"{cid} has merge conflicts — run claimlock resolve first")
     if c.status == "refuted":
         raise Refused(f"{cid} is refuted; edit its status by hand if it holds again")
-    probs = C.problems(c, project, as_status="verified")
+    probs = C.problems(c, project, as_status="verified", digest=False)
     if probs:
         raise Refused(f"{cid} cannot be verified:\n  " + "\n  ".join(probs))
     hasher = C.open_hasher(project)
@@ -129,6 +129,7 @@ def verify(project, cid) -> list:
         pinned.append((s.path, blob))
     text = frontmatter.rewrite(c.text, c.path.name, status="verified",
                                sources=[{"path": p, "blob": b} for p, b in pinned],
+                               pins=C.pin_digest(pinned),
                                remove=("verified_at", "owed_by", "owed_since"))
     _write(c.path, text)
     return pinned

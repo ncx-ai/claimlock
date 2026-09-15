@@ -209,6 +209,23 @@ class Anchoring(TmpCase):
         self.assertEqual(run_cli(root, "verify", "c")[0], 0)
         self.assertEqual(state_of(root), "unanchored")
 
+    def test_a_source_under_a_symlinked_directory_anchors_at_its_target(self):
+        # Git stores `link` as a symlink, so no commit ever holds a blob at
+        # `link/a.py`; the content is anchored only at `real/a.py`.
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "real/a.py", "one\n")
+        os.symlink("real", root / "link")
+        write(root, "claims/c.md", claim_text("c", sources=("link/a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        self.assertEqual(state_of(root), "fresh")
+        # Control: the resolved path anchors real content, it is not an exemption.
+        write(root, "real/a.py", "two\n")  # uncommitted and unstaged
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        self.assertEqual(state_of(root), "unanchored")
+
     def test_diff_explains_an_unanchored_pin(self):
         root = self.store()
         run_cli(root, "verify", "c")

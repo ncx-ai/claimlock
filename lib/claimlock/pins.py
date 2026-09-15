@@ -25,6 +25,14 @@ from . import gitio
 RACY_NS = 2_000_000_000
 
 
+# Environment that redirects where git reads config or attributes from, or
+# supplies config itself. GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n> are matched
+# by prefix.
+_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+            "GIT_ATTR_NOSYSTEM", "GIT_ATTR_SOURCE", "HOME", "XDG_CONFIG_HOME")
+
+
 def blob_of_bytes(data: bytes) -> str:
     h = hashlib.sha1()
     h.update(b"blob %d\0" % len(data))
@@ -32,13 +40,54 @@ def blob_of_bytes(data: bytes) -> str:
     return h.hexdigest()
 
 
+def _file_sig(path) -> str:
+    """A settings file's content digest: "-" when it does not exist, "?" when
+    it cannot be read (git cannot read it either, so it applies to nothing)."""
+    try:
+        return blob_of_bytes(Path(path).read_bytes())
+    except (FileNotFoundError, NotADirectoryError):
+        return "-"
+    except OSError:
+        return "?"
+
+
+def git_dirs(root):
+    """(work tree top, git dir, common dir) of the repository holding `root`,
+    found the way git finds it — the nearest `.git` directory, or a `.git`
+    file naming one (a linked worktree or submodule) — without running git.
+    None when there is none."""
+    start = Path(root).resolve()
+    for top in (start, *start.parents):
+        dot = top / ".git"
+        try:
+            if dot.is_dir():
+                gitdir = dot
+            elif dot.is_file():
+                line = dot.read_text(encoding="utf-8", errors="replace").strip()
+                if not line.startswith("gitdir:"):
+                    return None
+                gitdir = (top / line[len("gitdir:"):].strip()).resolve()
+            else:
+                continue
+            common = gitdir
+            if (gitdir / "commondir").is_file():
+                rel = (gitdir / "commondir").read_text(encoding="utf-8", errors="replace").strip()
+                common = (gitdir / rel).resolve()
+        except OSError:
+            return None
+        return top, gitdir, common
+    return None
+
+
 class Hasher:
     """Blob hashes of root-relative files, reusing a (size, mtime_ns) stat cache.
 
     mode "git": the blob git would store (normalized), batched by `prime`.
-    mode "raw": sha1 of the raw bytes. Cache entries carry their mode, and an
-    entry is trusted only in the mode that wrote it (legacy 3-item entries are
-    raw), so a clone that gains or loses git never reuses the other's hashes.
+    mode "raw": sha1 of the raw bytes. Cache entries carry a tag (`_tag`), and
+    an entry is trusted only under the tag that wrote it (legacy 3-item
+    entries are raw), so a clone that gains or loses git never reuses the
+    other's hashes, and in git mode a change to any setting that decides how
+    git converts the file re-hashes it rather than trusting the old rules.
     """
 
     def __init__(self, root: Path, cache_path, mode="raw"):
@@ -49,6 +98,9 @@ class Hasher:
         self.dirty = False
         self.hashed = 0
         self._primed = {}
+        self._settings = None
+        self._top = None
+        self._attrs = {}
         if self.cache_path and self.cache_path.is_file():
             try:
                 loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
@@ -56,12 +108,56 @@ class Hasher:
             except (ValueError, OSError):
                 self.cache = {}
 
+    def _git_settings(self):
+        """Signature of the conversion settings that are the same for every
+        file: config and attribute files at each level git reads them from by
+        default, plus the environment that redirects or supplies them.
+        Computed once per Hasher, from file contents — no git call, so a hook
+        that runs no git keeps running none."""
+        if self._settings is None:
+            env = sorted((k, v) for k, v in os.environ.items()
+                         if k in _GIT_ENV or k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")))
+            home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
+            xdg = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+            files = [os.environ.get("GIT_CONFIG_GLOBAL") or home / ".gitconfig",
+                     xdg / "git" / "config", xdg / "git" / "attributes",
+                     os.environ.get("GIT_CONFIG_SYSTEM") or "/etc/gitconfig", "/etc/gitattributes"]
+            dirs = git_dirs(self.root)
+            if dirs:
+                self._top, gitdir, common = dirs
+                files += [common / "config", gitdir / "config.worktree", common / "info" / "attributes"]
+            else:
+                self._top = self.root.resolve()
+            self._settings = json.dumps([env, [_file_sig(f) for f in files]])
+        return self._settings
+
+    def _tag(self, rel):
+        """The tag a cache entry for `rel` must carry to be trusted: the mode,
+        and in git mode a digest of the shared settings plus every
+        `.gitattributes` from the work tree top down to the file's directory."""
+        if self.mode != "git":
+            return self.mode
+        settings = self._git_settings()
+        parent = (self.root.resolve() / rel).parent
+        try:
+            parts = parent.relative_to(self._top).parts
+        except ValueError:
+            parts = ()
+        sigs, d = [], self._top
+        for part in ("", *parts):
+            d = d / part if part else d
+            key = str(d)
+            if key not in self._attrs:
+                self._attrs[key] = _file_sig(d / ".gitattributes")
+            sigs.append(self._attrs[key])
+        return "git:" + hashlib.sha1("\n".join([settings, *sigs]).encode("ascii")).hexdigest()
+
     def _cached(self, rel, st):
         e = self.cache.get(rel)
         if not isinstance(e, list) or len(e) not in (3, 4):
             return None
-        mode = e[3] if len(e) == 4 else "raw"
-        if mode == self.mode and e[0] == st.st_size and e[1] == st.st_mtime_ns:
+        tag = e[3] if len(e) == 4 else "raw"
+        if e[0] == st.st_size and e[1] == st.st_mtime_ns and tag == self._tag(rel):
             return e[2]
         return None
 
@@ -117,7 +213,7 @@ class Hasher:
         if digest is None:
             return None
         if time.time_ns() - st.st_mtime_ns >= RACY_NS:
-            self.cache[rel] = [st.st_size, st.st_mtime_ns, digest, self.mode]
+            self.cache[rel] = [st.st_size, st.st_mtime_ns, digest, self._tag(rel)]
             self.dirty = True
         elif rel in self.cache:
             del self.cache[rel]

@@ -98,8 +98,9 @@ allowed between keys and inside list blocks.
 | `verified_at` | string | Accepted for older claims and **ignored**; must be a single scalar if present. `claimlock verify` removes it. Who verified a pin and when is read from git (`claimlock who`). |
 | `evidence` | list | A list of `{kind, ref}` maps. `kind` must be one of `test`, `measurement`, `source`, `run`. No other keys are allowed on an evidence entry. |
 | `sources` | list | A list of source entries — see below. |
+| `pins` | string | Optional. The digest of the whole pin set, written by `claimlock verify` directly after the `sources` block: sha1 of the JSON array of `[path, blob]` pairs sorted by path (an unpinned source's blob is `""`). Must be 40 lowercase hex and equal that digest of the listed sources, else the claim is invalid; reordering sources keeps it. A claim with no `pins` line (verified before it existed) is valid. Every `verify` rewrites this one line, so two branches that re-verify one claim to different contents conflict on it even when they changed different sources. |
 
-Any frontmatter key outside this set is `unknown field '<k>' (allowed: id, area, status, verified_at, owed_by, owed_since, evidence, sources)`.
+Any frontmatter key outside this set is `unknown field '<k>' (allowed: id, area, status, verified_at, owed_by, owed_since, evidence, sources, pins)`.
 
 An `owed` claim keeps its `sources` pins exactly as they were; `claimlock
 verify` sets `status: verified`, re-pins every source and removes `owed_by`,
@@ -176,7 +177,7 @@ written; it does not stop at the first one. The complete set of message
   problem: ``<file>: contains git conflict markers — run `claimlock resolve` ``.
 - A parse error short-circuits everything else and is the claim's only
   problem: `<file>:<line>: <message>` — see "Parse errors" below.
-- `unknown field '<k>' (allowed: id, area, status, verified_at, owed_by, owed_since, evidence, sources)`
+- `unknown field '<k>' (allowed: id, area, status, verified_at, owed_by, owed_since, evidence, sources, pins)`
 - `missing 'id'`
 - `id '<id>' is not kebab-case ([a-z0-9][a-z0-9-]*)`
 - `id '<id>' does not match filename '<file>'`
@@ -193,6 +194,9 @@ written; it does not stop at the first one. The complete set of message
 - `source '<p>' has a malformed blob (expected 40 lowercase hex)`
 - `source path '<p>' must be relative and stay inside the project root`
 - `source '<p>' is listed twice`
+- `'pins' must be a pin-set digest (40 lowercase hex), as written by claimlock verify`
+- `pins digest does not match the listed sources — they were edited by hand or combined from different verifications; re-check the claim, then claimlock verify`
+  (`claimlock verify` does not raise this one: it rewrites the digest)
 - `status is 'owed' but 'owed_by' is not an email address`
 - `status is 'owed' but 'owed_since' is not a commit id (7-40 hex) or 'none'`
 - `status is 'owed' but no sources are listed`
@@ -292,21 +296,29 @@ Consequences:
 - Pins still differ between clones when git would convert a file differently
   in them (for example content committed with CRLF bytes, checked out with
   `core.autocrlf=true` in one clone only).
-- The stat cache (`.claimlock/cache/stat.json`) stores each entry with the mode
-  that produced it and is trusted only in that mode. `verify` and `resolve`
-  always re-hash from disk.
+- The stat cache (`.claimlock/cache/stat.json`) stores each entry with a tag
+  and trusts it only under the same tag. Outside git the tag is `raw`. Inside
+  git it is `git:` plus a digest of the contents of every setting that decides
+  how git converts that file — the repository `config`, `config.worktree` and
+  `info/attributes`; the global and system config and attributes files at their
+  default locations or `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`; the git config
+  environment variables; and each `.gitattributes` from the work tree top to the
+  file's directory — read from disk with no git call. A config `include` target
+  and a custom `core.attributesFile`'s contents are not part of it. `verify` and
+  `resolve` always re-hash from disk.
 - `claimlock diff` reads the pinned content from git only (`git cat-file blob
   <sha>`); there is no local copy. When git does not have it, `diff` says the
   prior content is unavailable. It works for a verified or an `owed` claim (an
   owed claim's pins are evaluated as if verified). Lines are compared without
   their endings, so a CRLF checkout of LF content diffs only the lines that
   changed; when only line endings differ, it prints `--- <path>: only line
-  endings differ from the pinned content`.
-- A source that is a symlink (to a file inside the root) pins the **target's**
-  content. Git stores a symlink as its link text, so that content never appears
-  at the link's own path in history; anchoring therefore also looks at the
-  target's path (see Anchoring), and `diff` reads the pinned target content from
-  git like any other.
+  endings differ from the pinned content`. Lines break at `\n` only — a form
+  feed or other Unicode line separator stays inside its line, as in git.
+- A source reached through a symlink — the source itself, or a directory above
+  it — pins the content at the **resolved** path. Git stores a symlink as its
+  link text, so that content never appears at the cited path in history;
+  anchoring therefore also looks at the resolved path (see Anchoring), and
+  `diff` reads the pinned content from git like any other.
 - A whitespace-only edit or a single re-saved byte produces a different pin
   and makes the claim stale. See "Limits" in the README.
 
@@ -325,9 +337,10 @@ set of cited source paths, one run computes the anchor set:
 Both commands run with `--literal-pathspecs`, so a source named `src/[id].ts`
 never matches `src/i.ts`. A pin is anchored when its blob is in that set — a
 union across every cited path, since anchoring asks whether git can serve the
-content by sha. A cited source that is a symlink to a regular file inside the
-root (found with `lstat`, no git) adds the target's root-relative path to the
-query, so a committed target anchors the link's pin. The index is read first;
+content by sha. A cited source whose fully resolved path differs from the cited
+one — it is a symlink, or lies under a symlinked directory — and is a regular
+file inside the root (found by resolving the path, no git) adds that resolved
+root-relative path to the query, so committed content there anchors the pin. The index is read first;
 history is walked only when some pin being checked is not staged. A
 blob written to the object store by other means (`git hash-object -w`, or staged
 and then unstaged) is not anchored.
@@ -455,8 +468,8 @@ not conflicted`. Each processed claim prints `<OUTCOME> <id>  <message>`:
 
 | Outcome | Rule | Message |
 |---|---|---|
-| `KEPT` | Every conflict hunk lies wholly inside the frontmatter `sources` block, both sides cite the same paths, and each source's current working-tree pin (cache bypassed) equals the pin of one side. The claim is rewritten with those pins. | `every source matches one side's verified pin` |
-| `OWED` | As `KEPT`, but some source equals neither side's pin (or is missing). Matching pins are kept, the rest keep the "ours" pin, and the claim becomes `status: owed`, `owed_by` = git `user.email`, `owed_since` = HEAD. | `a source matches neither side — owed by <email>` |
+| `KEPT` | Every conflict hunk lies wholly inside the frontmatter `sources` block (its `pins:` line included), both sides cite the same paths, and one side is whole: every source's current working-tree pin (cache bypassed) equals that side's pin, and that side's `pins:` digest, if it has one, matches its pins ("ours" is tried first). The claim is rewritten with that side's pins and digest; a side without a digest stays without one. | `every source matches what one side verified` |
+| `OWED` | As `KEPT`, but neither side is whole. Each source keeps the pin of the side it matches, else the "ours" pin; the `pins:` line is removed (nobody verified that set as a whole), and the claim becomes `status: owed`, `owed_by` = git `user.email`, `owed_since` = HEAD. | `<why> — owed by <email>`, where `<why>` is `a source matches neither side`, or, when every source matches some side but no one side matches them all, `the sources match pins from two verifications that never checked them together` |
 | `LEFT` | The file is not written. | one of the messages below |
 
 `LEFT` messages:
@@ -466,8 +479,8 @@ not conflicted`. Each processed claim prints `<OUTCOME> <id>  <message>`:
   hunk in the body, the evidence or any other field; one conflict outside the
   block leaves the whole file
 - `<file>: the two sides cite different sources — resolve by hand`
-- `<file>: a source matches neither side, and there is no git user.email to record who owes the re-check — set one, then run claimlock resolve`
-- `<file>: a source matches neither side, and git user.email '<email>' is not an email address to record who owes the re-check — fix it, then run claimlock resolve`
+- `<file>: <why>, and there is no git user.email to record who owes the re-check — set one, then run claimlock resolve`
+- `<file>: <why>, and git user.email '<email>' is not an email address to record who owes the re-check — fix it, then run claimlock resolve`
 - `<file>: unterminated conflict hunk`, `<file>: conflict end marker without a
   start (line N)`, or a frontmatter parse error of one side
 

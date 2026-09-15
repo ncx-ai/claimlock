@@ -150,6 +150,82 @@ class NonUtf8SourceNames(TmpCase):
         self.assertNotIn("MISSING", out)
 
 
+@NEED_GIT
+class NormalizationChangeWithAWarmCache(TmpCase):
+    def test_a_new_gitattributes_rule_is_not_hidden_by_the_cache(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        git(root, "config", "core.autocrlf", "false")
+        write(root, ".gitignore", ".claimlock/\n")
+        p = root / "a.txt"
+        p.write_bytes(b"one\r\ntwo\r\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.txt",)))
+        git(root, "add", "-A")
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        os.utime(p, ns=(OLD, OLD))
+        self.assertEqual(run_cli(root, "check")[0], 0)
+        cache = json.loads((root / ".claimlock" / "cache" / "stat.json").read_text())
+        self.assertIn("a.txt", cache, "precondition: the check warmed the cache")
+        # With `text`, git now stores this CRLF file as LF: a different blob.
+        write(root, ".gitattributes", "*.txt text eol=lf\n")
+        rc, out, _ = run_cli(root, "check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("STALE", out)
+
+
+class NormalizationFingerprint(TmpCase):
+    """A git-mode cache entry is trusted only while the files that decide how
+    git converts that file are unchanged."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / ".git" / "info").mkdir(parents=True)
+        write(self.tmp, ".git/config", "[core]\n")
+        self.env = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(self.tmp / "global.cfg")})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def cached_then(self, change):
+        p = write(self.tmp, "src/a.txt", "hello\n")
+        os.utime(p, ns=(OLD, OLD))
+        cache = self.tmp / "stat.json"
+        with mock.patch("claimlock.gitio.hash_paths", return_value={"src/a.txt": "1" * 40}):
+            h = Hasher(self.tmp, cache, mode="git")
+            h.blob("src/a.txt")
+            h.save()
+        change()
+        with mock.patch("claimlock.gitio.hash_paths", return_value={"src/a.txt": "2" * 40}) as hp:
+            got = Hasher(self.tmp, cache, mode="git").blob("src/a.txt")
+        return got, hp.call_count
+
+    def test_unchanged_settings_reuse_the_cache(self):
+        self.assertEqual(self.cached_then(lambda: None), ("1" * 40, 0))
+
+    def test_a_gitattributes_file_on_the_path_invalidates(self):
+        for rel in (".gitattributes", "src/.gitattributes"):
+            with self.subTest(rel=rel):
+                self.assertEqual(self.cached_then(lambda: write(self.tmp, rel, "* text\n")), ("2" * 40, 1))
+                (self.tmp / rel).unlink()
+
+    def test_a_gitattributes_file_elsewhere_does_not_invalidate(self):
+        self.assertEqual(self.cached_then(lambda: write(self.tmp, "other/.gitattributes", "* text\n")),
+                         ("1" * 40, 0))
+
+    def test_repository_global_and_info_settings_invalidate(self):
+        for rel in (".git/config", ".git/info/attributes", "global.cfg"):
+            with self.subTest(rel=rel):
+                self.assertEqual(
+                    self.cached_then(lambda: write(self.tmp, rel, "[core]\n\tautocrlf = true\n")),
+                    ("2" * 40, 1))
+
+    def test_a_config_environment_variable_invalidates(self):
+        def change():
+            os.environ["GIT_CONFIG_PARAMETERS"] = "'core.autocrlf'='true'"
+        self.addCleanup(os.environ.pop, "GIT_CONFIG_PARAMETERS", None)
+        self.assertEqual(self.cached_then(change), ("2" * 40, 1))
+
+
 class RawOutsideGit(TmpCase):
     def test_a_line_ending_change_is_stale_outside_git(self):
         root = make_repo(self.tmp / "r", use_git=False)

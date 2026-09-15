@@ -8,6 +8,14 @@ from claimlock import refs, selftest
 from claimlock.project import load
 
 
+class RefLineNumbers(TmpCase):
+    def test_a_form_feed_does_not_shift_marker_line_numbers(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/ff.md", "page one\x0cstill line one\nClaim: `a`\n")
+        markers, _ = refs.scan(load(root))
+        self.assertEqual([(m.path, m.line, m.id) for m in markers], [("docs/ff.md", 2, "a")])
+
+
 class Refs(TmpCase):
     def setUp(self):
         super().setUp()

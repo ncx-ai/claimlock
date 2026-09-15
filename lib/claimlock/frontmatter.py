@@ -157,14 +157,14 @@ def quote(s):
     return json.dumps(s, ensure_ascii=False)
 
 
-def _sources_block(sources):
-    if not sources:
-        return ["sources: []"]
-    out = ["sources:"]
+def _sources_block(sources, pins=None):
+    out = ["sources:"] if sources else ["sources: []"]
     for s in sources:
         out.append(f"  - path: {quote(s['path'])}")
         if s.get("blob"):
             out.append(f"    blob: {s['blob']}")
+    if pins:
+        out.append(f"pins: {pins}")
     return out
 
 
@@ -190,12 +190,17 @@ def _skip_list_block(head, i):
     return i
 
 
-def rewrite(text, name, *, status=None, verified_at=None, sources=None, set_fields=None, remove=()):
+def rewrite(text, name, *, status=None, verified_at=None, sources=None, pins=None, set_fields=None,
+            remove=()):
     """Replace only the named fields; every other line is preserved in place.
 
     None means "leave untouched". A missing `status`/`verified_at` key is
     inserted after `status` (or after `id`, or at the end); a missing
-    `sources` key is appended at the end of the frontmatter. `set_fields`
+    `sources` key is appended at the end of the frontmatter. Rewriting
+    `sources` always drops any `pins:` line — a digest belongs to the pin set
+    it was computed from — and writes `pins: <pins>` directly after the new
+    block when `pins` is given, so a conflict on it sits beside the pins it
+    covers. `set_fields`
     maps key -> string value, inserted in order after `status` when absent
     (quoted via `quote`); `remove` deletes those keys — a scalar line, or a
     key and its whole list block.
@@ -208,15 +213,18 @@ def rewrite(text, name, *, status=None, verified_at=None, sources=None, set_fiel
     if sources is not None:
         out, i, placed = [], 0, False
         while i < len(head):
+            if re.match(r"^pins:", head[i]):
+                i += 1
+                continue
             if re.match(r"^sources:", head[i]):
                 i = _skip_list_block(head, i + 1)
-                out.extend(_sources_block(sources))
+                out.extend(_sources_block(sources, pins))
                 placed = True
                 continue
             out.append(head[i])
             i += 1
         if not placed:
-            out.extend(_sources_block(sources))
+            out.extend(_sources_block(sources, pins))
         head = out
 
     if remove:

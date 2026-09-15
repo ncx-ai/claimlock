@@ -434,8 +434,7 @@ def cmd_diff(args):
         # Compared as lines without their endings: git serves the pinned blob
         # normalized (LF) while a core.autocrlf=true checkout holds CRLF, and
         # comparing with the endings kept marks every line changed.
-        old_lines = old.decode("utf-8", "replace").splitlines()
-        new_lines = new.decode("utf-8", "replace").splitlines()
+        old_lines, new_lines = _text_lines(old), _text_lines(new)
         if old_lines == new_lines:
             if old != new:
                 print(f"--- {path}: only line endings differ from the pinned content")
@@ -444,6 +443,17 @@ def cmd_diff(args):
             old_lines, new_lines, fromfile=f"{path} @ {pins[path][:12]} (verified)",
             tofile=f"{path} (now)", lineterm="")))
     return 0
+
+
+def _text_lines(data):
+    """Lines broken at "\\n" only, each without a trailing "\\r". `str.splitlines`
+    also breaks at form feeds, vertical tabs and Unicode separators, which
+    git does not treat as line ends — a diff would then show a changed line
+    in pieces."""
+    lines = data.decode("utf-8", "replace").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
 
 
 def _pins_status(claim):

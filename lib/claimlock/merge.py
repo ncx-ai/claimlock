@@ -1,10 +1,12 @@
 """Resolve git merge conflicts in claim files — the `sources` pins only.
 
-A pin is kept only when it equals the merged working-tree content of its
-source, so every kept pin is exactly what one side verified. When a source
-matches neither side, the claim becomes `owed` by whoever is merging.
-Conflicts anywhere else (prose, evidence, other fields) are left for a person,
-because no rule can decide them.
+One side's pins are kept only when the merged working-tree content of every
+source equals that side's whole pin set (and the side's `pins:` digest, when
+it has one, matches its pins), so a kept claim is exactly what one
+verification covered. Otherwise — a source matches neither side, or the
+sources match pins from different sides — the claim becomes `owed` by whoever
+is merging. Conflicts anywhere else (prose, evidence, other fields) are left
+for a person, because no rule can decide them.
 """
 import re
 from dataclasses import dataclass
@@ -15,7 +17,7 @@ from .project import safe_source
 
 START, BASE, MID, END = "<<<<<<< ", "||||||| ", "=======", ">>>>>>> "
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:")
-_SOURCE_LINE = re.compile(r"^(sources:.*|  - .*|    [A-Za-z_][A-Za-z0-9_]*:.*|\s*)$")
+_SOURCE_LINE = re.compile(r"^(sources:.*|pins:.*|  - .*|    [A-Za-z_][A-Za-z0-9_]*:.*|\s*)$")
 
 
 @dataclass
@@ -104,6 +106,7 @@ def _in_sources(lines, inside, close, h):
 
 
 def _pins(text, name):
+    """([(path, blob | None)], digest | None) of one side."""
     fm, _ = frontmatter.split(text, name)
     meta = frontmatter.parse(fm, name)
     out = []
@@ -112,7 +115,8 @@ def _pins(text, name):
             out.append((e["path"], e.get("blob") if isinstance(e.get("blob"), str) else None))
         elif isinstance(e, str):
             out.append((e, None))
-    return out
+    digest = meta.get("pins")
+    return out, digest if isinstance(digest, str) else None
 
 
 def resolve_claim(project, claim):
@@ -134,40 +138,50 @@ def resolve_claim(project, claim):
             return "left", f"{name}: a conflict outside the sources block (line {h.start + 1}) needs a person"
     ours_text, theirs_text = _side(lines, hs, "ours"), _side(lines, hs, "theirs")
     try:
-        ours, theirs = _pins(ours_text, name), _pins(theirs_text, name)
+        (ours, ours_digest), (theirs, theirs_digest) = _pins(ours_text, name), _pins(theirs_text, name)
     except frontmatter.FrontmatterError as e:
         return "left", str(e)
     if sorted(p for p, _ in ours) != sorted(p for p, _ in theirs):
         return "left", f"{name}: the two sides cite different sources — resolve by hand"
-    theirs_pin = dict(theirs)
     hasher = C.open_hasher(project)
-    picked, all_match = [], True
-    for path, ours_pin in ours:
-        cur = hasher.blob(path, use_cache=False) if safe_source(project.root, path) else None
-        if cur is not None and cur == ours_pin:
-            picked.append({"path": path, "blob": ours_pin})
-        elif cur is not None and cur == theirs_pin.get(path):
-            picked.append({"path": path, "blob": theirs_pin[path]})
-        else:
-            all_match = False
-            picked.append({"path": path, "blob": ours_pin} if ours_pin else {"path": path})
-    if all_match:
-        text = frontmatter.rewrite(ours_text, name, sources=picked)
-        outcome, message = "kept", "every source matches one side's verified pin"
+    cur = {path: hasher.blob(path, use_cache=False) if safe_source(project.root, path) else None
+           for path, _ in ours}
+
+    for side_text, side, digest in ((ours_text, ours, ours_digest), (theirs_text, theirs, theirs_digest)):
+        whole = all(blob is not None and cur[path] == blob for path, blob in side)
+        if whole and (digest is None or digest == C.pin_digest(side)):
+            # A side without a digest predates it and stays without one.
+            text = frontmatter.rewrite(side_text, name, pins=digest,
+                                       sources=[{"path": p, "blob": b} for p, b in side])
+            outcome, message = "kept", "every source matches what one side verified"
+            break
     else:
+        theirs_pin = dict(theirs)
+        picked, unmatched = [], False
+        for path, ours_pin in ours:
+            if cur[path] is not None and cur[path] == ours_pin:
+                picked.append({"path": path, "blob": ours_pin})
+            elif cur[path] is not None and cur[path] == theirs_pin.get(path):
+                picked.append({"path": path, "blob": theirs_pin[path]})
+            else:
+                unmatched = True
+                picked.append({"path": path, "blob": ours_pin} if ours_pin else {"path": path})
+        why = ("a source matches neither side" if unmatched else
+               "the sources match pins from two verifications that never checked them together")
         email = gitio.user_email(project.root)
         if not email:
-            return "left", (f"{name}: a source matches neither side, and there is no git user.email "
+            return "left", (f"{name}: {why}, and there is no git user.email "
                             f"to record who owes the re-check — set one, then run claimlock resolve")
         if C.normalize_email(email) is None:
-            return "left", (f"{name}: a source matches neither side, and git user.email {email!r} is not "
+            return "left", (f"{name}: {why}, and git user.email {email!r} is not "
                             f"an email address to record who owes the re-check — fix it, then run "
                             f"claimlock resolve")
         email = email.strip()
         since = gitio.short_head(project.root) or "none"
+        # No digest: nobody verified this pin set as a whole.
         text = frontmatter.rewrite(ours_text, name, status="owed", sources=picked,
                                    set_fields={"owed_by": email, "owed_since": since})
-        outcome, message = "owed", f"a source matches neither side — owed by {email}"
+        outcome, message = "owed", f"{why} — owed by {email}"
     from .ops import _write
     _write(claim.path, text)
     return outcome, message

@@ -12,6 +12,24 @@ def verifiable(cid, sources=("a.py",)):
     return claim_text(cid, sources=sources, body="The thing holds.\n\nBecause reasons.")
 
 
+@NEED_GIT
+class DiffLineSplitting(TmpCase):
+    def test_a_form_feed_is_not_a_line_break(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "a.py", "keep\nhead\x0cone\n")
+        write(root, "claims/c.md", verifiable("c"))
+        git(root, "add", "-A")
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        write(root, "a.py", "keep\nhead\x0ctwo\n")
+        rc, out, _ = run_cli(root, "diff", "c")
+        self.assertEqual(rc, 0)
+        self.assertIn("\n-head\x0cone\n", out)
+        self.assertIn("\n+head\x0ctwo", out)
+
+
 class Verify(TmpCase):
     def setUp(self):
         super().setUp()
