@@ -10,7 +10,7 @@ from . import VERSION
 from . import claims as C
 from . import gitio
 from . import hooks
-from . import importer, merge, ops, refs, selftest
+from . import importer, merge, ops, refs, regions, selftest
 from . import project as P
 
 HINT = {
@@ -302,24 +302,25 @@ def cmd_show(args):
         print("Sources (a change here makes this claim stale):")
         in_git = gitio.in_git(project.root)
         for s in c.sources:
-            pin = s.blob[:12] if s.blob else "unpinned"
+            pin = s.pin[:12] if s.pin else "unpinned"
             v = _verified(project, in_git, _rel(project, c.path), s)
             note = {"unpinned": "", "unknown": " — verified by unknown (no git)",
                     "uncommitted": " — uncommitted (verifier known once committed)"}.get(v[0])
             if note is None:
                 note = f" — verified by {v[1]} at {v[2]} ({v[3]})"
-            print(f"  {s.path} — {states.get(s.key, '-')} ({pin}){note}")
+            print(f"  {s.key} — {states.get(s.key, '-')} ({pin}){note}")
     print(f"\nfile: {_rel(project, c.path)}")
     return 0
 
 
 def _verified(project, in_git, claim_rel, source):
     """("unpinned",) | ("unknown",) | ("uncommitted",) | ("verified", email, iso, sha)."""
-    if not source.blob:
+    if not source.pin:
         return ("unpinned",)
     if not in_git:
         return ("unknown",)
-    v = gitio.verifier(project.root, claim_rel, source.blob)
+    field, value = ("hash", source.hash) if source.region is not None else ("blob", source.blob)
+    v = gitio.verifier(project.root, claim_rel, field, value)
     return ("verified", *v) if v else ("uncommitted",)
 
 
@@ -332,7 +333,7 @@ def cmd_who(args):
     in_git = gitio.in_git(project.root)
     for s in c.sources:
         v = _verified(project, in_git, _rel(project, c.path), s)
-        print("\t".join([s.path, *(v[1:] if v[0] == "verified" else v)]))
+        print("\t".join([s.key, *(v[1:] if v[0] == "verified" else v)]))
     return 0
 
 
@@ -405,31 +406,63 @@ def cmd_diff(args):
     if state == "fresh":
         print(f"claimlock: {c.id} is fresh — every source matches its pin")
         return 0
-    pins = {s.path: s.blob for s in c.sources}
-    for path, st in per:
+    srcs = {s.key: s for s in c.sources}
+    for key, st in per:
         if st == "fresh":
             continue
+        s = srcs.get(key)
         if st == "missing":
-            print(f"--- {path}: does not exist or cannot be read")
+            if s is not None and s.region is not None:
+                _, reason = hasher.region(s.path, s.region)
+                print(f"--- {key}: {reason or 'does not exist or cannot be read'}")
+            else:
+                print(f"--- {key}: does not exist or cannot be read")
             continue
         if st == "unpinned":
-            print(f"--- {path}: never pinned; nothing to compare against")
+            print(f"--- {key}: never pinned; nothing to compare against")
             continue
         if st == "unanchored":
-            print(f"--- {path}: unchanged since verification, but that content was never committed "
+            print(f"--- {key}: unchanged since verification, but that content was never committed "
                   f"or staged — commit it so other clones can diff this claim")
             continue
-        old = gitio.cat_blob(project.root, pins[path])
+        old = gitio.cat_blob(project.root, s.blob)
         if old is None:
-            print(f"--- {path}: changed, but the pinned content {pins[path][:12]} is not in git "
+            print(f"--- {key}: changed, but the pinned content {s.blob[:12]} is not in git "
                   f"(never committed, or no repository) — prior content unavailable; "
                   f"re-read the claim against the current file")
             continue
+        if s.region is not None:
+            try:
+                old_region = regions.extract(old, s.region)
+            except regions.RegionError as e:
+                print(f"--- {key}: the region cannot be found in the pinned content ({e})")
+                continue
+            try:
+                new = (project.root / s.path).read_bytes()
+            except OSError as e:
+                print(f"--- {key}: cannot be read ({e.strerror or e})")
+                continue
+            try:
+                new_region = regions.extract(new, s.region)
+            except regions.RegionError as e:
+                # per_source already read "missing" for this key when the
+                # current file's region cannot be extracted, so this branch is
+                # not expected to run — kept as a loud fallback rather than
+                # a silent no-op if that ever stops being true.
+                print(f"--- {key}: {e}")
+                continue
+            old_lines, new_lines = _text_lines(old_region.encode("utf-8")), _text_lines(new_region.encode("utf-8"))
+            if old_lines == new_lines:
+                continue
+            print("\n".join(difflib.unified_diff(
+                old_lines, new_lines, fromfile=f"{key} @ {s.hash[:12]} (verified)",
+                tofile=f"{key} (now)", lineterm="")))
+            continue
         try:
-            new = (project.root / path).read_bytes()
+            new = (project.root / s.path).read_bytes()
         except OSError as e:
             # A warm stat cache can report `stale` without reading the file.
-            print(f"--- {path}: cannot be read ({e.strerror or e})")
+            print(f"--- {key}: cannot be read ({e.strerror or e})")
             continue
         # Compared as lines without their endings: git serves the pinned blob
         # normalized (LF) while a core.autocrlf=true checkout holds CRLF, and
@@ -437,11 +470,11 @@ def cmd_diff(args):
         old_lines, new_lines = _text_lines(old), _text_lines(new)
         if old_lines == new_lines:
             if old != new:
-                print(f"--- {path}: only line endings differ from the pinned content")
+                print(f"--- {key}: only line endings differ from the pinned content")
             continue
         print("\n".join(difflib.unified_diff(
-            old_lines, new_lines, fromfile=f"{path} @ {pins[path][:12]} (verified)",
-            tofile=f"{path} (now)", lineterm="")))
+            old_lines, new_lines, fromfile=f"{key} @ {s.blob[:12]} (verified)",
+            tofile=f"{key} (now)", lineterm="")))
     return 0
 
 

@@ -178,11 +178,12 @@ def changed_since(root, commit):
     return _lines(out) if out is not None else None
 
 
-def verifier(root, claim_rel, blob):
+def verifier(root, claim_rel, field, value):
     """(author email, ISO time, short sha) of the latest commit that added or
-    removed the exact pin line `    blob: <sha>` in the claim file (as
+    removed the exact pin line `    <field>: <value>` in the claim file (as
     `frontmatter._sources_block` writes it — four spaces, nothing else on the
-    line), or None if no commit did.
+    line), or None if no commit did. `field` is `"blob"` for a whole-file
+    source or `"hash"` for a region source — the pin each is judged by.
 
     `--follow` so a rename of the claim file itself does not stop history
     from being searched past it (valid here because `claim_rel` is the only
@@ -194,7 +195,7 @@ def verifier(root, claim_rel, blob):
     whoever wrote the sentence. `-G` instead matches a commit whose diff added
     or removed a line matching the regex, and the anchors mean only the pin
     line itself — never a substring inside a longer line — can match."""
-    pattern = f"^    blob: {re.escape(blob)}$"
+    pattern = f"^    {field}: {re.escape(value)}$"
     out = _text(run(root, "log", "--follow", "-1", "--format=%ae%x09%aI%x09%h",
                     "-G", pattern, "--", claim_rel))
     if not out:
@@ -216,6 +217,28 @@ def cat_blob(root, sha):
         return None
     r = run(root, "cat-file", "blob", sha)
     return r.stdout if r is not None and r.returncode == 0 else None
+
+
+def index_blob(root, rel):
+    """The blob id staged for root-relative `rel` at index stage 0 (the
+    ordinary, non-conflicted stage), or None outside git, when the path is
+    not currently staged (including: staged only at stages 1-3 during a
+    conflict), or on failure. This is the file's staged content — what a
+    commit right now would record — used as the region-anchoring fallback's
+    read of "what every clone can currently see for this path" without
+    needing a commit. `--literal-pathspecs`: a path containing glob
+    metacharacters must never match an unrelated file."""
+    r = run(root, "--literal-pathspecs", "ls-files", "-s", "-z", "--", rel)
+    if r is None or r.returncode != 0:
+        return None
+    for rec in r.stdout.split(b"\0"):
+        if not rec:
+            continue
+        meta, tab, _ = rec.partition(b"\t")
+        parts = meta.split()
+        if tab and len(parts) >= 3 and parts[2] == b"0":
+            return parts[1].decode("ascii", "replace")
+    return None
 
 
 def stage_text(root, rel, stage):

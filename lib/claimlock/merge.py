@@ -112,17 +112,41 @@ def _in_sources(lines, inside, close, h):
 
 
 def _pins(text, name):
-    """([(path, blob | None)], digest | None) of one side."""
+    """([Source, ...], digest | None) of one side, keyed by `path` or
+    `path#region` like every other per-source listing (spec §2.3)."""
     fm, _ = frontmatter.split(text, name)
     meta = frontmatter.parse(fm, name)
     out = []
     for e in meta.get("sources") or []:
         if isinstance(e, dict) and isinstance(e.get("path"), str):
-            out.append((e["path"], e.get("blob") if isinstance(e.get("blob"), str) else None))
+            blob, region, h = e.get("blob"), e.get("region"), e.get("hash")
+            out.append(C.Source(e["path"],
+                                 blob if isinstance(blob, str) else None,
+                                 region if isinstance(region, str) else None,
+                                 h if isinstance(h, str) else None))
         elif isinstance(e, str):
-            out.append((e, None))
+            out.append(C.Source(e, None))
     digest = meta.get("pins")
     return out, digest if isinstance(digest, str) else None
+
+
+def _source_dict(s):
+    """A `frontmatter._sources_block` entry for `s` — that function already
+    omits any of `region`/`blob`/`hash` that is falsy, so this always
+    includes all three and lets it decide what to write."""
+    return {"path": s.path, "region": s.region, "blob": s.blob, "hash": s.hash}
+
+
+def _current_pin(hasher, project, s):
+    """This source's pin as the working tree stands right now: a region hash
+    (cache bypassed) for a region source, a blob (cache bypassed) for a whole
+    file; None for a source outside the project root."""
+    if safe_source(project.root, s.path) is None:
+        return None
+    if s.region is not None:
+        h, _reason = hasher.region(s.path, s.region, use_cache=False)
+        return h
+    return hasher.blob(s.path, use_cache=False)
 
 
 def resolve_claim(project, claim):
@@ -147,12 +171,11 @@ def resolve_claim(project, claim):
         (ours, ours_digest), (theirs, theirs_digest) = _pins(ours_text, name), _pins(theirs_text, name)
     except frontmatter.FrontmatterError as e:
         return "left", str(e)
-    if sorted(p for p, _ in ours) != sorted(p for p, _ in theirs):
+    if sorted(s.key for s in ours) != sorted(s.key for s in theirs):
         return "left", f"{name}: the two sides cite different sources — resolve by hand"
     hasher = C.open_hasher(project)
-    cur = {path: hasher.blob(path, use_cache=False) if safe_source(project.root, path) else None
-           for path, _ in ours}
-    merged_paths = sorted(cur)
+    cur = {s.key: _current_pin(hasher, project, s) for s in ours}
+    merged_keys = sorted(cur)
     rel = Path(os.path.relpath(claim.path, project.root)).as_posix()
 
     for side_text, stage in ((ours_text, 2), (theirs_text, 3)):
@@ -161,30 +184,32 @@ def resolve_claim(project, claim):
             side, digest = _pins(staged, name) if staged is not None else _pins(side_text, name)
         except frontmatter.FrontmatterError:
             continue
-        if sorted(p for p, _ in side) != merged_paths:
+        if sorted(s.key for s in side) != merged_keys:
             continue
-        if not all(blob is not None and cur[path] == blob for path, blob in side):
+        if not all(s.pin is not None and cur[s.key] == s.pin for s in side):
             continue
-        if digest is not None and digest != C.pin_digest(C.Source(p, b) for p, b in side):
+        if digest is not None and digest != C.pin_digest(side):
             continue
         if digest is None and staged is None:
             continue  # rebuilt from the conflicted file, and nothing vouches for it
         # A side without a digest predates it and stays without one.
         text = frontmatter.rewrite(side_text, name, pins=digest,
-                                   sources=[{"path": p, "blob": b} for p, b in side])
+                                   sources=[_source_dict(s) for s in side])
         outcome, message = "kept", "every source matches what one side verified"
         break
     else:
-        theirs_pin = dict(theirs)
+        theirs_by_key = {s.key: s for s in theirs}
         picked, unmatched = [], False
-        for path, ours_pin in ours:
-            if cur[path] is not None and cur[path] == ours_pin:
-                picked.append({"path": path, "blob": ours_pin})
-            elif cur[path] is not None and cur[path] == theirs_pin.get(path):
-                picked.append({"path": path, "blob": theirs_pin[path]})
+        for s in ours:
+            cur_pin = cur[s.key]
+            t = theirs_by_key.get(s.key)
+            if cur_pin is not None and cur_pin == s.pin:
+                picked.append(_source_dict(s))
+            elif cur_pin is not None and t is not None and cur_pin == t.pin:
+                picked.append(_source_dict(t))
             else:
                 unmatched = True
-                picked.append({"path": path, "blob": ours_pin} if ours_pin else {"path": path})
+                picked.append(_source_dict(s))
         why = ("a source matches neither side" if unmatched else
                "the sources match pins from two verifications that never checked them together")
         email = gitio.user_email(project.root)

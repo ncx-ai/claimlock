@@ -344,6 +344,26 @@ class Anchors:
     def ok(self, path, blob) -> bool:
         return blob in self.blobs or path in self.ignored
 
+    def ok_region(self, root, path, blob, region, region_hash) -> bool:
+        """Anchored via `ok(path, blob)`, or via the fallback of spec §2.4: the
+        file's currently staged content (index stage 0), read straight from
+        git, still contains this region with the same hash. Only reached when
+        the whole-file blob is itself unanchored, so the common path (an
+        anchored blob) never runs a git call for this."""
+        if self.ok(path, blob):
+            return True
+        sha = gitio.index_blob(root, path)
+        if sha is None:
+            return False
+        data = gitio.cat_blob(root, sha)
+        if data is None:
+            return False
+        try:
+            text = regions.extract(data, region)
+        except regions.RegionError:
+            return False
+        return regions.region_hash(text) == region_hash
+
 
 def anchors_for(project, sources):
     """The Anchors for these sources (see gitio.anchored_blobs /
@@ -398,9 +418,11 @@ def freshness(claim, project, hasher, anchors=None, as_status=None):
 
     Worst source wins: missing > stale > unanchored > unpinned > fresh. A
     region source (spec 2.4) is judged by its region hash, not its file's
-    whole-content blob; anchoring for it still checks only `Anchors.ok` on
-    the whole-file blob (the git-staged-content fallback is a later task).
-    `as_status="verified"` evaluates a claim's pins as if it were verified —
+    whole-content blob; anchoring for it checks `Anchors.ok` on the
+    whole-file blob first, falling back (`Anchors.ok_region`) to the file's
+    currently staged content still containing the same region hash — so
+    uncommitted edits elsewhere in the file don't leave the pin unanchored
+    forever. `as_status="verified"` evaluates a claim's pins as if it were verified —
     `diff` and `show` pass it for an `owed` claim, whose pins are kept
     exactly so the hand-off recipient can see what moved. `evaluate` never
     does: an owed claim has no freshness verdict in `check` or the hooks.
@@ -422,7 +444,9 @@ def freshness(claim, project, hasher, anchors=None, as_status=None):
             st = "unpinned"
         elif cur != pin:
             st = "stale"
-        elif anchors is not None and not anchors.ok(s.path, s.blob):
+        elif anchors is not None and not (
+                anchors.ok_region(project.root, s.path, s.blob, s.region, s.hash)
+                if s.region is not None else anchors.ok(s.path, s.blob)):
             st = "unanchored"
         else:
             st = "fresh"

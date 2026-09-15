@@ -1,16 +1,20 @@
 import hashlib
 import json
 import os
+import re
+import shutil
+import subprocess
 import time
 import unittest
 
-from helpers import TmpCase, make_repo, run_cli, write
+from helpers import TmpCase, clone, git, init_bare, make_repo, run_cli, write
 from claimlock.claims import Source, load_claims, pin_digest, problems
 from claimlock.pins import Hasher, blob_of_bytes
 from claimlock.project import load
 from claimlock.regions import RegionError, extract, region_hash
 
 OLD = time.time_ns() - 100 * 1_000_000_000  # 100 s ago: old enough to cache
+NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
 
 
 def region_claim_text(cid, path, region, status="unverified", area="core"):
@@ -19,6 +23,16 @@ def region_claim_text(cid, path, region, status="unverified", area="core"):
     lines = ["---", f"id: {cid}", f"area: {area}", f"status: {status}",
              "evidence:", "  - kind: test", "    ref: s::c",
              "sources:", f"  - path: {path}", f"    region: {region}",
+             "---", "Holds.", ""]
+    return "\n".join(lines)
+
+
+def whole_and_region_claim_text(cid, path, region, status="unverified", area="core"):
+    """A claim citing both a whole-file source and a region source of the
+    same path — the two must resolve/show/diff by key, not collapse."""
+    lines = ["---", f"id: {cid}", f"area: {area}", f"status: {status}",
+             "evidence:", "  - kind: test", "    ref: s::c",
+             "sources:", f"  - path: {path}", f"  - path: {path}", f"    region: {region}",
              "---", "Holds.", ""]
     return "\n".join(lines)
 
@@ -280,6 +294,215 @@ class RegionCache(TmpCase):
         digest, reason = h.region("a.py", "r1", use_cache=False)
         self.assertIsNone(digest)
         self.assertEqual(reason, "region 'r1' not found")
+
+
+@NEED_GIT
+class AnchoringFallback(TmpCase):
+    """Spec §2.4: a region pin whose blob was never committed/staged is
+    anchored anyway when the file's currently staged content still holds the
+    same region hash — the fallback only runs once the whole-file blob check
+    fails, and only ever reads the STAGED (index stage 0) content."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make_repo(self.tmp / "r", use_git=True)
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
+        write(self.root, "claims/c.md", region_claim_text("c", "a.py", "r1"))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "initial")
+
+    def _state(self):
+        rc, out, err = run_cli(self.root, "check", "--json")
+        self.assertEqual(rc if rc in (0, 1) else 2, rc, out + err)
+        return json.loads(out)["results"][0]["state"]
+
+    def test_uncommitted_edit_outside_region_reads_fresh_via_staged_fallback(self):
+        write(self.root, "a.py", "before-changed\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        self.assertEqual(self._state(), "fresh")
+
+    def test_control_uncommitted_edit_inside_region_reads_unanchored(self):
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\nCHANGED\ny\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        self.assertEqual(self._state(), "unanchored")
+
+    def test_control_staging_the_edit_reads_fresh(self):
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\nCHANGED\ny\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        git(self.root, "add", "a.py")
+        self.assertEqual(self._state(), "fresh")
+
+
+@NEED_GIT
+class DiffRegions(TmpCase):
+    def setUp(self):
+        super().setUp()
+        self.root = make_repo(self.tmp / "r", use_git=True)
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
+        write(self.root, "claims/c.md", region_claim_text("c", "a.py", "r1"))
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "initial")
+        self.pinned_hash = region_hash("x\ny\n")
+
+    def test_stale_region_diff_shows_only_region_lines(self):
+        write(self.root, "a.py", "before-changed\n# claimlock:begin r1\nx\nCHANGED\ny\n# claimlock:end r1\nafter\n")
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(f"--- a.py#r1 @ {self.pinned_hash[:12]} (verified)", out)
+        self.assertIn("+++ a.py#r1 (now)", out)
+        self.assertNotIn("before", out)
+        self.assertNotIn("after", out)
+        self.assertIn("+CHANGED", out)
+
+    def test_removed_end_marker_prints_the_extraction_reason(self):
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\ny\nafter\n")
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("--- a.py#r1: region 'r1' has no end marker", out)
+
+
+class ShowRegions(TmpCase):
+    def test_show_lists_key_and_hash_pin(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "a.py", "before\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
+        write(root, "claims/c.md", region_claim_text("c", "a.py", "r1"))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        h = region_hash("x\ny\n")
+        rc, out, err = run_cli(root, "show", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(f"a.py#r1 — fresh ({h[:12]})", out)
+
+
+@NEED_GIT
+class WhoRegions(TmpCase):
+    def test_who_attributes_each_region_by_its_own_hash_line(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py",
+              "# claimlock:begin r1\nA\n# claimlock:end r1\n"
+              "# claimlock:begin r2\nB\n# claimlock:end r2\n")
+        write(root, "claims/c.md", region_claim_text("c", "a.py", "r1"))
+        git(root, "config", "user.email", "amy@example.com")
+        git(root, "config", "user.name", "amy")
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "verify r1")
+
+        text = (root / "claims" / "c.md").read_text()
+        text = text.replace("sources:\n  - path: a.py\n    region: r1\n",
+                            "sources:\n  - path: a.py\n    region: r1\n  - path: a.py\n    region: r2\n")
+        (root / "claims" / "c.md").write_text(text)
+        git(root, "config", "user.email", "ben@example.com")
+        git(root, "config", "user.name", "ben")
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "verify r2")
+
+        rc, out, err = run_cli(root, "who", "c")
+        self.assertEqual(rc, 0, out + err)
+        lines = {l.split("\t")[0]: l for l in out.splitlines()}
+        self.assertIn("a.py#r1", lines, out)
+        self.assertIn("a.py#r2", lines, out)
+        self.assertIn("amy@example.com", lines["a.py#r1"])
+        self.assertIn("ben@example.com", lines["a.py#r2"])
+
+        claim_now = (root / "claims" / "c.md").read_text()
+        blobs = re.findall(r"    blob: ([0-9a-f]{40})", claim_now)
+        hashes = re.findall(r"    hash: ([0-9a-f]{40})", claim_now)
+        self.assertEqual(len(blobs), 2)
+        self.assertEqual(len(set(blobs)), 1, "a.py never changed — both entries share the same blob")
+        self.assertEqual(len(hashes), 2)
+        self.assertEqual(len(set(hashes)), 2, "each region's hash line must be unique")
+
+
+@NEED_GIT
+class ResolveRegions(TmpCase):
+    def setUp(self):
+        super().setUp()
+        bare = self.tmp / "origin.git"
+        init_bare(bare)
+        self.a, self.b = self.tmp / "a", self.tmp / "b"
+        clone(bare, self.a, "amy@example.com")
+        run_cli(self.a, "init")
+        write(self.a, "a.py", "before\n# claimlock:begin r1\nx\n# claimlock:end r1\nafter\n")
+        write(self.a, "claims/c.md", region_claim_text("c", "a.py", "r1"))
+        self.assertEqual(run_cli(self.a, "verify", "c")[0], 0)
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "c")
+        git(self.a, "push", "-q", "origin", "main")
+        clone(bare, self.b, "ben@example.com")
+
+    def both_verify(self, a_region_line, b_region_line):
+        write(self.a, "a.py", f"before\n# claimlock:begin r1\n{a_region_line}\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(self.a, "verify", "c")[0], 0)
+        git(self.a, "commit", "-qam", "a")
+        git(self.a, "push", "-q", "origin", "main")
+        write(self.b, "a.py", f"before\n# claimlock:begin r1\n{b_region_line}\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(self.b, "verify", "c")[0], 0)
+        git(self.b, "commit", "-qam", "b")
+        return subprocess.run(["git", "pull", "-q", "origin", "main"], cwd=self.b,
+                              capture_output=True, text=True)
+
+    def test_theirs_region_content_keeps_theirs_pin(self):
+        pull = self.both_verify("y", "z")
+        self.assertNotEqual(pull.returncode, 0, "precondition: the region hash must conflict")
+        git(self.b, "checkout", "--theirs", "a.py")
+        rc, out, err = run_cli(self.b, "resolve")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("KEPT", out)
+        git(self.b, "add", "-A")
+        rc, out, _ = run_cli(self.b, "check")
+        self.assertEqual(rc, 0, out)
+
+    def test_new_region_content_makes_the_claim_owed(self):
+        self.both_verify("y", "z")
+        write(self.b, "a.py", "before\n# claimlock:begin r1\nnew\n# claimlock:end r1\nafter\n")
+        rc, out, err = run_cli(self.b, "resolve")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("OWED", out)
+        text = (self.b / "claims" / "c.md").read_text()
+        self.assertIn("status: owed", text)
+        self.assertNotIn("<<<<<<<", text)
+
+
+@NEED_GIT
+class ResolveWholeAndRegionOfSamePath(TmpCase):
+    def test_resolves_by_key_without_collapsing_the_two_entries(self):
+        bare = self.tmp / "origin.git"
+        init_bare(bare)
+        a, b = self.tmp / "a", self.tmp / "b"
+        clone(bare, a, "amy@example.com")
+        run_cli(a, "init")
+        write(a, "a.py", "before\n# claimlock:begin r1\nX\n# claimlock:end r1\nafter\n")
+        write(a, "claims/c.md", whole_and_region_claim_text("c", "a.py", "r1"))
+        self.assertEqual(run_cli(a, "verify", "c")[0], 0)
+        git(a, "add", "-A")
+        git(a, "commit", "-qm", "c")
+        git(a, "push", "-q", "origin", "main")
+        clone(bare, b, "ben@example.com")
+
+        write(a, "a.py", "before-A\n# claimlock:begin r1\nX\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(a, "verify", "c")[0], 0)
+        git(a, "commit", "-qam", "a")
+        git(a, "push", "-q", "origin", "main")
+
+        write(b, "a.py", "before-B\n# claimlock:begin r1\nX\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(b, "verify", "c")[0], 0)
+        git(b, "commit", "-qam", "b")
+        pull = subprocess.run(["git", "pull", "-q", "origin", "main"], cwd=b, capture_output=True, text=True)
+        self.assertNotEqual(pull.returncode, 0, "precondition: the whole-file blob must conflict")
+
+        git(b, "checkout", "--theirs", "a.py")
+        rc, out, err = run_cli(b, "resolve")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("KEPT", out)
+        text = (b / "claims" / "c.md").read_text()
+        self.assertEqual(text.count("- path: a.py"), 2, text)
+        self.assertIn("    region: r1\n", text)
+        self.assertIn("    hash: ", text)
+        git(b, "add", "-A")
+        rc, out, _ = run_cli(b, "check")
+        self.assertEqual(rc, 0, out)
 
 
 if __name__ == "__main__":
