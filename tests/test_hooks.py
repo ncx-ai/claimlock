@@ -8,7 +8,7 @@ import sys
 import unittest
 import unittest.mock as mock
 
-from helpers import BIN, TmpCase, claim_text, git, make_repo, run_cli, write
+from helpers import BIN, TmpCase, claim_text, clone, git, init_bare, make_repo, run_cli, write
 
 from claimlock import gitio as gitio_mod
 from claimlock import hooks as hooks_mod
@@ -180,6 +180,20 @@ class SessionStart(HookCase):
         self.assertEqual(len(ctx), 2000)  # proves truncation actually happened
         self.assertIn("408 invalid", ctx)
 
+    @NEED_GIT
+    def test_owed_to_you_lead_is_bounded(self):
+        # The owed-to-you line comes first and names up to 10 ids; with long
+        # ids it alone passes LIMIT, so it must sit inside the truncation.
+        root = self.store(use_git=True)
+        ids = [f"owed-{'q' * 240}-{i:02d}" for i in range(12)]
+        for cid in ids:
+            write(root, f"claims/{cid}.md", claim_text(
+                cid, status="owed", sources=("a.py",),
+                extra_lines=("owed_by: t@example.com", "owed_since: none")))
+        ctx = self.hook(root, "session-start")["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith("claimlock: owed to you: 12 (owed-"), ctx[:80])
+        self.assertEqual(len(ctx), 2000)  # proves truncation actually happened
+
 
 class Stop(HookCase):
     def test_warns_user_only_about_new_problems_once(self):
@@ -295,7 +309,7 @@ class HeadMovement(HookCase):
         git(root, "commit", "-qam", "pulled in from elsewhere")  # stales c by moving HEAD
         write(root, "b.py", "BEE\n")  # stales d, uncommitted
         msg = self.hook(root, "stop")["systemMessage"]
-        self.assertIn("since the last check, 1 claim became stale (d)", msg)
+        self.assertIn("from your uncommitted edits, 1 claim became stale (d)", msg)
         self.assertIn("c (stale)", msg)
         self.assertNotIn("(c)", msg)
         self.assertNotIn("introduced", msg)
@@ -418,6 +432,90 @@ class Concurrency(HookCase):
         moved = [o for o in outs if o.strip() and "HEAD moved" in o]
         self.assertEqual(len(moved), 1, f"expected exactly one HEAD-moved report, got: {moved}")
         self.assertFalse((self.data / "hook-errors.log").exists())
+
+
+@NEED_GIT
+class TeamHooks(HookCase):
+    def setUp(self):
+        super().setUp()
+        bare = init_bare(self.tmp / "origin.git")
+        self.a = clone(bare, self.tmp / "a", "amy@example.com")
+        run_cli(self.a, "init")
+        write(self.a, "src.py", "MAX = 1\n")
+        write(self.a, "claims/c.md", claim_text("c", sources=("src.py",)))
+        run_cli(self.a, "verify", "c")
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "c")
+        git(self.a, "push", "-q", "origin", "main")
+        self.b = clone(bare, self.tmp / "b", "ben@example.com")
+
+    def pull_b(self):
+        return subprocess.run(["git", "pull", "-q", "origin", "main"], cwd=self.b, capture_output=True, text=True)
+
+    def test_a_pull_names_who_changed_a_claims_source(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 9\n")
+        git(self.a, "commit", "-qam", "raise MAX")
+        git(self.a, "push", "-q", "origin", "main")
+        self.pull_b()
+        ctx = self.hook(self.b, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn('c (stale): src.py changed by amy@example.com in', ctx)
+        self.assertIn('"raise MAX"', ctx)
+
+    def test_a_hand_off_to_you_is_reported_on_pull_and_at_session_start(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 9\n")
+        git(self.a, "commit", "-qam", "raise MAX")
+        run_cli(self.a, "owe", "c", "--to", "ben@example.com")
+        git(self.a, "commit", "-qam", "owe c to ben")
+        git(self.a, "push", "-q", "origin", "main")
+        self.pull_b()
+        ctx = self.hook(self.b, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Now owed to you: c", ctx)
+        ctx = self.hook(self.b, "session-start", session="s2")["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith("claimlock: owed to you: 1 (c)"), ctx)
+
+    def test_a_conflicted_merge_says_run_resolve(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 2\n")
+        run_cli(self.a, "verify", "c")
+        git(self.a, "commit", "-qam", "a")
+        git(self.a, "push", "-q", "origin", "main")
+        write(self.b, "src.py", "MAX = 3\n")
+        run_cli(self.b, "verify", "c")
+        git(self.b, "commit", "-qam", "b")
+        self.assertNotEqual(self.pull_b().returncode, 0, "precondition: the merge conflicts")
+        # A conflicted merge does not move HEAD; the merge finishes when committed.
+        git(self.b, "checkout", "--theirs", "src.py")
+        git(self.b, "add", "-A")   # stages the marker-bearing claim too; git refuses to commit unmerged paths
+        git(self.b, "commit", "-qm", "merge, claim still conflicted", "--no-verify")
+        ctx = self.hook(self.b, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("run `claimlock resolve`", ctx)
+
+    def test_stop_separates_your_uncommitted_edits(self):
+        self.hook(self.b, "session-start")
+        write(self.b, "src.py", "MAX = 5\n")
+        msg = self.hook(self.b, "stop")["systemMessage"]
+        self.assertIn("from your uncommitted edits, 1 claim became stale (c)", msg)
+        self.assertNotIn("since the last check", msg)
+
+
+@NEED_GIT
+class CommonPathRunsNoGit(HookCase):
+    def test_post_tool_use_with_head_unchanged_invokes_no_git(self):
+        root = self.store(use_git=True)
+        self.hook(root, "session-start")
+        fake = self.tmp / "fakebin"
+        fake.mkdir()
+        calls = self.tmp / "git-calls"
+        (fake / "git").write_text(f"#!/bin/sh\necho \"$@\" >> '{calls}'\nexit 1\n")
+        os.chmod(fake / "git", 0o755)
+        payload = json.dumps({"session_id": "s1", "cwd": str(root)})
+        rc, out, err = run_cli(root, "hook", "post-tool-use", stdin=payload,
+                               env={"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_DATA": str(self.data),
+                                    "PATH": str(fake)})
+        self.assertEqual((rc, out), (0, ""), err)
+        self.assertFalse(calls.exists(), calls.read_text() if calls.exists() else "")
 
 
 if __name__ == "__main__":

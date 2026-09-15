@@ -27,6 +27,24 @@ def make_repo(root: Path, use_git: bool, config: str = "") -> Path:
     return root
 
 
+def init_bare(path: Path) -> Path:
+    subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(path)], check=True, capture_output=True)
+    return path
+
+
+def clone(bare: Path, dest: Path, email="t@example.com", *git_config) -> Path:
+    """Clone with a local identity, unsigned commits and merge-on-pull.
+    `git_config` entries like "core.autocrlf=true" apply to the clone command."""
+    pre = [a for kv in git_config for a in ("-c", kv)]
+    subprocess.run(["git", *pre, "clone", "-q", str(bare), str(dest)], check=True, capture_output=True)
+    for k, v in (("user.email", email), ("user.name", email.split("@")[0]),
+                 ("commit.gpgsign", "false"), ("pull.rebase", "false")):
+        git(dest, "config", k, v)
+    for kv in git_config:
+        git(dest, "config", *kv.split("=", 1))
+    return dest
+
+
 def write(root: Path, rel: str, text: str) -> Path:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)

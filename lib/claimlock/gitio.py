@@ -227,6 +227,32 @@ def changed_paths(root, old, new) -> list:
     return _lines(out)
 
 
+def range_log(root, old, new):
+    """[(short sha, author email, subject, [root-relative paths])], newest first,
+    for commits in old..new — or just `new` when `old` is None or unreachable."""
+    fmt = "--format=%x00%h%x09%ae%x09%s"
+    r = run(root, "log", "--no-renames", "--name-only", "--relative", fmt, f"{old}..{new}") if old else None
+    if r is None or r.returncode != 0:
+        r = run(root, "log", "-1", "--no-renames", "--name-only", "--relative", fmt, new)
+    if r is None or r.returncode != 0:
+        return []
+    out = []
+    for chunk in r.stdout.decode("utf-8", "replace").split("\0")[1:]:
+        lines = [line for line in chunk.splitlines() if line]
+        if not lines:
+            continue
+        head = lines[0].split("\t", 2)
+        if len(head) == 3:
+            out.append((head[0], head[1], head[2], lines[1:]))
+    return out
+
+
+def dirty_paths(root):
+    """Tracked paths whose working-tree content differs from HEAD, root-relative."""
+    out = _text(run(root, "diff", "--name-only", "--relative", "HEAD"))
+    return _lines(out) if out is not None else []
+
+
 def head_mark_paths(root) -> list:
     """Absolute paths whose mtime changes whenever HEAD moves (for a cheap stat gate)."""
     names = ["HEAD", "logs/HEAD", "packed-refs"]

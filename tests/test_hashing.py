@@ -4,12 +4,11 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import time
 import unittest
 from unittest import mock
 
-from helpers import TmpCase, claim_text, git, make_repo, run_cli, write
+from helpers import TmpCase, claim_text, clone, git, init_bare, make_repo, run_cli, write
 from claimlock import gitio, pins
 from claimlock.pins import Hasher, blob_of_bytes
 
@@ -17,17 +16,11 @@ NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
 OLD = time.time_ns() - 100 * 1_000_000_000
 
 
-def clone(bare, dest, *config):
-    subprocess.run(["git", *config, "clone", "-q", str(bare), str(dest)], check=True, capture_output=True)
-    for k, v in (("user.email", "t@example.com"), ("user.name", "t"), ("commit.gpgsign", "false")):
-        git(dest, "config", k, v)
-
-
 @NEED_GIT
 class LineEndingsAcrossClones(TmpCase):
     def test_lf_and_crlf_clones_agree_on_every_pin(self):
         bare = self.tmp / "origin.git"
-        subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(bare)], check=True, capture_output=True)
+        init_bare(bare)
         a = self.tmp / "a"
         clone(bare, a)
         git(a, "config", "core.autocrlf", "false")
@@ -47,7 +40,7 @@ class LineEndingsAcrossClones(TmpCase):
         git(a, "push", "-q", "origin", "main")
 
         b = self.tmp / "b"
-        clone(bare, b, "-c", "core.autocrlf=true")
+        clone(bare, b, "t@example.com", "core.autocrlf=true")
         git(b, "config", "core.autocrlf", "true")
         (b / "src" / "limit.py").unlink()
         git(b, "checkout", "--", "src/limit.py")
@@ -68,7 +61,7 @@ class LineEndingsAcrossClones(TmpCase):
         (spec amendment T9), B's checkout of claims/c.md picks up CRLF and
         `check` there reports the claim invalid."""
         bare = self.tmp / "origin2.git"
-        subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(bare)], check=True, capture_output=True)
+        init_bare(bare)
         a = self.tmp / "a2"
         clone(bare, a)
         git(a, "config", "core.autocrlf", "false")
@@ -82,7 +75,7 @@ class LineEndingsAcrossClones(TmpCase):
         git(a, "push", "-q", "origin", "main")
 
         b = self.tmp / "b2"
-        clone(bare, b, "-c", "core.autocrlf=true")
+        clone(bare, b, "t@example.com", "core.autocrlf=true")
         git(b, "config", "core.autocrlf", "true")
         rc, out, err = run_cli(b, "check")
         self.assertEqual(rc, 0, out + err)

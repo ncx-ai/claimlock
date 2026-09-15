@@ -10,21 +10,9 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from helpers import TmpCase, claim_text, git, run_cli, write
+from helpers import TmpCase, claim_text, clone, git, init_bare, run_cli, write
 
 GIT_AVAILABLE = shutil.which("git") is not None
-
-
-def _init_bare(path: Path):
-    subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(path)],
-                   check=True, capture_output=True)
-
-
-def _clone(bare: Path, dest: Path):
-    subprocess.run(["git", "clone", "-q", str(bare), str(dest)], check=True, capture_output=True)
-    git(dest, "config", "user.email", "t@example.com")
-    git(dest, "config", "user.name", "t")
-    git(dest, "config", "commit.gpgsign", "false")
 
 
 def _git_allow_fail(root, *args):
@@ -39,10 +27,10 @@ def scaffold(tmp: Path):
     clone B made from that same origin — the common starting point for every
     scenario below."""
     bare = tmp / "origin.git"
-    _init_bare(bare)
+    init_bare(bare)
 
     a = tmp / "a"
-    _clone(bare, a)
+    clone(bare, a)
     run_cli(a, "init")
     write(a, "src_a.py", "A = 1\n")
     write(a, "src_b.py", "B = 1\n")
@@ -53,7 +41,7 @@ def scaffold(tmp: Path):
     git(a, "push", "-q", "origin", "main")
 
     b = tmp / "b"
-    _clone(bare, b)
+    clone(bare, b)
     return bare, a, b
 
 

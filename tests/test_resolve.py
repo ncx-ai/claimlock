@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from helpers import TmpCase, claim_text, git, run_cli, write
+from helpers import TmpCase, claim_text, clone, git, init_bare, run_cli, write
 from claimlock.merge import hunks
 
 NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
@@ -41,21 +41,14 @@ def _blob(content):
                           text=True, check=True).stdout.strip()
 
 
-def _clone(bare, dest, email):
-    subprocess.run(["git", "clone", "-q", str(bare), str(dest)], check=True, capture_output=True)
-    for k, v in (("user.email", email), ("user.name", email.split("@")[0]),
-                 ("commit.gpgsign", "false"), ("pull.rebase", "false")):
-        git(dest, "config", k, v)
-
-
 @NEED_GIT
 class ResolveAfterMerge(TmpCase):
     def setUp(self):
         super().setUp()
         bare = self.tmp / "origin.git"
-        subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(bare)], check=True, capture_output=True)
+        init_bare(bare)
         self.a, self.b = self.tmp / "a", self.tmp / "b"
-        _clone(bare, self.a, "amy@example.com")
+        clone(bare, self.a, "amy@example.com")
         run_cli(self.a, "init")
         write(self.a, "src.py", "MAX = 1\n")
         write(self.a, "claims/c.md", claim_text("c", sources=("src.py",)))
@@ -63,7 +56,7 @@ class ResolveAfterMerge(TmpCase):
         git(self.a, "add", "-A")
         git(self.a, "commit", "-qm", "c")
         git(self.a, "push", "-q", "origin", "main")
-        _clone(bare, self.b, "ben@example.com")
+        clone(bare, self.b, "ben@example.com")
 
     def both_verify(self, a_content, b_content, a_edit=None, b_edit=None):
         write(self.a, "src.py", a_content)

@@ -212,9 +212,11 @@ def survey(project):
     hasher.save()
     ids = {r.claim.id for r in results}
     markers, _ = refs.scan(project)
-    s = {"invalid": sorted(r.claim.id for r in results if r.problems)}
+    s = {"invalid": sorted(r.claim.id for r in results if r.problems and not r.claim.conflicted),
+         "conflicted": sorted(r.claim.id for r in results if r.claim.conflicted)}
     for k in C.NON_FRESH:
         s[k] = sorted(r.claim.id for r in results if r.state == k)
+    s["owed"] = sorted(r.claim.id for r in results if r.claim.status == "owed")
     s["dangling"] = sorted({f"{m.path}:{m.id}" for m in markers if m.id not in ids})
     return s, results
 
@@ -250,6 +252,17 @@ def _init_head(project, st, head=_UNSET):
             st["last_head"] = current
     st["marks"] = _stat_marks(paths)
     st["probed_at"] = time.time()
+    if paths and "email" not in st:
+        # Cached for the session: who "owed to you" means. Read only when
+        # HEAD tracking is (re)initialised, never on the stat-only path.
+        st["email"] = gitio.user_email(project.root)
+
+
+def _claim_rel(project, claim):
+    try:
+        return claim.path.relative_to(project.root).as_posix()
+    except ValueError:
+        return None
 
 
 def _new_state(project):
@@ -280,14 +293,29 @@ def head_check(project, st):
     hasher = C.open_hasher(project)
     results = C.evaluate(project, hasher)
     hasher.save()
-    hit = [(r.claim.id, r.state) for r in results
-           if r.state in C.NON_FRESH and any(s.path in changed for s in r.claim.sources)]
+    # One `git log` over the range attributes every changed path to the
+    # newest commit that touched it.
+    who = {}
+    for sha, email, subject, paths in gitio.range_log(project.root, old, new):
+        for p in paths:
+            who.setdefault(p, (sha, email, subject))
+    hit = []
+    for r in results:
+        if r.state in C.NON_FRESH:
+            src = next((s.path for s in r.claim.sources if s.path in changed), None)
+            if src is not None:
+                hit.append((r.claim.id, r.state, src, who.get(src)))
+    me = st.get("email")
+    owed_new = sorted(r.claim.id for r in results
+                      if me and r.claim.status == "owed" and r.claim.owed_by == me
+                      and _claim_rel(project, r.claim) in changed)
+    conflicted = sorted(r.claim.id for r in results if r.claim.conflicted)
     ids = {r.claim.id for r in results}
     markers, _ = refs.scan(project, only=changed)
     dangling = sorted({f"{m.path}:{m.id}" for m in markers if m.id not in ids})
-    if not hit and not dangling:
+    if not (hit or dangling or owed_new or conflicted):
         return None
-    return _head_report(old, new, hit, dangling)
+    return _head_report(old, new, hit, dangling, owed_new, conflicted)
 
 
 class _HeadReport(str):
@@ -296,18 +324,26 @@ class _HeadReport(str):
     named = frozenset()
 
 
-def _head_report(old, new, hit, dangling):
+def _head_report(old, new, hit, dangling, owed_new=(), conflicted=()):
     parts = [f"claimlock: HEAD moved {(old or 'none')[:7]}→{new[:7]} (a commit, merge, rebase, pull or checkout)."]
     if hit:
         more = "…" if len(hit) > 10 else ""
+        entries = [f'{cid} ({state}): {src} changed by {w[1]} in {w[0]} "{w[2]}"' if w else f"{cid} ({state})"
+                   for cid, state, src, w in hit[:10]]
         parts.append(f"Files changed in that range back {len(hit)} claim(s) that are no longer fresh: "
-                     + ", ".join(f"{i} ({s})" for i, s in hit[:10]) + more + ".")
+                     + "; ".join(entries) + more + ".")
+    if owed_new:
+        parts.append("Now owed to you: " + ", ".join(owed_new[:10]) + ("…" if len(owed_new) > 10 else "") + ".")
+    if conflicted:
+        parts.append(f"{len(conflicted)} claim file(s) have merge conflicts ({', '.join(conflicted[:5])}"
+                     f"{'…' if len(conflicted) > 5 else ''}) — run `claimlock resolve`.")
     if dangling:
         more = "…" if len(dangling) > 10 else ""
         parts.append("Markers naming no claim: " + ", ".join(dangling[:10]) + more + ".")
     parts.append("Re-check each with `claimlock diff <id>`; `claimlock verify <id>` only after re-checking.")
     report = _HeadReport(" ".join(parts))
-    report.named = frozenset([i for i, _ in hit[:10]] + dangling[:10])
+    report.named = frozenset([h[0] for h in hit[:10]] + list(dangling[:10])
+                             + list(owed_new[:10]) + list(conflicted[:5]))
     return report
 
 
@@ -316,6 +352,10 @@ def session_start(project, payload, data_dir):
     st = {"root": str(project.root), "baseline": s}
     _init_head(project, st)
     _save_state(_state_path(data_dir, payload), st)
+    me = st.get("email")
+    mine = sorted(r.claim.id for r in results if me and r.claim.status == "owed" and r.claim.owed_by == me)
+    lead = (f"claimlock: owed to you: {len(mine)} ({', '.join(mine[:10])}{'…' if len(mine) > 10 else ''}).\n"
+            if mine else "")
     n = len(results)
     if not any(s.values()):
         text = f"claimlock: {n} claims, all fresh. {RECHECK}"
@@ -325,6 +365,7 @@ def session_start(project, payload, data_dir):
         area_line = ("Affected areas: " + ", ".join(f"{a} ({c})" for a, c in areas.most_common(8))
                      + (", …" if len(areas) > 8 else "") + ".\n") if areas else ""
         text = f"claimlock: {n} claims — {counts}.\n{area_line}{RECHECK}"
+    text = lead + text
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text[:LIMIT]}}
 
 
@@ -334,7 +375,7 @@ def stop(project, payload, data_dir):
     if st is None:
         _save_state(path, _new_state(project))
         return None
-    s, _ = survey(project)
+    s, results = survey(project)
     base = st.get("baseline") or {}
     new = {k: [x for x in v if x not in set(base.get(k, []))] for k, v in s.items()}
     head_msg = head_check(project, st)
@@ -345,10 +386,24 @@ def stop(project, payload, data_dir):
     # below already names is not repeated here.
     named = getattr(head_msg, "named", frozenset())
     new = {k: [x for x in v if x not in named] for k, v in new.items()}
+    # Drift whose cited source you have edited but not committed is yours;
+    # the rest arrived some other way (a pull, a tool, another process).
+    dirty = set(gitio.dirty_paths(project.root)) if st.get("mark_paths") else set()
+    by_id = {r.claim.id: r for r in results}
+    yours, others = {}, {}
+    for kind, items in new.items():
+        for item in items:
+            r = by_id.get(item)
+            mine = r is not None and dirty and any(sp.path in dirty for sp in r.claim.sources)
+            (yours if mine else others).setdefault(kind, []).append(item)
     parts = []
-    if any(new.values()):
+    if yours:
+        parts.append("claimlock: from your uncommitted edits, "
+                     + "; ".join(_since_phrase(k, v) for k, v in yours.items())
+                     + ". Inspect with `claimlock diff <id>`.")
+    if others:
         parts.append("claimlock: since the last check, "
-                     + "; ".join(_since_phrase(k, v) for k, v in new.items() if v)
+                     + "; ".join(_since_phrase(k, v) for k, v in others.items())
                      + ". Inspect with `claimlock diff <id>` or `claimlock refs`.")
     if head_msg:
         parts.append(head_msg)
