@@ -157,6 +157,31 @@ def short_head(root):
     return _text(run(root, "rev-parse", "--short=7", "--verify", "-q", "HEAD")) or None
 
 
+def merge_base(root, base):
+    return _text(run(root, "merge-base", base, "HEAD")) or None
+
+
+def changed_since(root, commit):
+    """Paths changed by commits in commit..HEAD, relative to (and limited to) `root`."""
+    out = _text(run(root, "diff", "--name-only", "--relative", "--no-renames", commit, "HEAD"))
+    return _lines(out) if out is not None else []
+
+
+def verifier(root, claim_rel, blob):
+    """(author email, ISO time, short sha) of the latest commit that added or
+    removed `blob: <sha>` in the claim file, or None if no commit did."""
+    out = _text(run(root, "log", "-1", "--format=%ae%x09%aI%x09%h", "-S", f"blob: {blob}", "--", claim_rel))
+    if not out:
+        return None
+    parts = out.split("\t")
+    return tuple(parts) if len(parts) == 3 else None
+
+
+def commits_behind(root, commit):
+    out = _text(run(root, "rev-list", "--count", f"{commit}..HEAD"))
+    return int(out) if out and out.isdigit() else None
+
+
 def has_blob(root, sha) -> bool:
     r = run(root, "cat-file", "-e", f"{sha}^{{blob}}")
     return r is not None and r.returncode == 0

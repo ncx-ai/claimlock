@@ -24,12 +24,17 @@ HINT = {
 MARK = {"verified": "✓", "unverified": "?", "refuted": "✗", "owed": "⇢"}
 
 CI_SNIPPET = """\
-Add the gate to CI or a pre-commit hook:
+Gate a change in CI on the claims it touched (pre-existing drift is listed, not blocking):
 
-    claimlock self-test && claimlock check && claimlock refs
+    claimlock self-test && claimlock check --changed origin/main && claimlock refs
+
+Check the whole store locally:
+
+    claimlock check
 
 Then: claimlock new <id> --area <area>   (write the claim, cite evidence and sources)
       claimlock verify <id>              (pins every source; only after checking it)
+      claimlock owe <id> --to <email>    (hand the re-check to someone, instead)
 """
 
 
@@ -88,43 +93,102 @@ def cmd_new(args):
     return 0
 
 
+def _failing(r):
+    return bool(r.problems) or r.state in C.NON_FRESH
+
+
+def _print_failing(r):
+    if r.problems:
+        print(f"{_paint('31', 'INVALID ')} {r.claim.id}")
+        for x in r.problems:
+            print(f"         {x}")
+    if r.state in C.NON_FRESH:
+        print(f"{_paint('33', r.state.upper().ljust(8))} {r.claim.id}")
+        for path, st in r.per_source:
+            if st != "fresh":
+                print(f"         {path}: {st}")
+        print(f"         {HINT[r.state].format(id=r.claim.id)}")
+
+
+def _owed_line(project, r):
+    since = r.claim.owed_since or "?"
+    behind = gitio.commits_behind(project.root, since) if since not in ("?", "none") else None
+    ago = "" if behind is None else f", {behind} commit{'' if behind == 1 else 's'} ago"
+    return f"OWED     {r.claim.id} → {r.claim.owed_by} since {since}{ago}"
+
+
 def cmd_check(args):
-    _, hasher, results = _evaluate(args)
-    counts = {"invalid": sum(1 for r in results if r.problems)}
-    counts.update({s: sum(1 for r in results if r.state == s) for s in C.NON_FRESH})
+    project, hasher, results = _evaluate(args)
+    scope = None
+    if args.changed:
+        if not gitio.in_git(project.root):
+            print("claimlock: --changed needs a git repository", file=sys.stderr)
+            return 2
+        base = gitio.merge_base(project.root, args.changed)
+        if base is None:
+            print(f"claimlock: cannot find a merge base between {args.changed!r} and HEAD", file=sys.stderr)
+            return 2
+        changed = set(gitio.changed_since(project.root, base))
+        scope = {r.claim.id for r in results
+                 if _rel(project, r.claim.path) in changed or any(s.path in changed for s in r.claim.sources)}
+
+    def in_scope(r):
+        return scope is None or r.claim.id in scope
+
+    blocking = [r for r in results if _failing(r) and in_scope(r)]
+    elsewhere = [r for r in results if _failing(r) and not in_scope(r)]
+    owed = [r for r in results if r.claim.status == "owed" and not r.problems]
+    blocking_ids = {r.claim.id for r in blocking}
+    counts = {"invalid": sum(1 for r in blocking if r.problems)}
+    counts.update({s: sum(1 for r in blocking if r.state == s) for s in C.NON_FRESH})
     if args.json:
         print(json.dumps({
             "claims": len(results),
             "sources_hashed": hasher.hashed,
             "counts": counts,
+            "scope": sorted(scope) if scope is not None else None,
             "results": [{
                 "id": r.claim.id, "area": r.claim.area, "status": r.claim.status,
                 "problems": r.problems, "state": r.state,
                 "sources": [{"path": p, "state": s} for p, s in r.per_source],
+                "in_scope": in_scope(r), "blocking": r.claim.id in blocking_ids,
+                "owed_by": r.claim.owed_by,
             } for r in results],
         }, indent=2))
     else:
-        for r in results:
-            if r.problems:
-                print(f"{_paint('31', 'INVALID ')} {r.claim.id}")
-                for x in r.problems:
-                    print(f"         {x}")
-            if r.state in C.NON_FRESH:
-                print(f"{_paint('33', r.state.upper().ljust(8))} {r.claim.id}")
-                for path, st in r.per_source:
-                    if st != "fresh":
-                        print(f"         {path}: {st}")
-                print(f"         {HINT[r.state].format(id=r.claim.id)}")
+        for r in blocking:
+            _print_failing(r)
+        if elsewhere:
+            print("pre-existing (not changed here):")
+            for r in elsewhere:
+                print(f"  {r.claim.id}: {'invalid' if r.problems else r.state}")
+        for r in owed:
+            print(_owed_line(project, r))
         summary = ", ".join(f"{v} {k}" for k, v in counts.items())
-        print(f"claimlock: {len(results)} claims, {hasher.hashed} sources hashed — {summary}")
-    return 1 if any(counts.values()) else 0
+        if owed:
+            summary += f", {len(owed)} owed"
+        head = f"{len(results)} claims" + (f" ({len(scope)} in scope)" if scope is not None else "")
+        print(f"claimlock: {head}, {hasher.hashed} sources hashed — {summary}")
+    return 1 if blocking else 0
+
+
+def _owner(args, project):
+    if getattr(args, "mine", False):
+        email = gitio.user_email(project.root)
+        if not email:
+            raise ops.NeedsIdentity("--mine needs git config user.email (or use --owed-by <email>)")
+        return email
+    return getattr(args, "owed_by", None)
 
 
 def cmd_stale(args):
-    _, _, results = _evaluate(args)
+    project, _, results = _evaluate(args)
+    owner = _owner(args, project)
     rc = 0
     for r in results:
-        if r.state in C.NON_FRESH:
+        if r.claim.status == "owed" and (owner is None or r.claim.owed_by == owner):
+            print(f"{r.claim.id}\t{r.claim.area}\towed\t{r.claim.owed_by}")
+        elif owner is None and r.state in C.NON_FRESH:
             rc = 1
             paths = ",".join(p for p, s in r.per_source if s != "fresh")
             print(f"{r.claim.id}\t{r.claim.area}\t{r.state}\t{paths}")
@@ -132,9 +196,12 @@ def cmd_stale(args):
 
 
 def cmd_list(args):
-    _, _, results = _evaluate(args)
+    project, _, results = _evaluate(args)
+    owner = _owner(args, project)
     for r in results:
         if args.status and r.claim.status != args.status:
+            continue
+        if owner is not None and not (r.claim.status == "owed" and r.claim.owed_by == owner):
             continue
         flag = f" [{r.state}]" if r.state in C.NON_FRESH else ""
         flag += " [invalid]" if r.problems else ""
@@ -193,10 +260,39 @@ def cmd_show(args):
     states = dict(r.per_source)
     if c.sources:
         print("Sources (a change here makes this claim stale):")
+        in_git = gitio.in_git(project.root)
         for s in c.sources:
             pin = s.blob[:12] if s.blob else "unpinned"
-            print(f"  {s.path} — {states.get(s.path, '-')} ({pin})")
+            v = _verified(project, in_git, _rel(project, c.path), s)
+            note = {"unpinned": "", "unknown": " — verified by unknown (no git)",
+                    "uncommitted": " — uncommitted (verifier known once committed)"}.get(v[0])
+            if note is None:
+                note = f" — verified by {v[1]} at {v[2]} ({v[3]})"
+            print(f"  {s.path} — {states.get(s.path, '-')} ({pin}){note}")
     print(f"\nfile: {_rel(project, c.path)}")
+    return 0
+
+
+def _verified(project, in_git, claim_rel, source):
+    """("unpinned",) | ("unknown",) | ("uncommitted",) | ("verified", email, iso, sha)."""
+    if not source.blob:
+        return ("unpinned",)
+    if not in_git:
+        return ("unknown",)
+    v = gitio.verifier(project.root, claim_rel, source.blob)
+    return ("verified", *v) if v else ("uncommitted",)
+
+
+def cmd_who(args):
+    project = _project(args)
+    c = _find(project, args.id)
+    if c is None:
+        print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
+        return 1
+    in_git = gitio.in_git(project.root)
+    for s in c.sources:
+        v = _verified(project, in_git, _rel(project, c.path), s)
+        print("\t".join([s.path, *(v[1:] if v[0] == "verified" else v)]))
     return 0
 
 
@@ -375,11 +471,19 @@ def build_parser():
     p = add("check", cmd_check, "the gate: fail on invalid or non-fresh claims")
     p.add_argument("--json", action="store_true")
     p.add_argument("--area")
+    p.add_argument("--changed", metavar="BASE",
+                   help="block only on claims whose sources or files changed since the merge base with BASE")
     p = add("stale", cmd_stale, "list non-fresh verified claims")
     p.add_argument("--area")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--owed-by", metavar="EMAIL", help="only claims owed by this email")
+    g.add_argument("--mine", action="store_true", help="only claims owed by your git config user.email")
     p = add("list", cmd_list, "list claims")
     p.add_argument("--area")
     p.add_argument("--status", choices=C.STATUSES)
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--owed-by", metavar="EMAIL", help="only claims owed by this email")
+    g.add_argument("--mine", action="store_true", help="only claims owed by your git config user.email")
     p = add("search", cmd_search, "case-insensitive substring search")
     p.add_argument("query")
     p = add("show", cmd_show, "one claim with evidence and per-source state")
@@ -393,6 +497,8 @@ def build_parser():
     p = add("resolve", cmd_resolve, "settle conflicted pins after a merge")
     p.add_argument("ids", nargs="*")
     p = add("diff", cmd_diff, "show what changed in a claim's sources since it was verified")
+    p.add_argument("id")
+    p = add("who", cmd_who, "who verified each of a claim's pins, from git history")
     p.add_argument("id")
     add("refs", cmd_refs, "fail on Claim markers that name no claim")
     p = add("affected", cmd_affected, "claims whose sources include these paths")
