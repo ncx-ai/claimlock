@@ -10,7 +10,7 @@ from . import VERSION
 from . import claims as C
 from . import gitio
 from . import hooks
-from . import importer, ops, refs, selftest
+from . import importer, merge, ops, refs, selftest
 from . import project as P
 
 HINT = {
@@ -216,6 +216,43 @@ def cmd_verify(args):
     return rc
 
 
+def cmd_owe(args):
+    project = _project(args)
+    rc = 0
+    for cid in args.ids:
+        try:
+            by, since = ops.owe(project, cid, to=args.to, reason=args.reason)
+        except ops.Refused as e:
+            print(f"claimlock: {e}", file=sys.stderr)
+            rc = 1
+            continue
+        print(f"owed {cid} → {by} (since {since})")
+    return rc
+
+
+def cmd_resolve(args):
+    project = _project(args)
+    claims = C.load_claims(project)
+    by_id = {c.id: c for c in claims}
+    rc = 0
+    for cid in args.ids:
+        if cid not in by_id:
+            print(f"claimlock: no claim {cid!r}", file=sys.stderr)
+            rc = 1
+    targets = [by_id[i] for i in args.ids if i in by_id] if args.ids else [c for c in claims if c.conflicted]
+    if not targets and not args.ids:
+        print("claimlock: no conflicted claims")
+    for c in targets:
+        if not c.conflicted:
+            print(f"-      {c.id}  not conflicted")
+            continue
+        outcome, message = merge.resolve_claim(project, c)
+        print(f"{outcome.upper():6} {c.id}  {message}")
+        if outcome == "left":
+            rc = 1
+    return rc
+
+
 def cmd_diff(args):
     project = _project(args)
     c = _find(project, args.id)
@@ -349,6 +386,12 @@ def build_parser():
     p.add_argument("id")
     p = add("verify", cmd_verify, "pin sources and mark verified (only after re-checking)")
     p.add_argument("ids", nargs="+")
+    p = add("owe", cmd_owe, "hand off a claim's re-check to someone (status: owed)")
+    p.add_argument("ids", nargs="+")
+    p.add_argument("--to", help="email of who owes it (default: git config user.email)")
+    p.add_argument("--reason", help="one line appended to the claim body")
+    p = add("resolve", cmd_resolve, "settle conflicted pins after a merge")
+    p.add_argument("ids", nargs="*")
     p = add("diff", cmd_diff, "show what changed in a claim's sources since it was verified")
     p.add_argument("id")
     add("refs", cmd_refs, "fail on Claim markers that name no claim")
@@ -379,6 +422,9 @@ def main(argv) -> int:
     try:
         return args.fn(args)
     except (P.ConfigError, C.StoreMissing) as e:
+        print(f"claimlock: {e}", file=sys.stderr)
+        return 2
+    except ops.NeedsIdentity as e:
         print(f"claimlock: {e}", file=sys.stderr)
         return 2
     except ops.Refused as e:

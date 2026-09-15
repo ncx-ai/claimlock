@@ -149,6 +149,14 @@ def head(root):
     return _text(run(root, "rev-parse", "--verify", "-q", "HEAD")) or None
 
 
+def user_email(root):
+    return _text(run(root, "config", "user.email")) or None
+
+
+def short_head(root):
+    return _text(run(root, "rev-parse", "--short=7", "--verify", "-q", "HEAD")) or None
+
+
 def has_blob(root, sha) -> bool:
     r = run(root, "cat-file", "-e", f"{sha}^{{blob}}")
     return r is not None and r.returncode == 0

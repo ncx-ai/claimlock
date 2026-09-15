@@ -1,15 +1,20 @@
 """Operations that change files. Each refuses rather than guessing."""
 import os
+from datetime import date
 from pathlib import Path
 
 from . import claims as C
-from . import frontmatter
+from . import frontmatter, gitio
 from .frontmatter import quote
 from .project import CONFIG, safe_source
 
 
 class Refused(Exception):
     pass
+
+
+class NeedsIdentity(Exception):
+    """No one to record: no --to and no git user.email. Exit 2."""
 
 
 CONFIG_TEMPLATE = """\
@@ -127,3 +132,38 @@ def verify(project, cid) -> list:
                                remove=("verified_at", "owed_by", "owed_since"))
     _write(c.path, text)
     return pinned
+
+
+def owe(project, cid, to=None, reason=None, today=None):
+    """Hand off a re-check: status owed, owed_by, owed_since. Refuses a claim
+    with problems, an unverified/refuted claim, a fresh claim, and a claim
+    already owed to the same person."""
+    c = next((x for x in C.load_claims(project) if x.id == cid), None)
+    if c is None:
+        raise Refused(f"no claim {cid!r}")
+    if c.conflicted or c.parse_error or C.problems(c, project):
+        raise Refused(f"{cid} has problems that must be fixed first (run: claimlock check)")
+    if c.status in ("unverified", "refuted"):
+        raise Refused(f"{cid} is {c.status}; only a verified or owed claim can be owed")
+    email = to or gitio.user_email(project.root)
+    if not email:
+        raise NeedsIdentity("nobody to hand this to — pass --to <email> or set git config user.email")
+    if not C.EMAIL_RE.match(email):
+        raise Refused(f"{email!r} is not an email address")
+    if c.status == "verified":
+        hasher = C.open_hasher(project)
+        state, _ = C.freshness(c, project, hasher, C.anchors_for(project, c.sources))
+        hasher.save()
+        if state == "fresh":
+            raise Refused(f"{cid} is fresh — nothing is owed")
+    elif c.owed_by == email:
+        raise Refused(f"{cid} is already owed by {email}")
+    since = gitio.short_head(project.root) or "none"
+    text = frontmatter.rewrite(c.text, c.path.name, status="owed",
+                               set_fields={"owed_by": email, "owed_since": since})
+    if reason:
+        who = gitio.user_email(project.root) or "unknown"
+        day = today or date.today().isoformat()
+        text = text.rstrip("\n") + f"\n\nOwed {day} by {who}: {reason}\n"
+    _write(c.path, text)
+    return email, since

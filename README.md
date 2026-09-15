@@ -56,6 +56,8 @@ claimlock diff retries-are-capped     # see exactly what changed since verificat
 | `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs. |
 | `claimlock show` | One claim in full: status, freshness per source, evidence, body. |
 | `claimlock verify` | Pin every source to its current content and mark the claim verified. |
+| `claimlock owe` | Hand off a claim's re-check to someone (`--to <email>`, default your git `user.email`); status becomes `owed`. |
+| `claimlock resolve` | Settle conflicted `sources` pins after a merge: keep a pin only when it matches the merged content, else mark the claim owed by the merger. |
 | `claimlock diff` | Show what changed in a claim's sources since it was last verified. |
 | `claimlock refs` | Fail if any `` Claim: `id` `` marker in prose names no claim. |
 | `claimlock affected` | List claims whose sources include the given path(s). |
