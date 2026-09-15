@@ -115,6 +115,7 @@ Two **problems** fail `check` whatever the status:
 | `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs. |
 | `claimlock show` | One claim in full: status (and owner, if owed), freshness per source, who verified each pin, evidence, body. |
 | `claimlock verify` | Re-hash every source (cache bypassed), pin it, write the `pins:` digest of the whole pin set, and mark the claim verified — clearing `owed_by`/`owed_since`. Refuses a conflicted, refuted or incomplete claim. |
+| `claimlock follow` | Rewrite the path of each renamed source (reported by `check` as `renamed`) to its new path, keeping its pins; the claim then reads fresh if the content is unchanged. |
 | `claimlock owe` | Hand off a claim's re-check to someone (`--to <email>`, default your git `user.email`; `--reason "<one line>"`); status becomes `owed`. |
 | `claimlock resolve` | Settle conflicted `sources` pins after a merge: keep a pin only when it equals the merged content, else mark the claim owed by the merger; leave every other conflict for a person. |
 | `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. |

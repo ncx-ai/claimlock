@@ -20,6 +20,7 @@ HINT = {
     "unpinned": "never pinned — re-check it, then: claimlock verify {id}",
     "unanchored": ("the pinned content was never committed or staged — commit the source so every "
                    "clone can see it (if it changed since, re-check, then: claimlock verify {id})"),
+    "renamed": "a source was renamed — run: claimlock follow {id}",
 }
 MARK = {"verified": "✓", "unverified": "?", "refuted": "✗", "owed": "⇢"}
 
@@ -104,9 +105,18 @@ def _print_failing(r):
             print(f"         {x}")
     if r.state in C.NON_FRESH:
         print(f"{_paint('33', r.state.upper().ljust(8))} {r.claim.id}")
+        by_key = {s.key: s for s in r.claim.sources}
         for key, st in r.per_source:
-            if st != "fresh":
-                print(f"         {key}: {st}")
+            if st == "fresh":
+                continue
+            if st == "renamed":
+                s = by_key.get(key)
+                info = r.renames.get(s.path) if s else None
+                if info:
+                    new, sha = info
+                    print(f"         {key}: renamed → {new} ({sha})")
+                    continue
+            print(f"         {key}: {st}")
         print(f"         {HINT[r.state].format(id=r.claim.id)}")
 
 
@@ -134,8 +144,26 @@ def _owed_states(project, hasher, owed):
     sources = [s for r in owed for s in r.claim.sources if P.safe_source(project.root, s.path) is not None]
     hasher.prime([s.path for s in sources])
     anchors = C.anchors_for(project, sources)
-    out = {r.claim.id: C.freshness(r.claim, project, hasher, anchors, as_status="verified")[0] for r in owed}
+    renames = C.renames_for(project, sources)
+    out = {r.claim.id: C.freshness(r.claim, project, hasher, anchors, as_status="verified",
+                                    renames=renames)[0] for r in owed}
     hasher.save()
+    return out
+
+
+def _source_entries(r):
+    """[{"path": key, "state": state, ...}] for `cmd_check --json`; a
+    renamed source gains "renamed_to" (spec §3.2)."""
+    by_key = {s.key: s for s in r.claim.sources}
+    out = []
+    for key, state in r.per_source:
+        entry = {"path": key, "state": state}
+        if state == "renamed":
+            s = by_key.get(key)
+            info = r.renames.get(s.path) if s else None
+            if info:
+                entry["renamed_to"] = info[0]
+        out.append(entry)
     return out
 
 
@@ -176,7 +204,7 @@ def cmd_check(args):
             "results": [{
                 "id": r.claim.id, "area": r.claim.area, "status": r.claim.status,
                 "problems": r.problems, "state": r.state,
-                "sources": [{"path": key, "state": state} for key, state in r.per_source],
+                "sources": _source_entries(r),
                 "in_scope": in_scope(r), "blocking": r.claim.id in blocking_ids,
                 "owed_by": r.claim.owed_by,
             } for r in results],
@@ -295,7 +323,7 @@ def cmd_show(args):
     states = dict(r.per_source)
     if _pins_status(c) and not r.problems:
         _, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources),
-                             as_status=_pins_status(c))
+                             as_status=_pins_status(c), renames=C.renames_for(project, c.sources))
         hasher.save()
         states = dict(per)
     if c.sources:
@@ -353,6 +381,21 @@ def cmd_verify(args):
     return rc
 
 
+def cmd_follow(args):
+    project = _project(args)
+    rc = 0
+    for cid in args.ids:
+        try:
+            moves = ops.follow(project, cid)
+        except ops.Refused as e:
+            print(f"claimlock: {e}", file=sys.stderr)
+            rc = 1
+            continue
+        for old, new, state in moves:
+            print(f"followed {cid}: {old} → {new} ({state})")
+    return rc
+
+
 def cmd_owe(args):
     project = _project(args)
     rc = 0
@@ -397,8 +440,9 @@ def cmd_diff(args):
         print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
         return 1
     hasher = C.open_hasher(project)
+    renames = C.renames_for(project, c.sources)
     state, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources),
-                             as_status=_pins_status(c))
+                             as_status=_pins_status(c), renames=renames)
     hasher.save()
     if state is None:
         print(f"claimlock: {c.id} is {c.status}; only verified or owed claims have pins")
@@ -411,6 +455,10 @@ def cmd_diff(args):
         if st == "fresh":
             continue
         s = srcs.get(key)
+        if st == "renamed":
+            new, sha = renames.get(s.path, (None, None)) if s else (None, None)
+            print(f"--- {key}: renamed to {new} in {sha} — run: claimlock follow {c.id}")
+            continue
         if st == "missing":
             if s is not None and s.region is not None:
                 _, reason = hasher.region(s.path, s.region)
@@ -589,6 +637,8 @@ def build_parser():
     p = add("show", cmd_show, "one claim with evidence and per-source state")
     p.add_argument("id")
     p = add("verify", cmd_verify, "pin sources and mark verified (only after re-checking)")
+    p.add_argument("ids", nargs="+")
+    p = add("follow", cmd_follow, "rewrite a renamed source's path to where it moved, keeping its pins")
     p.add_argument("ids", nargs="+")
     p = add("owe", cmd_owe, "hand off a claim's re-check to someone (status: owed)")
     p.add_argument("ids", nargs="+")

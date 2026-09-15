@@ -155,6 +155,66 @@ def verify(project, cid) -> list:
     return [(p.key, p.pin) for p in pinned]
 
 
+def follow(project, cid) -> list:
+    """Rewrite the path of every renamed source of `cid` to its new path,
+    keeping `region`, `blob` and `hash` unchanged (spec §3.3). Works for any
+    status. Refuses, file untouched: an unknown claim; a conflicted or
+    unparseable one; outside a git repository; one with no renamed sources;
+    one where a rename's target is already cited by one of its own
+    (non-renamed) sources.
+
+    If the claim's `pins:` digest matched its old sources exactly, it is
+    recomputed over the new ones; otherwise (mismatched, malformed, or
+    absent) it is left exactly as it was — never invented, never dropped.
+
+    Returns [(old_key, new_key, new_state)] for each followed source, its
+    state freshly re-evaluated after the rewrite.
+    """
+    all_claims = C.load_claims(project)
+    c = next((x for x in all_claims if x.id == cid), None)
+    if c is None:
+        raise Refused(f"no claim {cid!r}")
+    if c.conflicted:
+        raise Refused(f"{cid} has merge conflicts — run claimlock resolve first")
+    if c.parse_error:
+        raise Refused(c.parse_error)
+    if not gitio.in_git(project.root):
+        raise Refused("follow needs a git repository")
+    renames = C.renames_for(project, c.sources)
+    renamed = [s for s in c.sources if s.path in renames]
+    if not renamed:
+        raise Refused(f"{cid}: no renamed sources")
+    stable_keys = {s.key for s in c.sources if s.path not in renames}
+    new_sources, moves = [], []
+    for s in c.sources:
+        if s.path in renames:
+            new_path, sha = renames[s.path]
+            new_key = new_path if s.region is None else f"{new_path}#{s.region}"
+            if new_key in stable_keys:
+                raise Refused(f"{cid}: {new_path} is already cited")
+            new_sources.append(C.Source(new_path, s.blob, s.region, s.hash))
+            moves.append((s.key, new_key))
+        else:
+            new_sources.append(s)
+    old_pins = c.meta.get("pins")
+    if isinstance(old_pins, str) and old_pins == C.pin_digest(c.sources):
+        new_pins = C.pin_digest(new_sources)
+    else:
+        new_pins = old_pins if isinstance(old_pins, str) else None
+    text = frontmatter.rewrite(c.text, c.path.name,
+                               sources=[_source_dict(s) for s in new_sources],
+                               pins=new_pins)
+    _write(c.path, text)
+    updated = next(x for x in C.load_claims(project) if x.id == cid)
+    hasher = C.open_hasher(project)
+    anchors = C.anchors_for(project, updated.sources)
+    _, per = C.freshness(updated, project, hasher, anchors, as_status="verified",
+                         renames=C.renames_for(project, updated.sources))
+    hasher.save()
+    states = dict(per)
+    return [(old_key, new_key, states.get(new_key)) for old_key, new_key in moves]
+
+
 def owe(project, cid, to=None, reason=None, today=None):
     """Hand off a re-check: status owed, owed_by, owed_since. Refuses a claim
     with problems, an unverified/refuted claim, a fresh claim, and a claim

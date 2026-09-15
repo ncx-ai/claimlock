@@ -326,6 +326,78 @@ def dirty_paths(root):
     return _lines(out) if out is not None else []
 
 
+def _rename_records(r):
+    """[(old, new)] root-relative pairs from a `--name-status -z
+    --diff-filter=R --relative` run (only `R...` records can appear, since
+    the filter already restricts to renames). [] on failure or no output."""
+    if r is None or r.returncode != 0:
+        return []
+    parts = [p for p in r.stdout.split(b"\0") if p]
+    out = []
+    for i in range(0, len(parts) - 2, 3):
+        status, old, new = parts[i], parts[i + 1], parts[i + 2]
+        if status[:1] == b"R":
+            out.append((os.fsdecode(old), os.fsdecode(new)))
+    return out
+
+
+def _rename_target_ok(root, rel):
+    """`rel` (root-relative, as `--relative` reports it) names a file that
+    exists now and still lies inside `root` — a rename whose target has since
+    moved outside the project root, or no longer exists, is not usable
+    (spec §3.1 point 3)."""
+    try:
+        p = (Path(root) / rel).resolve()
+        p.relative_to(Path(root).resolve())
+    except ValueError:
+        return False
+    return p.exists()
+
+
+def _renamed_committed(root, rel):
+    """(new, sha7) when the commit that last deleted `rel` (found without
+    `-M`, so a rename shows as its own deletion) is itself the rename, or the
+    first of a chain: diffing its PARENT against the working tree, with `-M`,
+    finds the rename end to end even across an intervening second rename
+    (spec §3.1 point 1). None when nothing deleted `rel`, or nothing renames
+    it onward from there."""
+    sha = _text(run(root, "log", "-1", "--format=%H", "--diff-filter=D", "--", rel))
+    if not sha:
+        return None
+    r = run(root, "diff", "-M", "--name-status", "-z", "--diff-filter=R", "--relative", f"{sha}^")
+    for old, new in _rename_records(r):
+        if old == rel and _rename_target_ok(root, new):
+            return new, sha[:7]
+    return None
+
+
+def _renamed_staged(root, rel):
+    """(new, "uncommitted") for a staged-but-uncommitted `git mv` of `rel`
+    (spec §3.1 point 2). None when nothing is staged, or git fails."""
+    r = run(root, "diff", "-M", "--name-status", "-z", "--diff-filter=R", "--relative", "--cached", "HEAD")
+    for old, new in _rename_records(r):
+        if old == rel and _rename_target_ok(root, new):
+            return new, "uncommitted"
+    return None
+
+
+def find_renames(root, rels):
+    """{old: (new, sha7 | "uncommitted")} for cited paths git can trace to a
+    new path (spec §3.1): a committed rename first, else a still-staged
+    `git mv`. Call only for sources whose file is already missing — the
+    common path (nothing missing) then runs no git at all. Degrades to {}
+    outside git, on any git failure, or a plain unstaged `mv` (git sees only
+    a deletion plus an untracked file, and traces neither to the other)."""
+    if not rels:
+        return {}
+    out = {}
+    for rel in dict.fromkeys(rels):
+        found = _renamed_committed(root, rel) or _renamed_staged(root, rel)
+        if found is not None:
+            out[rel] = found
+    return out
+
+
 def head_mark_paths(root) -> list:
     """Absolute paths whose mtime changes whenever HEAD moves (for a cheap stat gate)."""
     names = ["HEAD", "logs/HEAD", "packed-refs"]

@@ -1,0 +1,364 @@
+import json
+import os
+import re
+import shutil
+import unittest
+
+from helpers import TmpCase, claim_text, git, make_repo, pinned_text, run_cli, write
+
+from claimlock import gitio
+from claimlock.claims import Source, pin_digest
+from claimlock.pins import blob_of_bytes
+
+NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
+
+
+def region_claim_text(cid, path, region, status="unverified", area="core"):
+    """A claim citing one region source, block-style (matches
+    tests/test_regions.py's helper of the same shape)."""
+    lines = ["---", f"id: {cid}", f"area: {area}", f"status: {status}",
+             "evidence:", "  - kind: test", "    ref: s::c",
+             "sources:", f"  - path: {path}", f"    region: {region}",
+             "---", "Holds.", ""]
+    return "\n".join(lines)
+
+
+CONFLICTED_TEXT = "\n".join([
+    "---", "id: c", "area: core", "status: verified",
+    "evidence:", "  - kind: test", "    ref: s::c",
+    "sources:", "  - path: a.py",
+    "<<<<<<< HEAD", "    blob: " + "a" * 40,
+    "=======", "    blob: " + "b" * 40,
+    ">>>>>>> other", "---", "Holds.", "",
+])
+
+
+@NEED_GIT
+class FindRenames(TmpCase):
+    """Unit tests for gitio.find_renames against real repos (spec §3.1)."""
+
+    def test_committed_pure_move(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        git(root, "commit", "-qm", "rename")
+        sha = git(root, "rev-parse", "--short=7", "HEAD").strip()
+        self.assertEqual(gitio.find_renames(root, ["a.py"]), {"a.py": ("b.py", sha)})
+
+    def test_rename_with_edit_is_found(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\ntwo\nthree\nfour\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        write(root, "b.py", "one\ntwo\nthree\nCHANGED\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "rename+edit")
+        sha = git(root, "rev-parse", "--short=7", "HEAD").strip()
+        self.assertEqual(gitio.find_renames(root, ["a.py"]), {"a.py": ("b.py", sha)})
+
+    def test_chain_of_two_renames_reports_end_to_end(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        git(root, "commit", "-qm", "rename1")
+        sha1 = git(root, "rev-parse", "--short=7", "HEAD").strip()
+        git(root, "mv", "b.py", "c.py")
+        git(root, "commit", "-qm", "rename2")
+        self.assertEqual(gitio.find_renames(root, ["a.py"]), {"a.py": ("c.py", sha1)})
+
+    def test_staged_uncommitted_move(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        self.assertEqual(gitio.find_renames(root, ["a.py"]), {"a.py": ("b.py", "uncommitted")})
+
+    def test_plain_unstaged_move_is_invisible(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        os.rename(root / "a.py", root / "b.py")
+        self.assertEqual(gitio.find_renames(root, ["a.py"]), {})
+
+    def test_plain_deletion_is_not_a_rename(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        (root / "a.py").unlink()
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "delete")
+        self.assertEqual(gitio.find_renames(root, ["a.py"]), {})
+
+    def test_outside_git(self):
+        root = self.tmp / "plain"
+        root.mkdir()
+        write(root, "a.py", "one\n")
+        self.assertEqual(gitio.find_renames(root, ["a.py"]), {})
+
+
+@NEED_GIT
+class CheckDiffStaleRenamed(TmpCase):
+    def setUp(self):
+        super().setUp()
+        self.root = make_repo(self.tmp / "r", use_git=True)
+        write(self.root, "a.py", "one\n")
+        write(self.root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "init")
+        (self.root / "lib").mkdir()
+        git(self.root, "mv", "a.py", "lib/a.py")
+        git(self.root, "commit", "-qm", "rename")
+        self.sha = git(self.root, "rev-parse", "--short=7", "HEAD").strip()
+
+    def test_check_reports_renamed(self):
+        rc, out, err = run_cli(self.root, "check")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("RENAMED  c", out)
+        self.assertIn(f"         a.py: renamed → lib/a.py ({self.sha})", out)
+        self.assertIn("         a source was renamed — run: claimlock follow c", out)
+        self.assertIn(", 0 missing, 1 renamed", out)
+
+    def test_check_json(self):
+        rc, out, err = run_cli(self.root, "check", "--json")
+        self.assertEqual(rc, 1, out + err)
+        data = json.loads(out)
+        [r] = [x for x in data["results"] if x["id"] == "c"]
+        self.assertEqual(r["state"], "renamed")
+        [s] = r["sources"]
+        self.assertEqual(s["state"], "renamed")
+        self.assertEqual(s["renamed_to"], "lib/a.py")
+
+    def test_stale_lists_renamed(self):
+        rc, out, err = run_cli(self.root, "stale")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("c\tcore\trenamed\ta.py", out)
+
+    def test_diff_shows_the_rename(self):
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"--- a.py: renamed to lib/a.py in {self.sha} — run: claimlock follow c", out)
+
+
+@NEED_GIT
+class Follow(TmpCase):
+    def test_follow_pure_move_reads_fresh(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        (root / "lib").mkdir()
+        git(root, "mv", "a.py", "lib/a.py")
+        git(root, "commit", "-qm", "rename")
+        blob = blob_of_bytes(b"one\n")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "followed c: a.py → lib/a.py (fresh)\n")
+        text = (root / "claims/c.md").read_text()
+        self.assertIn(f"  - path: lib/a.py\n    blob: {blob}\n", text)
+        self.assertNotIn("path: a.py\n", text)
+        expected_pins = pin_digest([Source("lib/a.py", blob)])
+        self.assertIn(f"pins: {expected_pins}\n", text)
+        self.assertEqual(run_cli(root, "check")[0], 0)
+
+    def test_follow_rename_with_edit_reads_stale(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\ntwo\nthree\nfour\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        write(root, "b.py", "one\ntwo\nthree\nCHANGED\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "rename+edit")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "followed c: a.py → b.py (stale)\n")
+
+    def test_follow_region_source_keeps_region_and_hash(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "before\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
+        write(root, "claims/c.md", region_claim_text("c", "a.py", "r1"))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        (root / "lib").mkdir()
+        git(root, "mv", "a.py", "lib/a.py")
+        git(root, "commit", "-qm", "rename")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "followed c: a.py#r1 → lib/a.py#r1 (fresh)\n")
+        text = (root / "claims/c.md").read_text()
+        self.assertIn("  - path: lib/a.py\n", text)
+        self.assertIn("    region: r1\n", text)
+        self.assertIn("    hash: ", text)
+
+    def test_digest_mismatch_stays_unchanged(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        text = (root / "claims/c.md").read_text()
+        wrong = "0" * 40
+        self.assertRegex(text, r"pins: [0-9a-f]{40}\n")
+        text = re.sub(r"pins: [0-9a-f]{40}\n", f"pins: {wrong}\n", text)
+        (root / "claims/c.md").write_text(text)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        git(root, "commit", "-qm", "rename")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 0, err)
+        new_text = (root / "claims/c.md").read_text()
+        self.assertIn(f"pins: {wrong}\n", new_text)
+
+    def test_digest_absent_stays_absent(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        blob = blob_of_bytes(b"one\n")
+        write(root, "claims/c.md", pinned_text("c", [("a.py", blob)]))
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        git(root, "commit", "-qm", "rename")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 0, err)
+        new_text = (root / "claims/c.md").read_text()
+        self.assertNotIn("pins:", new_text)
+
+
+@NEED_GIT
+class FollowRefusals(TmpCase):
+    def test_no_renamed_sources(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        before = (root / "claims/c.md").read_text()
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1)
+        self.assertIn("c: no renamed sources", err)
+        self.assertEqual((root / "claims/c.md").read_text(), before)
+
+    def test_new_path_already_cited(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        blob_a = blob_of_bytes(b"one\n")
+        write(root, "claims/c.md", pinned_text("c", [("a.py", blob_a), ("lib/a.py", None)]))
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        before = (root / "claims/c.md").read_text()
+        (root / "lib").mkdir()
+        git(root, "mv", "a.py", "lib/a.py")
+        git(root, "commit", "-qm", "rename")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1)
+        self.assertIn("c: lib/a.py is already cited", err)
+        self.assertEqual((root / "claims/c.md").read_text(), before)
+
+    def test_conflicted_claim(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", CONFLICTED_TEXT)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1)
+        self.assertEqual((root / "claims/c.md").read_text(), CONFLICTED_TEXT)
+
+    def test_outside_git(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1)
+        self.assertIn("follow needs a git repository", err)
+
+    def test_unknown_id(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        rc, out, err = run_cli(root, "follow", "x")
+        self.assertEqual(rc, 1)
+        self.assertIn("no claim 'x'", err)
+
+
+@NEED_GIT
+class FollowOwed(TmpCase):
+    def test_owed_claim_reads_renamed_and_follow_works(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        git(root, "commit", "-qm", "rename")
+        self.assertEqual(run_cli(root, "owe", "c", "--to", "bob@example.com")[0], 0)
+        rc, out, err = run_cli(root, "check")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("(renamed)", out)
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("followed c: a.py → b.py", out)
+
+
+@NEED_GIT
+class HooksRenamed(TmpCase):
+    def test_session_start_counts_renamed(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        git(root, "commit", "-qm", "rename")
+        data = self.tmp / "plugin-data"
+        payload = json.dumps({"session_id": "s1", "cwd": str(root)})
+        rc, out, err = run_cli(root, "hook", "session-start", stdin=payload,
+                               env={"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_DATA": str(data)})
+        self.assertEqual(rc, 0, err)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("1 renamed", ctx)
+
+
+@NEED_GIT
+class HooksCommonPathNoGit(TmpCase):
+    def test_post_tool_use_with_head_unchanged_invokes_no_git(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        data = self.tmp / "plugin-data"
+        payload = json.dumps({"session_id": "s1", "cwd": str(root)})
+        rc, out, err = run_cli(root, "hook", "session-start", stdin=payload,
+                               env={"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_DATA": str(data)})
+        self.assertEqual(rc, 0, err)
+        fake = self.tmp / "fakebin"
+        fake.mkdir()
+        calls = self.tmp / "git-calls"
+        (fake / "git").write_text(f"#!/bin/sh\necho \"$@\" >> '{calls}'\nexit 1\n")
+        os.chmod(fake / "git", 0o755)
+        rc, out, err = run_cli(root, "hook", "post-tool-use", stdin=payload,
+                               env={"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_DATA": str(data),
+                                    "PATH": str(fake)})
+        self.assertEqual((rc, out), (0, ""), err)
+        self.assertFalse(calls.exists(), calls.read_text() if calls.exists() else "")
+
+
+if __name__ == "__main__":
+    unittest.main()

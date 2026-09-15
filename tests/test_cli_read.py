@@ -76,7 +76,8 @@ class Check(TmpCase):
         self.assertEqual(rc, 1)
         data = json.loads(out)
         self.assertEqual((data["claims"], data["sources_hashed"]), (4, 3))
-        self.assertEqual(data["counts"], {"invalid": 1, "unpinned": 1, "unanchored": 0, "stale": 1, "missing": 0})
+        self.assertEqual(data["counts"],
+                         {"invalid": 1, "unpinned": 1, "unanchored": 0, "stale": 1, "missing": 0, "renamed": 0})
         by_id = {r["id"]: r for r in data["results"]}
         self.assertEqual(by_id["stale-one"]["sources"], [{"path": "b.py", "state": "stale"}])
 

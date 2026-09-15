@@ -9,7 +9,7 @@ import json
 import os
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import frontmatter, gitio, regions
@@ -25,8 +25,8 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 SINCE_RE = re.compile(r"^([0-9a-f]{7,40}|none)$")
 _CONFLICT_START = re.compile(r"^<{7} ", re.M)
 _CONFLICT_END = re.compile(r"^>{7} ", re.M)
-NON_FRESH = ("unpinned", "unanchored", "stale", "missing")
-_SEVERITY = {"fresh": 0, "unpinned": 1, "unanchored": 2, "stale": 3, "missing": 4}
+NON_FRESH = ("unpinned", "unanchored", "stale", "missing", "renamed")
+_SEVERITY = {"fresh": 0, "unpinned": 1, "unanchored": 2, "stale": 3, "renamed": 4, "missing": 5}
 
 
 def normalize_email(s):
@@ -168,6 +168,9 @@ class Result:
     problems: list
     state: str | None
     per_source: list
+    renames: dict = field(default_factory=dict)
+    """{path: (new_path, sha7 | "uncommitted")} for this claim's renamed
+    sources (spec §3.1); {} when none of its sources are renamed."""
 
 
 def load_claims(project):
@@ -413,12 +416,12 @@ def _symlink_targets(root, rels):
     return out
 
 
-def freshness(claim, project, hasher, anchors=None, as_status=None):
+def freshness(claim, project, hasher, anchors=None, as_status=None, renames=None):
     """(state, [(key, state)]) for a verified claim; (None, []) otherwise.
 
-    Worst source wins: missing > stale > unanchored > unpinned > fresh. A
-    region source (spec 2.4) is judged by its region hash, not its file's
-    whole-content blob; anchoring for it checks `Anchors.ok` on the
+    Worst source wins: missing > renamed > stale > unanchored > unpinned >
+    fresh. A region source (spec 2.4) is judged by its region hash, not its
+    file's whole-content blob; anchoring for it checks `Anchors.ok` on the
     whole-file blob first, falling back (`Anchors.ok_region`) to the file's
     currently staged content still containing the same region hash — so
     uncommitted edits elsewhere in the file don't leave the pin unanchored
@@ -426,6 +429,11 @@ def freshness(claim, project, hasher, anchors=None, as_status=None):
     `diff` and `show` pass it for an `owed` claim, whose pins are kept
     exactly so the hand-off recipient can see what moved. `evaluate` never
     does: an owed claim has no freshness verdict in `check` or the hooks.
+
+    `renames` ({path: (new_path, sha)}, from `renames_for`) reclassifies a
+    missing source as `renamed` (spec §3.2) instead of `missing` when its
+    path is a key of it — keyed by the bare path, so a whole-file and a
+    region source of the same missing path share the same verdict.
     """
     if claim.parse_error or claim.conflicted or (as_status or claim.status) != "verified":
         return None, []
@@ -439,7 +447,7 @@ def freshness(claim, project, hasher, anchors=None, as_status=None):
             cur = hasher.blob(s.path)
         pin = s.pin
         if cur is None:
-            st = "missing"
+            st = "renamed" if renames and s.path in renames else "missing"
         elif not pin:
             st = "unpinned"
         elif cur != pin:
@@ -455,6 +463,22 @@ def freshness(claim, project, hasher, anchors=None, as_status=None):
     return state, per
 
 
+def renames_for(project, sources):
+    """{path: (new_path, sha7 | "uncommitted")} for the given sources' paths
+    that are currently missing (`os.path.lexists` false), via
+    `gitio.find_renames` (spec §3.1). {} when none of the paths are missing,
+    or the project root is not a git work tree — the common path (nothing
+    missing) never runs a git call."""
+    missing = set()
+    for s in sources:
+        p = safe_source(project.root, s.path)
+        if p is not None and not os.path.lexists(p):
+            missing.add(s.path)
+    if not missing or not gitio.in_git(project.root):
+        return {}
+    return gitio.find_renames(project.root, sorted(missing))
+
+
 def open_hasher(project):
     mode = "git" if gitio.in_git(project.root) else "raw"
     return Hasher(project.root, project.state_dir / "cache" / "stat.json", mode=mode)
@@ -466,5 +490,10 @@ def evaluate(project, hasher):
                for s in c.sources if safe_source(project.root, s.path) is not None]
     hasher.prime([s.path for s in sources])
     anchors = anchors_for(project, sources)
-    return [Result(c, problems(c, project), *freshness(c, project, hasher, anchors))
-            for c in claims]
+    renames = renames_for(project, sources)
+    results = []
+    for c in claims:
+        state, per = freshness(c, project, hasher, anchors, renames=renames)
+        claim_renames = {s.path: renames[s.path] for s in c.sources if s.path in renames}
+        results.append(Result(c, problems(c, project), state, per, claim_renames))
+    return results
