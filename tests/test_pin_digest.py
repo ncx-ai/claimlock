@@ -8,7 +8,7 @@ import subprocess
 import unittest
 
 from helpers import TmpCase, claim_text, clone, git, init_bare, make_repo, pinned_text, run_cli, write
-from claimlock.claims import pin_digest
+from claimlock.claims import Source, pin_digest
 from claimlock.pins import blob_of_bytes
 
 NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
@@ -38,7 +38,7 @@ class DigestOnVerify(TmpCase):
 
     def test_verify_writes_the_digest_after_the_sources_block(self):
         self.verify()
-        digest = pin_digest([("a.py", self.a), ("b.py", self.b)])
+        digest = pin_digest([Source("a.py", self.a), Source("b.py", self.b)])
         self.assertIn(f"  - path: b.py\n    blob: {self.b}\npins: {digest}\n---\n", _claim(self.root))
         self.assertEqual(run_cli(self.root, "check")[0], 0)
 
@@ -48,12 +48,12 @@ class DigestOnVerify(TmpCase):
         self.verify()
         text = _claim(self.root)
         self.assertEqual(text.count("\npins: "), 1)
-        self.assertIn(f"pins: {pin_digest([('a.py', blob_of_bytes(b'changed' + bytes([10]))), ('b.py', self.b)])}",
+        self.assertIn(f"pins: {pin_digest([Source('a.py', blob_of_bytes(b'changed' + bytes([10]))), Source('b.py', self.b)])}",
                       text)
 
     def test_the_digest_ignores_source_order(self):
-        self.assertEqual(pin_digest([("a", "1" * 40), ("b", "2" * 40)]),
-                         pin_digest([("b", "2" * 40), ("a", "1" * 40)]))
+        self.assertEqual(pin_digest([Source("a", "1" * 40), Source("b", "2" * 40)]),
+                         pin_digest([Source("b", "2" * 40), Source("a", "1" * 40)]))
         self.verify()
         a_entry, b_entry = f"  - path: a.py\n    blob: {self.a}\n", f"  - path: b.py\n    blob: {self.b}\n"
         _edit(self.root, lambda t: t.replace(a_entry + b_entry, b_entry + a_entry))

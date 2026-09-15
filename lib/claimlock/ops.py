@@ -89,12 +89,27 @@ def _write(path, text):
     os.replace(tmp, path)
 
 
+def _source_dict(s):
+    d = {"path": s.path}
+    if s.region:
+        d["region"] = s.region
+    if s.blob:
+        d["blob"] = s.blob
+    if s.hash:
+        d["hash"] = s.hash
+    return d
+
+
 def verify(project, cid) -> list:
     """Pin every source of `cid` to its current content and mark it verified.
 
     Refuses a conflicted claim, a refuted claim, a claim that would be
-    invalid as verified (no evidence, no sources, bad fields), and a claim
-    with a missing source. Nothing is written unless every check passes.
+    invalid as verified (no evidence, no sources, bad fields), a claim with a
+    missing source, and — for a region source — one whose region cannot be
+    extracted (spec 2.6). Nothing is written unless every check passes.
+
+    Returns [(key, pin)]: `key` is `path` or `path#region`, `pin` is the
+    region hash for a region source or the whole-file blob otherwise.
     """
     all_claims = C.load_claims(project)
     c = next((x for x in all_claims if x.id == cid), None)
@@ -126,13 +141,18 @@ def verify(project, cid) -> list:
                         detail = f" ({e.strerror})"
             raise Refused(f"{cid}: source {s.path} does not exist or cannot be read{detail} — "
                           f"fix its sources (or the file's permissions), then verify")
-        pinned.append((s.path, blob))
+        region_hash = None
+        if s.region is not None:
+            region_hash, reason = hasher.region(s.path, s.region, use_cache=False)
+            if region_hash is None:
+                raise Refused(f"{cid}: source {s.key}: {reason}")
+        pinned.append(C.Source(s.path, blob, s.region, region_hash))
     text = frontmatter.rewrite(c.text, c.path.name, status="verified",
-                               sources=[{"path": p, "blob": b} for p, b in pinned],
+                               sources=[_source_dict(p) for p in pinned],
                                pins=C.pin_digest(pinned),
                                remove=("verified_at", "owed_by", "owed_since"))
     _write(c.path, text)
-    return pinned
+    return [(p.key, p.pin) for p in pinned]
 
 
 def owe(project, cid, to=None, reason=None, today=None):

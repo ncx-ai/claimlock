@@ -161,8 +161,12 @@ def _sources_block(sources, pins=None):
     out = ["sources:"] if sources else ["sources: []"]
     for s in sources:
         out.append(f"  - path: {quote(s['path'])}")
+        if s.get("region"):
+            out.append(f"    region: {s['region']}")
         if s.get("blob"):
             out.append(f"    blob: {s['blob']}")
+        if s.get("hash"):
+            out.append(f"    hash: {s['hash']}")
     if pins:
         out.append(f"pins: {pins}")
     return out

@@ -165,7 +165,7 @@ def resolve_claim(project, claim):
             continue
         if not all(blob is not None and cur[path] == blob for path, blob in side):
             continue
-        if digest is not None and digest != C.pin_digest(side):
+        if digest is not None and digest != C.pin_digest(C.Source(p, b) for p, b in side):
             continue
         if digest is None and staged is None:
             continue  # rebuilt from the conflicted file, and nothing vouches for it

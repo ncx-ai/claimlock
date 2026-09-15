@@ -161,12 +161,16 @@ class Hasher:
         self._tags[parent] = tag
         return tag
 
-    def _cached(self, rel, st):
-        e = self.cache.get(rel)
+    def _cached(self, key, st, tag_rel=None):
+        """The cached digest for `key` (a plain rel path for `blob`, or
+        `"<rel>\\0<name>"` for `region`), or None. `tag_rel` is the real
+        on-disk path the conversion-settings tag is computed from — for a
+        region entry that differs from the cache key itself."""
+        e = self.cache.get(key)
         if not isinstance(e, list) or len(e) not in (3, 4):
             return None
         tag = e[3] if len(e) == 4 else "raw"
-        if e[0] == st.st_size and e[1] == st.st_mtime_ns and tag == self._tag(rel):
+        if e[0] == st.st_size and e[1] == st.st_mtime_ns and tag == self._tag(tag_rel if tag_rel is not None else key):
             return e[2]
         return None
 
@@ -228,6 +232,45 @@ class Hasher:
             del self.cache[rel]
             self.dirty = True
         return digest
+
+    def region(self, rel: str, name: str, use_cache=True):
+        """(hash, reason) for the marker-delimited region `name` in `rel`.
+
+        `hash` is None with a reason when the file does not exist, is not a
+        regular file, or the region cannot be extracted (regions.RegionError);
+        nothing is cached on that path. Cache key `"<rel>\\0<name>"`, the same
+        entry shape, racy guard and tag as `blob` — but the tag is computed
+        from `rel` itself, not the composite key. `use_cache=False` re-reads
+        and re-extracts from disk (verify/resolve)."""
+        try:
+            st = (self.root / rel).stat()
+        except OSError:
+            return None, "does not exist or cannot be read"
+        if not stat.S_ISREG(st.st_mode):
+            return None, "does not exist or cannot be read"
+        self.hashed += 1
+        key = f"{rel}\0{name}"
+        if use_cache:
+            hit = self._cached(key, st, tag_rel=rel)
+            if hit is not None:
+                return hit, None
+        try:
+            data = (self.root / rel).read_bytes()
+        except OSError:
+            return None, "does not exist or cannot be read"
+        from . import regions  # local: regions imports blob_of_bytes from here
+        try:
+            text = regions.extract(data, name)
+        except regions.RegionError as e:
+            return None, str(e)
+        digest = regions.region_hash(text)
+        if time.time_ns() - st.st_mtime_ns >= RACY_NS:
+            self.cache[key] = [st.st_size, st.st_mtime_ns, digest, self._tag(rel)]
+            self.dirty = True
+        elif key in self.cache:
+            del self.cache[key]
+            self.dirty = True
+        return digest, None
 
     def save(self) -> None:
         if not (self.dirty and self.cache_path):

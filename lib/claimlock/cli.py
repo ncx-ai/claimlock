@@ -104,9 +104,9 @@ def _print_failing(r):
             print(f"         {x}")
     if r.state in C.NON_FRESH:
         print(f"{_paint('33', r.state.upper().ljust(8))} {r.claim.id}")
-        for path, st in r.per_source:
+        for key, st in r.per_source:
             if st != "fresh":
-                print(f"         {path}: {st}")
+                print(f"         {key}: {st}")
         print(f"         {HINT[r.state].format(id=r.claim.id)}")
 
 
@@ -308,7 +308,7 @@ def cmd_show(args):
                     "uncommitted": " — uncommitted (verifier known once committed)"}.get(v[0])
             if note is None:
                 note = f" — verified by {v[1]} at {v[2]} ({v[3]})"
-            print(f"  {s.path} — {states.get(s.path, '-')} ({pin}){note}")
+            print(f"  {s.path} — {states.get(s.key, '-')} ({pin}){note}")
     print(f"\nfile: {_rel(project, c.path)}")
     return 0
 
@@ -347,8 +347,8 @@ def cmd_verify(args):
             rc = 1
             continue
         print(f"verified {cid}")
-        for path, blob in pinned:
-            print(f"  {path} @ {blob[:12]}")
+        for key, pin in pinned:
+            print(f"  {key} @ {pin[:12]}")
     return rc
 
 

@@ -12,7 +12,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import frontmatter, gitio
+from . import frontmatter, gitio, regions
 from .pins import Hasher
 from .project import is_within, safe_source
 
@@ -40,16 +40,24 @@ def normalize_email(s):
     return s.casefold() if EMAIL_RE.match(s) else None
 
 
-def pin_digest(pairs):
+def pin_digest(sources):
     """The digest of one verification's whole pin set, written as `pins:`.
 
-    sha1 over the sorted (path, blob) pairs, an unpinned source counting as an
-    empty blob. Sorted, so reordering `sources` by hand keeps it. Because every
-    `verify` rewrites this one line, two branches that re-verify a claim to
-    different contents conflict on it even when they changed different
-    sources — which is what stops a merge from producing a fresh-looking pin
-    set no single verification covered."""
-    data = json.dumps(sorted([p, b or ""] for p, b in pairs))
+    sha1 over the sorted entries of an iterable of `Source`: a whole-file
+    source is `[path, blob or ""]` (unchanged from before regions, so every
+    digest ever written stays valid), a region source is
+    `[path, region, blob or "", hash or ""]`. Sorted, so reordering `sources`
+    by hand keeps it. Because every `verify` rewrites this one line, two
+    branches that re-verify a claim to different contents conflict on it even
+    when they changed different sources — which is what stops a merge from
+    producing a fresh-looking pin set no single verification covered."""
+    entries = []
+    for s in sources:
+        if s.region is None:
+            entries.append([s.path, s.blob or ""])
+        else:
+            entries.append([s.path, s.region, s.blob or "", s.hash or ""])
+    data = json.dumps(sorted(entries))
     return hashlib.sha1(data.encode("ascii")).hexdigest()
 
 
@@ -75,6 +83,21 @@ class StoreUnreadable(StoreMissing):
 class Source:
     path: str
     blob: str | None
+    region: str | None = None
+    hash: str | None = None
+
+    @property
+    def key(self) -> str:
+        """`path`, or `path#region` for a region source — how every
+        per-source listing (check, stale, show, diff, --json, hooks) names
+        this source."""
+        return self.path if self.region is None else f"{self.path}#{self.region}"
+
+    @property
+    def pin(self) -> str | None:
+        """The pin this source is judged against: `hash` for a region
+        source, `blob` for a whole file."""
+        return self.hash if self.region is not None else self.blob
 
 
 @dataclass
@@ -124,7 +147,12 @@ class Claim:
                 out.append(Source(e, None))
             elif isinstance(e, dict) and isinstance(e.get("path"), str):
                 blob = e.get("blob")
-                out.append(Source(e["path"], blob if isinstance(blob, str) else None))
+                region = e.get("region")
+                h = e.get("hash")
+                out.append(Source(e["path"],
+                                   blob if isinstance(blob, str) else None,
+                                   region if isinstance(region, str) else None,
+                                   h if isinstance(h, str) else None))
         return out
 
     def headline(self):
@@ -234,24 +262,42 @@ def problems(claim, project, *, as_status=None, digest=True):
         out.append("'sources' must be a list")
     seen = set()
     for e in src if isinstance(src, list) else []:
+        region = None
         if isinstance(e, str):
             path = e
         elif isinstance(e, dict) and isinstance(e.get("path"), str):
             path = e["path"]
-            extra = set(e) - {"path", "blob"}
+            extra = set(e) - {"path", "blob", "region", "hash"}
             if extra:
                 out.append(f"source {path!r} has unknown keys {sorted(extra)}")
             blob = e.get("blob")
             if blob is not None and not (isinstance(blob, str) and BLOB_RE.match(blob)):
                 out.append(f"source {path!r} has a malformed blob (expected 40 lowercase hex)")
+            raw_region = e.get("region")
+            if raw_region is not None:
+                if not (isinstance(raw_region, str) and regions.NAME_RE.match(raw_region)):
+                    out.append(f"source {path!r} has a malformed region name")
+                else:
+                    region = raw_region
+            h = e.get("hash")
+            if h is not None and not (isinstance(h, str) and BLOB_RE.match(h)):
+                out.append(f"source {path!r} has a malformed hash")
+            if h is not None and raw_region is None:
+                out.append(f"source {path!r} has a hash but no region")
+            if region is not None:
+                has_blob = isinstance(blob, str) and bool(BLOB_RE.match(blob))
+                has_hash = isinstance(h, str) and bool(BLOB_RE.match(h))
+                if has_blob != has_hash:
+                    out.append(f"source {path + '#' + region!r} must pin both blob and hash")
         else:
             out.append(f"source entry needs a 'path': {e!r}")
             continue
         if safe_source(project.root, path) is None:
             out.append(f"source path {path!r} must be relative and stay inside the project root")
-        if path in seen:
-            out.append(f"source {path!r} is listed twice")
-        seen.add(path)
+        key = path if region is None else f"{path}#{region}"
+        if key in seen:
+            out.append(f"source {key!r} is listed twice")
+        seen.add(key)
 
     # A claim with no `pins:` line predates the digest and is accepted; its
     # next verify writes one.
@@ -259,7 +305,7 @@ def problems(claim, project, *, as_status=None, digest=True):
     if pins is not None and digest:
         if not (isinstance(pins, str) and BLOB_RE.match(pins)):
             out.append("'pins' must be a pin-set digest (40 lowercase hex), as written by claimlock verify")
-        elif pins != pin_digest((s.path, s.blob) for s in claim.sources):
+        elif pins != pin_digest(claim.sources):
             out.append("pins digest does not match the listed sources — they were edited by hand or "
                        "combined from different verifications; re-check the claim, then claimlock verify")
 
@@ -344,9 +390,12 @@ def _symlink_targets(root, rels):
 
 
 def freshness(claim, project, hasher, anchors=None, as_status=None):
-    """(state, [(path, state)]) for a verified claim; (None, []) otherwise.
+    """(state, [(key, state)]) for a verified claim; (None, []) otherwise.
 
-    Worst source wins: missing > stale > unanchored > unpinned > fresh.
+    Worst source wins: missing > stale > unanchored > unpinned > fresh. A
+    region source (spec 2.4) is judged by its region hash, not its file's
+    whole-content blob; anchoring for it still checks only `Anchors.ok` on
+    the whole-file blob (the git-staged-content fallback is a later task).
     `as_status="verified"` evaluates a claim's pins as if it were verified —
     `diff` and `show` pass it for an `owed` claim, whose pins are kept
     exactly so the hand-off recipient can see what moved. `evaluate` never
@@ -358,18 +407,22 @@ def freshness(claim, project, hasher, anchors=None, as_status=None):
     for s in claim.sources:
         if safe_source(project.root, s.path) is None:
             continue  # reported by problems(); never hash outside the root
-        cur = hasher.blob(s.path)
+        if s.region is not None:
+            cur, _reason = hasher.region(s.path, s.region)
+        else:
+            cur = hasher.blob(s.path)
+        pin = s.pin
         if cur is None:
             st = "missing"
-        elif not s.blob:
+        elif not pin:
             st = "unpinned"
-        elif cur != s.blob:
+        elif cur != pin:
             st = "stale"
         elif anchors is not None and not anchors.ok(s.path, s.blob):
             st = "unanchored"
         else:
             st = "fresh"
-        per.append((s.path, st))
+        per.append((s.key, st))
     state = max((st for _, st in per), key=_SEVERITY.__getitem__, default="fresh")
     return state, per
 
