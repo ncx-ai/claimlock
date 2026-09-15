@@ -66,10 +66,38 @@ class Owe(TmpCase):
         head = git(root, "rev-parse", "--short=7", "HEAD").strip()
         self.assertIn(f"owed c → t@example.com (since {head})", out)
 
+    def test_refuses_refuted_invalid_and_bad_email(self):
+        root = self.store()
+        write(root, "a.py", "two\n")
+        write(root, "claims/r.md", claim_text("r", status="refuted", sources=("a.py",)))
+        rc, _, err = run_cli(root, "owe", "r", "--to", "bob@example.com")
+        self.assertEqual(rc, 1)
+        self.assertIn("refuted", err)
+        write(root, "claims/p.md", claim_text("p", status="verified", sources=("a.py",), extra_lines=("bogus: x",)))
+        rc, _, err = run_cli(root, "owe", "p", "--to", "bob@example.com")
+        self.assertEqual(rc, 1)
+        self.assertIn("problems", err)
+        before = (root / "claims" / "c.md").read_bytes()
+        rc, _, err = run_cli(root, "owe", "c", "--to", "bob")
+        self.assertEqual(rc, 1)
+        self.assertIn("not an email address", err)
+        self.assertEqual((root / "claims" / "c.md").read_bytes(), before)
+
+    def test_a_multi_line_reason_is_refused(self):
+        root = self.store()
+        write(root, "a.py", "two\n")
+        before = (root / "claims" / "c.md").read_bytes()
+        for reason in ("one\ntwo", "one\rtwo"):
+            rc, _, err = run_cli(root, "owe", "c", "--to", "bob@example.com", "--reason", reason)
+            self.assertEqual(rc, 1, reason)
+            self.assertIn("single line", err)
+            self.assertEqual((root / "claims" / "c.md").read_bytes(), before)
+
     def test_verify_clears_an_owed_claim(self):
         root = self.store()
         write(root, "a.py", "two\n")
-        run_cli(root, "owe", "c", "--to", "bob@example.com")
+        self.assertEqual(run_cli(root, "owe", "c", "--to", "bob@example.com")[0], 0)
+        self.assertIn("status: owed", (root / "claims" / "c.md").read_text())
         self.assertEqual(run_cli(root, "verify", "c")[0], 0)
         text = (root / "claims" / "c.md").read_text()
         self.assertIn("status: verified", text)

@@ -63,20 +63,30 @@ def _side(lines, hs, which):
     return "\n".join(out)
 
 
-def _in_sources(lines, hs, h):
+def _frontmatter_close(lines, inside):
+    """Index of the frontmatter's closing `---`, read from lines outside every
+    hunk; None when the opening delimiter is missing or inside a hunk. A
+    closing delimiter that sits inside a hunk makes the first `---` found here
+    a body line instead, but the hunk holding the real one then contains a
+    `---` line, which `_in_sources` rejects."""
+    if not lines or 0 in inside or lines[0] != "---":
+        return None
+    return next((j for j in range(1, len(lines)) if j not in inside and lines[j] == "---"), None)
+
+
+def _in_sources(lines, inside, close, h):
+    """True only for a hunk wholly inside the frontmatter's `sources` block.
+    Confined to the frontmatter first: a body line may start with `sources:`."""
+    if close is None or h.end >= close:
+        return False
     if not all(_SOURCE_LINE.match(line) for line in h.ours + h.theirs):
         return False
     if any(line.startswith("sources:") for line in h.ours + h.theirs):
         return True
-    inside = {k for other in hs for k in range(other.start, other.end + 1)}
     j = h.start - 1
-    while j >= 0:
-        if j not in inside:
-            line = lines[j]
-            if line == "---":
-                return False
-            if _KEY.match(line):
-                return line.startswith("sources:")
+    while j > 0:  # line 0 is the opening delimiter
+        if j not in inside and _KEY.match(lines[j]):
+            return lines[j].startswith("sources:")
         j -= 1
     return False
 
@@ -103,8 +113,12 @@ def resolve_claim(project, claim):
         return "left", f"{name}: {e}"
     if not hs:
         return "left", f"{name}: no conflict markers"
+    inside = {k for h in hs for k in range(h.start, h.end + 1)}
+    close = _frontmatter_close(lines, inside)
+    if close is None:
+        return "left", f"{name}: a frontmatter delimiter is inside a conflict — needs a person"
     for h in hs:
-        if not _in_sources(lines, hs, h):
+        if not _in_sources(lines, inside, close, h):
             return "left", f"{name}: a conflict outside the sources block (line {h.start + 1}) needs a person"
     ours_text, theirs_text = _side(lines, hs, "ours"), _side(lines, hs, "theirs")
     try:
@@ -133,6 +147,10 @@ def resolve_claim(project, claim):
         if not email:
             return "left", (f"{name}: a source matches neither side, and there is no git user.email "
                             f"to record who owes the re-check — set one, then run claimlock resolve")
+        if not C.EMAIL_RE.match(email):
+            return "left", (f"{name}: a source matches neither side, and git user.email {email!r} is not "
+                            f"an email address to record who owes the re-check — fix it, then run "
+                            f"claimlock resolve")
         since = gitio.short_head(project.root) or "none"
         text = frontmatter.rewrite(ours_text, name, status="owed", sources=picked,
                                    set_fields={"owed_by": email, "owed_since": since})

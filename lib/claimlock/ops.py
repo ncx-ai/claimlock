@@ -141,6 +141,8 @@ def owe(project, cid, to=None, reason=None, today=None):
     c = next((x for x in C.load_claims(project) if x.id == cid), None)
     if c is None:
         raise Refused(f"no claim {cid!r}")
+    if reason is not None and ("\n" in reason or "\r" in reason):
+        raise Refused("--reason must be a single line")
     if c.conflicted or c.parse_error or C.problems(c, project):
         raise Refused(f"{cid} has problems that must be fixed first (run: claimlock check)")
     if c.status in ("unverified", "refuted"):
@@ -158,6 +160,7 @@ def owe(project, cid, to=None, reason=None, today=None):
             raise Refused(f"{cid} is fresh — nothing is owed")
     elif c.owed_by == email:
         raise Refused(f"{cid} is already owed by {email}")
+    # Re-owing to someone else resets owed_since: a new hand-off starts a new age.
     since = gitio.short_head(project.root) or "none"
     text = frontmatter.rewrite(c.text, c.path.name, status="owed",
                                set_fields={"owed_by": email, "owed_since": since})
