@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import unittest
 
@@ -107,6 +108,67 @@ class WhoVerified(TmpCase):
         self.assertRegex(out, r"^a\.py\tt@example\.com\t\d{4}-\d\d-\d\dT[^\t]+\t[0-9a-f]{7}\n$")
         rc, out, _ = run_cli(root, "show", "c")
         self.assertIn("verified by t@example.com at", out)
+
+
+@NEED_GIT
+class WhoAttribution(TmpCase):
+    """`gitio.verifier` must survive a rename of the claim file and must not
+    be fooled by a claim body that merely mentions the pin's own text."""
+
+    def repo(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        git(root, "config", "user.email", "alice@example.com")
+        git(root, "config", "user.name", "alice")
+        return root
+
+    def test_a_rename_of_the_claim_file_does_not_reassign_attribution(self):
+        root = self.repo()
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        run_cli(root, "verify", "c")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "alice verifies c")
+        # Bob renames only the claim file. The loader requires id == filename,
+        # so the frontmatter's id is updated too — the pin lines are untouched.
+        git(root, "mv", "claims/c.md", "claims/c-renamed.md")
+        p = root / "claims" / "c-renamed.md"
+        p.write_text(p.read_text().replace("id: c\n", "id: c-renamed\n"))
+        git(root, "add", "-A")
+        git(root, "-c", "user.email=bob@example.com", "commit", "-qm", "bob renames the claim")
+        rc, out, _ = run_cli(root, "who", "c-renamed")
+        self.assertRegex(out, r"^a\.py\talice@example\.com\t")
+
+    def test_a_prose_mention_of_the_pin_does_not_steal_attribution(self):
+        root = self.repo()
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        run_cli(root, "verify", "c")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "alice verifies c")
+        text = (root / "claims" / "c.md").read_text()
+        blob = re.search(r"blob: ([0-9a-f]{40})", text).group(1)
+        write(root, "claims/c.md", text + f"\n(See blob: {blob} for details.)\n")
+        git(root, "add", "-A")
+        git(root, "-c", "user.email=bob@example.com", "commit", "-qm", "bob adds a note citing the pin")
+        rc, out, _ = run_cli(root, "who", "c")
+        self.assertRegex(out, r"^a\.py\talice@example\.com\t")
+        rc, out, _ = run_cli(root, "show", "c")
+        self.assertIn("verified by alice@example.com at", out)
+
+    def test_a_genuine_reverify_reassigns_attribution(self):
+        root = self.repo()
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.py",)))
+        run_cli(root, "verify", "c")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "alice verifies c")
+        write(root, "a.py", "two\n")
+        git(root, "commit", "-qam", "source changes")
+        run_cli(root, "verify", "c")
+        git(root, "add", "-A")
+        git(root, "-c", "user.email=bob@example.com", "commit", "-qm", "bob re-verifies c")
+        rc, out, _ = run_cli(root, "who", "c")
+        self.assertRegex(out, r"^a\.py\tbob@example\.com\t")
 
 
 class WhoOutsideGit(TmpCase):

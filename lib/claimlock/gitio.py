@@ -169,8 +169,23 @@ def changed_since(root, commit):
 
 def verifier(root, claim_rel, blob):
     """(author email, ISO time, short sha) of the latest commit that added or
-    removed `blob: <sha>` in the claim file, or None if no commit did."""
-    out = _text(run(root, "log", "-1", "--format=%ae%x09%aI%x09%h", "-S", f"blob: {blob}", "--", claim_rel))
+    removed the exact pin line `    blob: <sha>` in the claim file (as
+    `frontmatter._sources_block` writes it — four spaces, nothing else on the
+    line), or None if no commit did.
+
+    `--follow` so a rename of the claim file itself does not stop history
+    from being searched past it (valid here because `claim_rel` is the only
+    pathspec, which is what `--follow` requires). `-G` with a `^...$`-anchored
+    pattern, not `-S` with a plain substring: `-S` matches any commit whose
+    total occurrence COUNT of the string changed anywhere in the file, so a
+    claim body merely mentioning "blob: <sha>" in prose (e.g. "(See blob:
+    <sha> for details.)") changes that count and wrongly attributes the pin to
+    whoever wrote the sentence. `-G` instead matches a commit whose diff added
+    or removed a line matching the regex, and the anchors mean only the pin
+    line itself — never a substring inside a longer line — can match."""
+    pattern = f"^    blob: {re.escape(blob)}$"
+    out = _text(run(root, "log", "--follow", "-1", "--format=%ae%x09%aI%x09%h",
+                    "-G", pattern, "--", claim_rel))
     if not out:
         return None
     parts = out.split("\t")

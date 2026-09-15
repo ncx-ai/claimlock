@@ -472,7 +472,9 @@ def build_parser():
     p.add_argument("--json", action="store_true")
     p.add_argument("--area")
     p.add_argument("--changed", metavar="BASE",
-                   help="block only on claims whose sources or files changed since the merge base with BASE")
+                   help="block only on claims whose sources or files changed since the merge base with BASE "
+                        "(committed changes only — uncommitted edits are not in scope; run plain "
+                        "'claimlock check' for the whole working tree)")
     p = add("stale", cmd_stale, "list non-fresh verified claims")
     p.add_argument("--area")
     g = p.add_mutually_exclusive_group()

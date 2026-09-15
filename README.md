@@ -50,7 +50,7 @@ claimlock diff retries-are-capped     # see exactly what changed since verificat
 |---|---|
 | `claimlock init` | Create `.claimlock.toml`, `claims/`, and add `.claimlock/` to `.gitignore`. |
 | `claimlock new` | Scaffold an unverified claim (`claimlock new <id> --area <area>`). |
-| `claimlock check` | The gate: exit 1 if any claim is invalid, stale, missing, or unpinned. `--changed <base>` scopes blocking to claims whose sources or files changed since the merge base with `<base>` — everything else wrong is listed as pre-existing, and `owed` claims are listed but never block. |
+| `claimlock check` | The gate: exit 1 if any claim is invalid, stale, missing, or unpinned. `--changed <base>` scopes blocking to claims whose sources or files changed since the merge base with `<base>` — everything else wrong is listed as pre-existing, and `owed` claims are listed but never block; that scope is committed changes only, so an uncommitted edit needs plain `claimlock check` to see the whole working tree. |
 | `claimlock stale` | List non-fresh verified claims, tab-separated, with their changed paths. |
 | `claimlock list` | List every claim with its status and freshness flag. |
 | `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs. |
