@@ -238,6 +238,48 @@ class Stop(HookCase):
         self.assertEqual(set(out), {"systemMessage"})
         self.assertEqual(len(out["systemMessage"]), 2000)  # proves truncation actually happened
 
+    def test_a_conflicted_claim_says_run_resolve(self):
+        root = self.store()
+        self.hook(root, "session-start")
+        write(root, "claims/c.md", "<<<<<<< ours\nid: c\n=======\nid: c\n>>>>>>> theirs\n")
+        msg = self.hook(root, "stop")["systemMessage"]
+        self.assertIn("1 claim became conflicted (c) — run `claimlock resolve`", msg)
+
+    def test_stop_never_suppresses_a_name_the_message_does_not_show(self):
+        # A HEAD report whose last named id ends just short of LIMIT, plus
+        # drift for the "since the last check" line, so the two together pass
+        # LIMIT: every id the report's `named` removed from that line must
+        # still be visible in the final Stop message.
+        root = self.store()
+        self.hook(root, "session-start")
+        write(root, "a.py", "two!\n")  # c goes stale: a since-line exists
+        for n in range(100, 400):
+            hit = [(f"h{i}-{'x' * n}", "stale", "x.py", None) for i in range(10)]
+            report = hooks_mod._head_report("a" * 40, "b" * 40, hit, [])
+            if max(report.index(x) + len(x) for x in report.named) > hooks_mod.LIMIT - 60:
+                break
+        else:
+            self.fail("no report ends near LIMIT")
+        with mock.patch("claimlock.hooks.head_check", return_value=report):
+            msg = self.hook_inprocess(root, "stop")["systemMessage"]
+        self.assertEqual(len(msg), 2000)  # precondition: the parts together were cut
+        self.assertEqual([x for x in sorted(report.named) if x not in msg], [])
+
+    def test_a_baseline_from_before_owed_and_conflicted_reports_neither_once(self):
+        root = self.store()
+        write(root, "claims/o.md", claim_text("o", status="owed", sources=("a.py",),
+                                              extra_lines=("owed_by: t@example.com", "owed_since: none")))
+        write(root, "claims/k.md", "<<<<<<< ours\nid: k\n=======\nid: k\n>>>>>>> theirs\n")
+        self.hook(root, "session-start")
+        state = self.data / "sessions" / "s1.json"
+        st = json.loads(state.read_text())
+        self.assertEqual((st["baseline"].pop("owed"), st["baseline"].pop("conflicted")), (["o"], ["k"]))
+        state.write_text(json.dumps(st))
+        self.assertIsNone(self.hook(root, "stop"))
+        baseline = json.loads(state.read_text())["baseline"]
+        self.assertEqual((baseline["owed"], baseline["conflicted"]), (["o"], ["k"]))
+        self.assertIsNone(self.hook(root, "stop"))
+
 
 @NEED_GIT
 class HeadMovement(HookCase):
@@ -434,6 +476,27 @@ class Concurrency(HookCase):
         self.assertFalse((self.data / "hook-errors.log").exists())
 
 
+class HeadReportText(unittest.TestCase):
+    def test_an_empty_author_email_reads_unknown(self):
+        text = hooks_mod._head_report("a" * 40, "b" * 40, [("c", "stale", "x.py", ("abc1234", "", "s"))], [])
+        self.assertIn('c (stale): x.py changed by unknown in abc1234 "s"', text)
+
+    def test_subject_and_email_are_capped(self):
+        w = ("abc1234", "e" * 100 + "@x.io", "S" * 200)
+        text = hooks_mod._head_report("a" * 40, "b" * 40, [("c", "stale", "x.py", w)], [])
+        self.assertIn(f'changed by {"e" * 80}… in abc1234 "{"S" * 60}…"', text)
+
+    def test_named_holds_only_what_survives_the_cut(self):
+        hit = [(f"id-{i:02d}-{'x' * 300}", "stale", "x.py", None) for i in range(10)]
+        text = hooks_mod._head_report("a" * 40, "b" * 40, hit, [], ["owed-one"], ["conf-one"])
+        self.assertEqual(len(text), 2000)
+        self.assertTrue(text.index("owed-one") < text.index("conf-one") < text.index("id-00"))
+        visible = frozenset(x for x in ["owed-one", "conf-one"] + [h[0] for h in hit] if x in text)
+        self.assertIn(hit[0][0], visible)
+        self.assertNotIn(hit[9][0], visible)
+        self.assertEqual(text.named, visible)
+
+
 @NEED_GIT
 class TeamHooks(HookCase):
     def setUp(self):
@@ -499,6 +562,110 @@ class TeamHooks(HookCase):
         self.assertIn("from your uncommitted edits, 1 claim became stale (c)", msg)
         self.assertNotIn("since the last check", msg)
 
+    def push_a(self):
+        git(self.a, "push", "-q", "origin", "main")
+
+    def long_range_with_a_hand_off(self):
+        deep = "src/" + "deep-directory/" * 3
+        ids = [f"c{i:02d}" for i in range(12)]
+        for i, cid in enumerate(ids):
+            write(self.a, f"{deep}s{i:02d}.py", "V = 1\n")
+            write(self.a, f"claims/{cid}.md", claim_text(cid, sources=(f"{deep}s{i:02d}.py",)))
+        self.assertEqual(run_cli(self.a, "verify", *ids)[0], 0)
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "twelve claims")
+        self.push_a()
+        self.assertEqual(self.pull_b().returncode, 0)
+        self.hook(self.b, "session-start")
+        for i in range(12):
+            write(self.a, f"{deep}s{i:02d}.py", "V = 2\n")
+        git(self.a, "commit", "-qam", "S" * 90)
+        self.assertEqual(run_cli(self.a, "owe", "c00", "--to", "ben@example.com")[0], 0)
+        git(self.a, "commit", "-qam", "owe c00 to ben")
+        self.push_a()
+        self.assertEqual(self.pull_b().returncode, 0)
+
+    def test_a_hand_off_survives_a_long_attribution_list(self):
+        self.long_range_with_a_hand_off()
+        ctx = self.hook(self.b, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Now owed to you: c00", ctx)
+        self.assertLessEqual(len(ctx), 2000)
+
+    def test_stop_never_hides_a_hand_off(self):
+        self.long_range_with_a_hand_off()
+        msg = self.hook(self.b, "stop")["systemMessage"]  # HEAD moved within this Stop check
+        self.assertLessEqual(len(msg), 2000)
+        self.assertTrue("Now owed to you: c00" in msg or "became owed (c00" in msg, msg)
+
+    def test_a_claim_owed_to_someone_else_is_not_owed_to_you(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 9\n")
+        git(self.a, "commit", "-qam", "raise MAX")
+        self.assertEqual(run_cli(self.a, "owe", "c", "--to", "amy@example.com")[0], 0)
+        git(self.a, "commit", "-qam", "owe c to amy")
+        self.push_a()
+        self.pull_b()
+        out = self.hook(self.b, "post-tool-use")
+        self.assertNotIn("owed to you", json.dumps(out).lower())
+        ctx = self.hook(self.b, "session-start", session="s2")["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("owed to you", ctx)
+
+    def test_an_already_owed_claim_is_not_newly_owed_when_another_file_changes(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 9\n")
+        git(self.a, "commit", "-qam", "raise MAX")
+        self.assertEqual(run_cli(self.a, "owe", "c", "--to", "ben@example.com")[0], 0)
+        git(self.a, "commit", "-qam", "owe c to ben")
+        self.push_a()
+        self.pull_b()
+        self.assertIn("Now owed to you: c", json.dumps(self.hook(self.b, "post-tool-use")))  # precondition
+        write(self.a, "other.txt", "unrelated\n")
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "unrelated")
+        self.push_a()
+        self.pull_b()
+        self.assertNotIn("Now owed to you", json.dumps(self.hook(self.b, "post-tool-use")))
+
+    def test_attribution_names_the_newest_commit(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 2\n")
+        git(self.a, "commit", "-qam", "first bump")
+        write(self.a, "src.py", "MAX = 3\n")
+        git(self.a, "commit", "-qam", "second bump")
+        newest = git(self.a, "rev-parse", "--short=7", "HEAD").strip()
+        self.push_a()
+        self.pull_b()
+        ctx = self.hook(self.b, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(f'c (stale): src.py changed by amy@example.com in {newest} "second bump"', ctx)
+        self.assertNotIn("first bump", ctx)
+
+    def test_attribution_uses_the_mailmap(self):
+        self.hook(self.b, "session-start")
+        write(self.a, ".mailmap", "Amy <amy.canonical@example.com> <amy@example.com>\n")
+        write(self.a, "src.py", "MAX = 9\n")
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "raise MAX")
+        self.push_a()
+        self.pull_b()
+        ctx = self.hook(self.b, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("src.py changed by amy.canonical@example.com in", ctx)
+
+    def test_stop_during_a_merge_does_not_blame_your_edits(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 9\n")
+        write(self.a, "notes.txt", "amy\n")
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "amy")
+        self.push_a()
+        write(self.b, "notes.txt", "ben\n")
+        git(self.b, "add", "-A")
+        git(self.b, "commit", "-qm", "ben")
+        self.assertNotEqual(self.pull_b().returncode, 0, "precondition: notes.txt conflicts")
+        self.assertEqual((self.b / "src.py").read_text(), "MAX = 9\n", "precondition: src.py merged cleanly")
+        msg = self.hook(self.b, "stop")["systemMessage"]
+        self.assertIn("since the last check, 1 claim became stale (c)", msg)
+        self.assertNotIn("from your uncommitted edits", msg)
+
 
 @NEED_GIT
 class CommonPathRunsNoGit(HookCase):
@@ -516,6 +683,7 @@ class CommonPathRunsNoGit(HookCase):
                                     "PATH": str(fake)})
         self.assertEqual((rc, out), (0, ""), err)
         self.assertFalse(calls.exists(), calls.read_text() if calls.exists() else "")
+        self.assertFalse((self.data / "hook-errors.log").exists())
 
 
 if __name__ == "__main__":

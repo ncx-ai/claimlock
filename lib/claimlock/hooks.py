@@ -30,6 +30,8 @@ from . import gitio, refs
 from . import project as P
 
 LIMIT = 2000
+SUBJECT_CAP = 60
+EMAIL_CAP = 80
 PROBE_EVERY_S = 30
 LOCK_TIMEOUT_S = 5.0
 LOCK_POLL_S = 0.05
@@ -319,31 +321,65 @@ def head_check(project, st):
 
 
 class _HeadReport(str):
-    """The HEAD-moved message, carrying which claim ids and `path:id` markers
-    it actually printed, so Stop does not name them a second time."""
+    """The HEAD-moved message, already cut to LIMIT, carrying which claim ids
+    and `path:id` markers survived that cut, so Stop does not name them a
+    second time — and never suppresses one nobody saw."""
     named = frozenset()
 
 
+def _cap(text, n):
+    return text if len(text) <= n else text[:n] + "…"
+
+
 def _head_report(old, new, hit, dangling, owed_new=(), conflicted=()):
-    parts = [f"claimlock: HEAD moved {(old or 'none')[:7]}→{new[:7]} (a commit, merge, rebase, pull or checkout)."]
-    if hit:
-        more = "…" if len(hit) > 10 else ""
-        entries = [f'{cid} ({state}): {src} changed by {w[1]} in {w[0]} "{w[2]}"' if w else f"{cid} ({state})"
-                   for cid, state, src, w in hit[:10]]
-        parts.append(f"Files changed in that range back {len(hit)} claim(s) that are no longer fresh: "
-                     + "; ".join(entries) + more + ".")
+    # Ordered by what a reader must not miss: hand-offs and conflicts come
+    # before the attribution list, whose subjects make it the long part.
+    pieces = []  # (text, the id or marker it names, or None)
+
+    def add(text, name=None):
+        pieces.append((text, name))
+
+    def names(items, limit):
+        for i, x in enumerate(items[:limit]):
+            if i:
+                add(", ")
+            add(x, x)
+        if len(items) > limit:
+            add("…")
+
+    add(f"claimlock: HEAD moved {(old or 'none')[:7]}→{new[:7]} (a commit, merge, rebase, pull or checkout).")
     if owed_new:
-        parts.append("Now owed to you: " + ", ".join(owed_new[:10]) + ("…" if len(owed_new) > 10 else "") + ".")
+        add(" Now owed to you: ")
+        names(owed_new, 10)
+        add(".")
     if conflicted:
-        parts.append(f"{len(conflicted)} claim file(s) have merge conflicts ({', '.join(conflicted[:5])}"
-                     f"{'…' if len(conflicted) > 5 else ''}) — run `claimlock resolve`.")
+        add(f" {len(conflicted)} claim file(s) have merge conflicts (")
+        names(conflicted, 5)
+        add(") — run `claimlock resolve`.")
+    if hit:
+        add(f" Files changed in that range back {len(hit)} claim(s) that are no longer fresh: ")
+        for i, (cid, state, src, w) in enumerate(hit[:10]):
+            if i:
+                add("; ")
+            add(cid, cid)
+            if w:
+                email = _cap(w[1], EMAIL_CAP) or "unknown"
+                add(f' ({state}): {src} changed by {email} in {w[0]} "{_cap(w[2], SUBJECT_CAP)}"')
+            else:
+                add(f" ({state})")
+        add(("…" if len(hit) > 10 else "") + ".")
     if dangling:
-        more = "…" if len(dangling) > 10 else ""
-        parts.append("Markers naming no claim: " + ", ".join(dangling[:10]) + more + ".")
-    parts.append("Re-check each with `claimlock diff <id>`; `claimlock verify <id>` only after re-checking.")
-    report = _HeadReport(" ".join(parts))
-    report.named = frozenset([h[0] for h in hit[:10]] + list(dangling[:10])
-                             + list(owed_new[:10]) + list(conflicted[:5]))
+        add(" Markers naming no claim: ")
+        names(dangling, 10)
+        add(".")
+    add(" Re-check each with `claimlock diff <id>`; `claimlock verify <id>` only after re-checking.")
+    named, end = set(), 0
+    for text, name in pieces:
+        end += len(text)
+        if name is not None and end <= LIMIT:
+            named.add(name)
+    report = _HeadReport("".join(text for text, _ in pieces)[:LIMIT])
+    report.named = frozenset(named)
     return report
 
 
@@ -377,7 +413,10 @@ def stop(project, payload, data_dir):
         return None
     s, results = survey(project)
     base = st.get("baseline") or {}
-    new = {k: [x for x in v if x not in set(base.get(k, []))] for k, v in s.items()}
+    # A kind the baseline does not carry (state written before that kind
+    # existed) has no known "before": report none of it this once; the
+    # baseline gains the key below.
+    new = {k: ([x for x in v if x not in set(base[k])] if k in base else []) for k, v in s.items()}
     head_msg = head_check(project, st)
     st["baseline"] = s
     _save_state(path, st)
@@ -388,7 +427,10 @@ def stop(project, payload, data_dir):
     new = {k: [x for x in v if x not in named] for k, v in new.items()}
     # Drift whose cited source you have edited but not committed is yours;
     # the rest arrived some other way (a pull, a tool, another process).
-    dirty = set(gitio.dirty_paths(project.root)) if st.get("mark_paths") else set()
+    # Mid-merge/rebase/cherry-pick, the working tree differs from HEAD because
+    # of git, so none of it is attributed to the person's edits.
+    dirty = (set(gitio.dirty_paths(project.root))
+             if st.get("mark_paths") and not gitio.operation_in_progress(project.root) else set())
     by_id = {r.claim.id: r for r in results}
     yours, others = {}, {}
     for kind, items in new.items():
@@ -396,7 +438,9 @@ def stop(project, payload, data_dir):
             r = by_id.get(item)
             mine = r is not None and dirty and any(sp.path in dirty for sp in r.claim.sources)
             (yours if mine else others).setdefault(kind, []).append(item)
-    parts = []
+    # The HEAD report goes first: it is already within LIMIT, so everything its
+    # `named` suppressed from the lines below is visible in the final message.
+    parts = [head_msg] if head_msg else []
     if yours:
         parts.append("claimlock: from your uncommitted edits, "
                      + "; ".join(_since_phrase(k, v) for k, v in yours.items())
@@ -405,8 +449,6 @@ def stop(project, payload, data_dir):
         parts.append("claimlock: since the last check, "
                      + "; ".join(_since_phrase(k, v) for k, v in others.items())
                      + ". Inspect with `claimlock diff <id>` or `claimlock refs`.")
-    if head_msg:
-        parts.append(head_msg)
     return {"systemMessage": "\n".join(parts)[:LIMIT]} if parts else None
 
 
@@ -415,7 +457,8 @@ def _since_phrase(kind, items):
     n = len(items)
     if kind == "dangling":
         return f"{n} dangling marker{'' if n == 1 else 's'} appeared ({shown})"
-    return f"{n} claim{'' if n == 1 else 's'} became {kind} ({shown})"
+    tail = " — run `claimlock resolve`" if kind == "conflicted" else ""
+    return f"{n} claim{'' if n == 1 else 's'} became {kind} ({shown}){tail}"
 
 
 def post_tool_use(project, payload, data_dir):

@@ -245,7 +245,7 @@ def changed_paths(root, old, new) -> list:
 def range_log(root, old, new):
     """[(short sha, author email, subject, [root-relative paths])], newest first,
     for commits in old..new — or just `new` when `old` is None or unreachable."""
-    fmt = "--format=%x00%h%x09%ae%x09%s"
+    fmt = "--format=%x00%h%x09%aE%x09%s"  # %aE: the mailmap-canonical email
     r = run(root, "log", "--no-renames", "--name-only", "--relative", fmt, f"{old}..{new}") if old else None
     if r is None or r.returncode != 0:
         r = run(root, "log", "-1", "--no-renames", "--name-only", "--relative", fmt, new)
@@ -260,6 +260,18 @@ def range_log(root, old, new):
         if len(head) == 3:
             out.append((head[0], head[1], head[2], lines[1:]))
     return out
+
+
+def operation_in_progress(root) -> bool:
+    """True while a merge, rebase or cherry-pick is stopped mid-way: its
+    working-tree changes are git's, not the person's own edits."""
+    args = []
+    for name in ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD"):
+        args += ["--git-path", name]
+    out = _text(run(root, "rev-parse", *args))
+    if out is None:
+        return False
+    return any((Path(root) / p).exists() for p in _lines(out))
 
 
 def dirty_paths(root):
