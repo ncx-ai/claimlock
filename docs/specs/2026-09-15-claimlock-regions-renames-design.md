@@ -57,7 +57,7 @@ A source map entry gains two keys:
 sources:
   - path: src/retry.py
     region: retry-cap
-    blob: <git blob of the whole file when verified>
+    blob: <git blob of the whole file when verified: of the staged file when it holds the same region, else of the working tree>
     hash: <region hash when verified>
 ```
 
@@ -87,7 +87,9 @@ Worst-source-wins as before. For a region source:
   version (index stage 0), read from git, contains the region with the same
   hash. The fallback runs only for a region pin whose blob is not anchored, so
   the common path adds no git call. Without it, verifying with uncommitted
-  edits elsewhere in the file would leave the pin unanchored forever.
+  edits elsewhere in the file would leave the pin unanchored forever. (Since
+  `verify` now writes the staged file's blob in that case — §2.6 — the
+  fallback matters mainly for pins written before that change.)
 - else `fresh`
 
 Region hashes use the stat cache: an entry keyed `"<path>\0<region>"` holds
@@ -102,9 +104,12 @@ Sorted as before.
 
 ### 2.6 Commands
 
-- `verify` computes, for each region source, the whole file's blob (cache
-  bypassed) and the region hash (from the file read directly), refusing on an
-  extraction failure: `<id>: source <p>#<r>: <reason>`. Output lines are
+- `verify` computes, for each region source, the region hash (from the file
+  read directly) and a whole-file blob: the blob of the staged file (index
+  stage 0) when it holds the same region with the same hash, else of the
+  working tree (cache bypassed) — so `diff` can later read the pinned content
+  back from git even when uncommitted edits sit elsewhere in the file. It
+  refuses on an extraction failure: `<id>: source <p>#<r>: <reason>`. Output lines are
   `  <key> @ <first 12 of pin>`, the pin being `hash` for a region.
 - `diff` for a stale region: reads the pinned `blob` from git, extracts the
   region from it (failure: `--- <key>: the region cannot be found in the pinned
@@ -128,15 +133,21 @@ Sorted as before.
 For each cited path whose file does not exist (only these — the common path
 runs no extra git), in the root:
 
-1. `git log -1 --format=%H --diff-filter=D -- <path>` names the commit `C`
+1. Only when the old path is absent from HEAD:
+   `git log -1 --format=%H --diff-filter=D -- <path>` names the commit `C`
    that last deleted it. If there is one, `git diff -M --name-status -z
    --diff-filter=R C^` (C's parent against the working tree, all tracked
    paths) is searched for a rename whose old path is `<path>`; the reported
    commit is `C` (7 chars). A chain of renames (a → b → c) is reported end to
    end, because the comparison is from before the first deletion to now.
-2. If no commit deleted it, `git diff -M --name-status -z --diff-filter=R
-   --cached HEAD` is searched (a staged `git mv`); the reported commit is
-   `uncommitted`.
+2. If that finds nothing, and only when the old path is absent from the
+   index: `git diff -M --name-status -z --diff-filter=R --cached HEAD` is
+   searched (a staged `git mv`); the reported commit is `uncommitted`.
+
+A path present in both HEAD and the index is only deleted in the working
+tree, and is never a rename — even if some older commit once deleted it
+(it was restored since). Every pathspec-taking call runs with
+`--literal-pathspecs`, so `src/[id].tsx` never matches `src/i.tsx`.
 3. A rename counts only if the new path exists now and is inside the root.
 
 A plain `mv` that is neither committed nor staged is invisible to git (probe,
@@ -173,7 +184,8 @@ unchanged. Then the claim is re-evaluated and each followed source prints:
 move, `stale` when the content changed in the rename.
 
 Refusals (exit 1, file untouched): no such claim; conflicted or unparseable
-claim; outside git (`follow needs a git repository`); no renamed sources
+claim; a claim with any `problems()` other than a mismatched `pins:` digest
+(`<id> has problems that must be fixed first (run: claimlock check)`); outside git (`follow needs a git repository`); no renamed sources
 (`<id>: no renamed sources`); a new path the claim already cites with the same
 region (`<id>: <new> is already cited`). Works for any status.
 
@@ -200,4 +212,6 @@ converts with clean filters.
   new state; a wrong pairing reads `stale` rather than `fresh` unless the
   content is identical.
 - **Detection cost** on very large repositories: only for missing sources, one
-  `log` plus one tree diff per distinct deleting commit.
+  `ls-tree` and one `ls-files` for all of them, one `log` per path absent
+  from HEAD, one tree diff per distinct deleting commit, and at most one
+  staged diff.

@@ -336,7 +336,12 @@ def cmd_show(args):
                     "uncommitted": " — uncommitted (verifier known once committed)"}.get(v[0])
             if note is None:
                 note = f" — verified by {v[1]} at {v[2]} ({v[3]})"
-            print(f"  {s.key} — {states.get(s.key, '-')} ({pin}){note}")
+            state = states.get(s.key, "-")
+            reason = ""
+            if state == "missing" and s.region is not None:
+                _, why = hasher.region(s.path, s.region)
+                reason = f": {why}" if why else ""
+            print(f"  {s.key} — {state} ({pin}){reason}{note}")
     print(f"\nfile: {_rel(project, c.path)}")
     return 0
 
@@ -472,6 +477,10 @@ def cmd_diff(args):
         if st == "unanchored":
             print(f"--- {key}: unchanged since verification, but that content was never committed "
                   f"or staged — commit it so other clones can diff this claim")
+            continue
+        if not s.blob:
+            print(f"--- {key}: changed, but no blob pinned — prior content unavailable; "
+                  f"re-read the claim against the current file (run: claimlock check)")
             continue
         old = gitio.cat_blob(project.root, s.blob)
         if old is None:

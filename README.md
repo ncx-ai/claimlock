@@ -167,7 +167,8 @@ sources:
 ```
 
 `claimlock verify` fills in `blob` (the whole file's pin, for anchoring and
-`who`) and `hash` (the region's own pin) alongside it. Every per-source
+`diff` — the staged file's blob when it holds the same region, else the
+working tree's) and `hash` (the region's own pin) alongside it. Every per-source
 listing — `check`, `stale`, `show`, `diff`, `--json` — names a region source
 by its **key**, `path#region` (e.g. `src/retry.py#retry-cap`).
 

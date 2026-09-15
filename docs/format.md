@@ -129,7 +129,9 @@ sources:
 - `blob`, if present, must be 40 lowercase hex characters, or
   `source '<p>' has a malformed blob (expected 40 lowercase hex)`. For a
   region source, `blob` is still the pin of the **whole file** (used for
-  anchoring and `who`), never the region.
+  anchoring and `diff`), never the region: `verify` writes the blob of the
+  staged file (index stage 0) when it holds the same region with the same
+  hash, else of the working tree.
 - `region`, if present, must match `^[a-z0-9][a-z0-9-]*$` (see "Regions"
   below), or `source '<p>' has a malformed region name`.
 - `hash`, if present, must be 40 lowercase hex characters, or
@@ -178,7 +180,10 @@ containing `claimlock:end <name>` closes it. The markers may sit inside any
 comment syntax — a line matches when it contains `claimlock:begin` or
 `claimlock:end`, then whitespace, then the name, and the name is not
 followed by another `[a-z0-9-]` character (so `claimlock:begin r1-extra`
-never opens region `r1`). Names match `^[a-z0-9][a-z0-9-]*$`.
+never opens region `r1`). Names match `^[a-z0-9][a-z0-9-]*$`. Only the
+first marker on a line is recognised: a second marker on the same line is
+ignored, so such a layout typically fails loudly (`not found`, `has no end
+marker`, …) rather than opening or closing a region.
 
 The region is the lines **strictly between** the two marker lines — the
 marker lines themselves are never part of it, so restyling the marker
@@ -362,7 +367,8 @@ For each cited path whose file does not exist — only these; the common path
 (nothing missing) runs no extra git at all — `gitio.find_renames` looks for a
 rename, in the project root:
 
-1. `git log -1 --format=%H --diff-filter=D -- <path>` names the commit `C`
+1. Only when `<path>` is absent from HEAD:
+   `git log -1 --format=%H --diff-filter=D -- <path>` names the commit `C`
    that last deleted it. If one exists, `git diff -M --name-status -z
    --diff-filter=R C^` — `C`'s parent diffed against the current working
    tree, over all tracked paths — is searched for a rename whose old path is
@@ -370,12 +376,18 @@ rename, in the project root:
    the comparison runs from before the first deletion to the current working
    tree, a chain of renames (`a` → `b` → `c`) is reported end to end as `a` →
    `c`.
-2. If no commit ever deleted it, `git diff -M --name-status -z
-   --diff-filter=R --cached HEAD` is searched instead (a staged but
-   uncommitted `git mv`); the reported commit is the literal string
-   `uncommitted`.
+2. If that finds nothing, and only when `<path>` is absent from the index,
+   `git diff -M --name-status -z --diff-filter=R --cached HEAD` is searched
+   instead (a staged but uncommitted `git mv`); the reported commit is the
+   literal string `uncommitted`.
 3. A rename counts only when the new path exists right now and lies inside
    the project root.
+
+A path present in both HEAD and the index is only deleted in the working
+tree and is never a rename, even if an older commit once deleted it and it
+was restored since. Every pathspec-taking call runs with
+`--literal-pathspecs`, so a path like `src/[id].tsx` never matches
+`src/i.tsx`.
 
 Detection uses git's default similarity threshold (50%), so a rename with
 edits is still found (and then reads `stale` after `follow` rewrites the
@@ -417,9 +429,11 @@ Refused with exit 1 (the file is left untouched):
 - `no claim '<id>'`
 - `<id> has merge conflicts — run claimlock resolve first`
 - the claim's own parse error, if it has one
-- `<id> has problems that must be fixed first (run: claimlock check)` — a
-  `pins` value that is present but not a 40-hex digest (an already-invalid
-  claim; a mismatched-but-valid digest is fine and is left as is)
+- `<id> has problems that must be fixed first (run: claimlock check)` — any
+  problem `check` reports (a malformed region name, a `pins` value that is
+  present but not a 40-hex digest, …), because rewriting the sources would
+  silently repair or mangle it; the one exception is a mismatched-but-valid
+  digest, which is fine and is left as is
 - `follow needs a git repository`
 - `<id>: no renamed sources`
 - `<id>: <new-path> is already cited` — the new path (with the source's
@@ -537,7 +551,9 @@ fallback runs only when the whole-file blob is unanchored, so the common
 case (an already-anchored blob) never pays for the extra git read. Without
 it, verifying a region and staging just that file, while other uncommitted
 edits sit elsewhere in it, would leave the region pin `unanchored` until the
-whole file was committed.
+whole file was committed. Since `verify` writes the staged file's blob
+whenever it holds the same region, the fallback matters mainly for pins
+written before that rule.
 
 ## `claimlock check` output
 
@@ -703,8 +719,9 @@ tab-separated line per source, keyed like every other per-source listing
 ```
 
 `show` prints one line per source, in the same form `who` reads: `<key> —
-<state> (<pin12>)`, with the same verifier note appended to the end of that
-line — `— verified by <email> at <time> (<sha>)`, `— uncommitted (verifier
+<state> (<pin12>)` — for a `missing` region source followed by `: <reason>`
+(e.g. `f.py#r — missing (587be6b4c3f9): region 'r' has no end marker`) —
+with the same verifier note appended to the end of that line — `— verified by <email> at <time> (<sha>)`, `— uncommitted (verifier
 known once committed)`, or `— verified by unknown (no git)`. The pin shown
 is `hash` for a region source, `blob` otherwise, truncated to its first 12
 characters (`unpinned` if there is none). Each source's state

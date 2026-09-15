@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import unittest
+import unittest.mock as mock
 
 from helpers import TmpCase, claim_text, git, make_repo, pinned_text, run_cli, write
 
@@ -445,6 +446,96 @@ class HooksCommonPathNoGit(TmpCase):
                                     "PATH": str(fake)})
         self.assertEqual((rc, out), (0, ""), err)
         self.assertFalse(calls.exists(), calls.read_text() if calls.exists() else "")
+
+
+@NEED_GIT
+class FinalFixRenames(TmpCase):
+    """Final-review findings I1, I2, M2, M4 (rename detection and follow)."""
+
+    def _deleted_then_restored(self):
+        """a.txt committed, deleted in a commit, then restored in a later one —
+        so a commit that deleted it exists, yet it is present in HEAD."""
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.txt", "alpha\nbeta\ngamma\n")
+        write(root, "claims/c.md", claim_text("c", sources=("a.txt",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "rm", "-q", "a.txt")
+        git(root, "commit", "-qm", "delete")
+        write(root, "a.txt", "alpha\nbeta\ngamma\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "restore")
+        return root
+
+    def test_i1_plain_rm_of_a_restored_path_is_not_a_rename(self):
+        root = self._deleted_then_restored()
+        write(root, "b.txt", "alpha\nbeta\ngamma\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "identical copy elsewhere")
+        (root / "a.txt").unlink()
+        self.assertEqual(gitio.find_renames(root, ["a.txt"]), {})
+        rc, out, err = run_cli(root, "check", "--json")
+        self.assertEqual(json.loads(out)["results"][0]["state"], "missing", out + err)
+
+    def test_i1_staged_mv_of_a_restored_path_is_uncommitted(self):
+        root = self._deleted_then_restored()
+        git(root, "mv", "a.txt", "b.txt")
+        self.assertEqual(gitio.find_renames(root, ["a.txt"]), {"a.txt": ("b.txt", "uncommitted")})
+
+    def test_i2_glob_metacharacters_in_the_path_are_literal(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "src/[id].tsx", "export const page = 1;\nexport default page;\n")
+        write(root, "src/i.tsx", "something entirely different\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "src/[id].tsx", "src/[slug].tsx")
+        git(root, "commit", "-qm", "rename")
+        sha = git(root, "rev-parse", "--short=7", "HEAD").strip()
+        git(root, "rm", "-q", "src/i.tsx")
+        git(root, "commit", "-qm", "delete i")
+        self.assertEqual(gitio.find_renames(root, ["src/[id].tsx"]),
+                         {"src/[id].tsx": ("src/[slug].tsx", sha)})
+
+    def test_m2_one_tree_diff_per_deleting_commit_and_one_staged_diff(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        for name in ("a", "b", "x", "y"):
+            write(root, f"{name}.py", f"{name} content line\n" * 3)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "a2.py")
+        git(root, "mv", "b.py", "b2.py")
+        git(root, "commit", "-qm", "rename a and b")
+        sha = git(root, "rev-parse", "--short=7", "HEAD").strip()
+        git(root, "mv", "x.py", "x2.py")
+        git(root, "mv", "y.py", "y2.py")
+        calls, real = [], gitio.run
+
+        def recording(r, *args):
+            calls.append(args)
+            return real(r, *args)
+
+        with mock.patch.object(gitio, "run", recording):
+            got = gitio.find_renames(root, ["a.py", "b.py", "x.py", "y.py"])
+        self.assertEqual(got, {"a.py": ("a2.py", sha), "b.py": ("b2.py", sha),
+                               "x.py": ("x2.py", "uncommitted"), "y.py": ("y2.py", "uncommitted")})
+        diffs = [a for a in calls if "diff" in a]
+        self.assertEqual(len([a for a in diffs if "--cached" in a]), 1, diffs)
+        self.assertEqual(len([a for a in diffs if "--cached" not in a]), 1, diffs)
+
+    def test_m4_follow_refuses_a_claim_with_problems(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        text = region_claim_text("c", "a.py", "r1").replace("    region: r1", '    region: "a #b"')
+        write(root, "claims/c.md", text)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        git(root, "commit", "-qm", "rename")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("c has problems that must be fixed first (run: claimlock check)", err)
+        self.assertEqual((root / "claims/c.md").read_text(), text)
 
 
 if __name__ == "__main__":

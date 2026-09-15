@@ -505,5 +505,57 @@ class ResolveWholeAndRegionOfSamePath(TmpCase):
         self.assertEqual(rc, 0, out)
 
 
+@NEED_GIT
+class FinalFixRegions(TmpCase):
+    """Final-review findings I3, M3, M6."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make_repo(self.tmp / "r", use_git=True)
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
+        write(self.root, "claims/c.md", region_claim_text("c", "a.py", "r1"))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "initial")
+
+    def test_i3_verify_with_unstaged_edit_outside_region_pins_the_staged_blob(self):
+        write(self.root, "a.py", "before-changed\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        from claimlock import gitio
+        staged = gitio.index_blob(self.root, "a.py")
+        self.assertIsNotNone(staged)
+        self.assertIn(f"    blob: {staged}\n", (self.root / "claims/c.md").read_text())
+        write(self.root, "a.py", "before-changed\n# claimlock:begin r1\nx\nCHANGED\ny\n# claimlock:end r1\nafter\n")
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("not in git", out)
+        self.assertIn("+CHANGED", out)
+
+    def test_i3_control_edit_inside_region_still_pins_the_working_tree(self):
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\nNEW\ny\n# claimlock:end r1\nafter\n")
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        wt = blob_of_bytes((self.root / "a.py").read_bytes())
+        self.assertIn(f"    blob: {wt}\n", (self.root / "claims/c.md").read_text())
+
+    def test_m3_diff_on_a_region_entry_with_hash_but_no_blob_does_not_crash(self):
+        lines = ["---", "id: c", "area: core", "status: verified",
+                 "evidence:", "  - kind: test", "    ref: s::c",
+                 "sources:", "  - path: a.py", "    region: r1", f"    hash: {'0' * 40}",
+                 "---", "Holds.", ""]
+        write(self.root, "claims/c.md", "\n".join(lines))
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("--- a.py#r1: ", out)
+        self.assertIn("no blob pinned", out)
+
+    def test_m6_show_prints_the_region_failure_reason(self):
+        self.assertEqual(run_cli(self.root, "verify", "c")[0], 0)
+        h = region_hash("x\ny\n")
+        write(self.root, "a.py", "before\n# claimlock:begin r1\nx\ny\nafter\n")
+        rc, out, err = run_cli(self.root, "show", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(f"  a.py#r1 — missing ({h[:12]}): region 'r1' has no end marker", out)
+
+
 if __name__ == "__main__":
     unittest.main()

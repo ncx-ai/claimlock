@@ -135,5 +135,13 @@ class Rewrite(unittest.TestCase):
         self.assertEqual(new, "---\nid: x\nstatus: owed\nevidence: []\n---\nb\n")
 
 
+class SourcesBlockRegionQuoting(unittest.TestCase):
+    def test_region_round_trips_through_quote(self):
+        doc = "---\nid: x\nsources: []\n---\nb\n"
+        new = rewrite(doc, "x.md", sources=[{"path": "a.py", "region": "a #b"}])
+        fm, _ = split(new, "x.md")
+        self.assertEqual(parse(fm, "x.md")["sources"], [{"path": "a.py", "region": "a #b"}])
+
+
 if __name__ == "__main__":
     unittest.main()

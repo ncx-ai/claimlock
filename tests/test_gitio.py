@@ -121,5 +121,21 @@ class AnchoringOrder(TmpCase):
         self.assertEqual(len(rev_lists), 1)
 
 
+@NEED_GIT
+class DirtyPaths(TmpCase):
+    def test_staged_mv_lists_both_old_and_new_paths(self):
+        root = self.tmp / "r"
+        root.mkdir()
+        git(root, "init", "-q", "-b", "main")
+        git(root, "config", "user.email", "t@example.com")
+        git(root, "config", "user.name", "t")
+        git(root, "config", "commit.gpgsign", "false")
+        write(root, "a.py", "one\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        git(root, "mv", "a.py", "b.py")
+        self.assertEqual(sorted(gitio.dirty_paths(root)), ["a.py", "b.py"])
+
+
 if __name__ == "__main__":
     unittest.main()

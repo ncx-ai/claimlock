@@ -355,17 +355,37 @@ class Anchors:
         anchored blob) never runs a git call for this."""
         if self.ok(path, blob):
             return True
-        sha = gitio.index_blob(root, path)
-        if sha is None:
-            return False
-        data = gitio.cat_blob(root, sha)
-        if data is None:
-            return False
-        try:
-            text = regions.extract(data, region)
-        except regions.RegionError:
-            return False
-        return regions.region_hash(text) == region_hash
+        return staged_region_blob(root, path, region, region_hash) is not None
+
+
+def staged_region_blob(root, path, region, region_hash):
+    """The blob id staged for `path` (index stage 0) when that staged content
+    contains `region` with hash `region_hash`, else None (outside git, not
+    staged, or the region differs or cannot be extracted there)."""
+    sha = gitio.index_blob(root, path)
+    if sha is None:
+        return None
+    data = gitio.cat_blob(root, sha)
+    if data is None:
+        return None
+    try:
+        text = regions.extract(data, region)
+    except regions.RegionError:
+        return None
+    return sha if regions.region_hash(text) == region_hash else None
+
+
+def source_dict(s):
+    """A `frontmatter._sources_block` entry for Source `s`: `path`, plus each
+    of `region`, `blob`, `hash` that is set (used by `ops` and `merge`)."""
+    d = {"path": s.path}
+    if s.region:
+        d["region"] = s.region
+    if s.blob:
+        d["blob"] = s.blob
+    if s.hash:
+        d["hash"] = s.hash
+    return d
 
 
 def anchors_for(project, sources):

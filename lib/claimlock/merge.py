@@ -130,13 +130,6 @@ def _pins(text, name):
     return out, digest if isinstance(digest, str) else None
 
 
-def _source_dict(s):
-    """A `frontmatter._sources_block` entry for `s` — that function already
-    omits any of `region`/`blob`/`hash` that is falsy, so this always
-    includes all three and lets it decide what to write."""
-    return {"path": s.path, "region": s.region, "blob": s.blob, "hash": s.hash}
-
-
 def _current_pin(hasher, project, s):
     """This source's pin as the working tree stands right now: a region hash
     (cache bypassed) for a region source, a blob (cache bypassed) for a whole
@@ -194,7 +187,7 @@ def resolve_claim(project, claim):
             continue  # rebuilt from the conflicted file, and nothing vouches for it
         # A side without a digest predates it and stays without one.
         text = frontmatter.rewrite(side_text, name, pins=digest,
-                                   sources=[_source_dict(s) for s in side])
+                                   sources=[C.source_dict(s) for s in side])
         outcome, message = "kept", "every source matches what one side verified"
         break
     else:
@@ -204,12 +197,12 @@ def resolve_claim(project, claim):
             cur_pin = cur[s.key]
             t = theirs_by_key.get(s.key)
             if cur_pin is not None and cur_pin == s.pin:
-                picked.append(_source_dict(s))
+                picked.append(C.source_dict(s))
             elif cur_pin is not None and t is not None and cur_pin == t.pin:
-                picked.append(_source_dict(t))
+                picked.append(C.source_dict(t))
             else:
                 unmatched = True
-                picked.append(_source_dict(s))
+                picked.append(C.source_dict(s))
         why = ("a source matches neither side" if unmatched else
                "the sources match pins from two verifications that never checked them together")
         email = gitio.user_email(project.root)

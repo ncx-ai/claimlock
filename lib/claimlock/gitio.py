@@ -321,8 +321,9 @@ def operation_in_progress(root) -> bool:
 
 
 def dirty_paths(root):
-    """Tracked paths whose working-tree content differs from HEAD, root-relative."""
-    out = _text(run(root, "diff", "--name-only", "--relative", "HEAD"))
+    """Tracked paths whose working-tree content differs from HEAD, root-relative.
+    `--no-renames`: a staged `git mv` lists both its old and its new path."""
+    out = _text(run(root, "diff", "--name-only", "--relative", "--no-renames", "HEAD"))
     return _lines(out) if out is not None else []
 
 
@@ -354,30 +355,18 @@ def _rename_target_ok(root, rel):
     return p.exists()
 
 
-def _renamed_committed(root, rel):
-    """(new, sha7) when the commit that last deleted `rel` (found without
-    `-M`, so a rename shows as its own deletion) is itself the rename, or the
-    first of a chain: diffing its PARENT against the working tree, with `-M`,
-    finds the rename end to end even across an intervening second rename
-    (spec §3.1 point 1). None when nothing deleted `rel`, or nothing renames
-    it onward from there."""
-    sha = _text(run(root, "log", "-1", "--format=%H", "--diff-filter=D", "--", rel))
-    if not sha:
+def _listed(r):
+    """The set of paths a `-z` path listing printed, or None when git failed."""
+    if r is None or r.returncode != 0:
         return None
-    r = run(root, "diff", "-M", "--name-status", "-z", "--diff-filter=R", "--relative", f"{sha}^")
-    for old, new in _rename_records(r):
-        if old == rel and _rename_target_ok(root, new):
-            return new, sha[:7]
-    return None
+    return {os.fsdecode(p) for p in r.stdout.split(b"\0") if p}
 
 
-def _renamed_staged(root, rel):
-    """(new, "uncommitted") for a staged-but-uncommitted `git mv` of `rel`
-    (spec §3.1 point 2). None when nothing is staged, or git fails."""
-    r = run(root, "diff", "-M", "--name-status", "-z", "--diff-filter=R", "--relative", "--cached", "HEAD")
-    for old, new in _rename_records(r):
+def _rename_of(root, rel, records, label):
+    """(new, label) for the first usable rename of `rel` among `records`."""
+    for old, new in records:
         if old == rel and _rename_target_ok(root, new):
-            return new, "uncommitted"
+            return new, label
     return None
 
 
@@ -387,12 +376,46 @@ def find_renames(root, rels):
     `git mv`. Call only for sources whose file is already missing — the
     common path (nothing missing) then runs no git at all. Degrades to {}
     outside git, on any git failure, or a plain unstaged `mv` (git sees only
-    a deletion plus an untracked file, and traces neither to the other)."""
+    a deletion plus an untracked file, and traces neither to the other).
+
+    Committed: only for a path absent from HEAD. The commit that last deleted
+    it (found without `-M`, so a rename shows as its own deletion) is the
+    rename or the first of a chain, and diffing its PARENT against the
+    working tree, with `-M`, finds the rename end to end. A path still in
+    HEAD may have been deleted long ago and restored since; that old
+    deletion says nothing about today's missing file.
+
+    Staged: only for a path absent from the index. A path present in both
+    HEAD and the index is only deleted in the working tree — never a rename.
+
+    One `ls-tree` and one `ls-files` for every path together, one tree diff
+    per distinct deleting commit, and at most one staged diff per call.
+    `--literal-pathspecs` on every pathspec-taking call: `src/[id].tsx` must
+    never match `src/i.tsx`."""
     if not rels:
         return {}
+    rels = list(dict.fromkeys(rels))
+    in_head = _listed(run(root, "--literal-pathspecs", "ls-tree", "--name-only", "-z",
+                          "HEAD", "--", *rels))
+    in_index = _listed(run(root, "--literal-pathspecs", "ls-files", "--cached", "-z", "--", *rels))
+    tree_diffs, staged = {}, None
     out = {}
-    for rel in dict.fromkeys(rels):
-        found = _renamed_committed(root, rel) or _renamed_staged(root, rel)
+    for rel in rels:
+        found = None
+        if in_head is not None and rel not in in_head:
+            sha = _text(run(root, "--literal-pathspecs", "log", "-1", "--format=%H",
+                            "--diff-filter=D", "--", rel))
+            if sha:
+                if sha not in tree_diffs:
+                    tree_diffs[sha] = _rename_records(run(
+                        root, "diff", "-M", "--name-status", "-z", "--diff-filter=R",
+                        "--relative", f"{sha}^"))
+                found = _rename_of(root, rel, tree_diffs[sha], sha[:7])
+        if found is None and in_index is not None and rel not in in_index:
+            if staged is None:
+                staged = _rename_records(run(root, "diff", "-M", "--name-status", "-z",
+                                             "--diff-filter=R", "--relative", "--cached", "HEAD"))
+            found = _rename_of(root, rel, staged, "uncommitted")
         if found is not None:
             out[rel] = found
     return out

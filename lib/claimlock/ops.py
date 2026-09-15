@@ -89,17 +89,6 @@ def _write(path, text):
     os.replace(tmp, path)
 
 
-def _source_dict(s):
-    d = {"path": s.path}
-    if s.region:
-        d["region"] = s.region
-    if s.blob:
-        d["blob"] = s.blob
-    if s.hash:
-        d["hash"] = s.hash
-    return d
-
-
 def verify(project, cid) -> list:
     """Pin every source of `cid` to its current content and mark it verified.
 
@@ -146,9 +135,14 @@ def verify(project, cid) -> list:
             region_hash, reason = hasher.region(s.path, s.region, use_cache=False)
             if region_hash is None:
                 raise Refused(f"{cid}: source {s.key}: {reason}")
+            # The staged file's blob when it holds the same region: the pin
+            # is judged by `hash`, and a staged blob is one `diff` can read
+            # back later, while a working tree with uncommitted edits
+            # elsewhere in the file may never reach git (spec §2.3).
+            blob = C.staged_region_blob(project.root, s.path, s.region, region_hash) or blob
         pinned.append(C.Source(s.path, blob, s.region, region_hash))
     text = frontmatter.rewrite(c.text, c.path.name, status="verified",
-                               sources=[_source_dict(p) for p in pinned],
+                               sources=[C.source_dict(p) for p in pinned],
                                pins=C.pin_digest(pinned),
                                remove=("verified_at", "owed_by", "owed_since"))
     _write(c.path, text)
@@ -159,10 +153,13 @@ def follow(project, cid) -> list:
     """Rewrite the path of every renamed source of `cid` to its new path,
     keeping `region`, `blob` and `hash` unchanged (spec §3.3). Works for any
     status. Refuses, file untouched: an unknown claim; a conflicted or
-    unparseable one; a `pins:` value that is present but not a 40-hex digest
-    (already invalid — `frontmatter.rewrite` can only preserve a *string*
-    `pins:` value unchanged, never a malformed one, so this can't be carried
-    forward the way a mismatched-but-valid digest can); outside a git
+    unparseable one; one with any `problems()` other than a mismatched
+    `pins:` digest (rewriting would silently repair or mangle it — a quoted
+    region re-read as another name, say); a `pins:` value that is present
+    but not a 40-hex digest (already invalid — `frontmatter.rewrite` can only
+    preserve a *string* `pins:` value unchanged, never a malformed one, so
+    this can't be carried forward the way a mismatched-but-valid digest can,
+    which spec §3.3 keeps as it was); outside a git
     repository; one with no renamed sources; one where two sources (renamed
     or not) would end up citing the same new key.
 
@@ -186,7 +183,8 @@ def follow(project, cid) -> list:
     if c.parse_error:
         raise Refused(c.parse_error)
     old_pins = c.meta.get("pins")
-    if old_pins is not None and not (isinstance(old_pins, str) and C.BLOB_RE.match(old_pins)):
+    if (C.problems(c, project, digest=False)
+            or (old_pins is not None and not (isinstance(old_pins, str) and C.BLOB_RE.match(old_pins)))):
         raise Refused(f"{cid} has problems that must be fixed first (run: claimlock check)")
     if not gitio.in_git(project.root):
         raise Refused("follow needs a git repository")
@@ -220,7 +218,7 @@ def follow(project, cid) -> list:
     else:
         new_pins = old_pins
     text = frontmatter.rewrite(c.text, c.path.name,
-                               sources=[_source_dict(s) for s in new_sources],
+                               sources=[C.source_dict(s) for s in new_sources],
                                pins=new_pins)
     _write(c.path, text)
     updated = next(x for x in C.load_claims(project) if x.id == cid)
