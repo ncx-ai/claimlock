@@ -100,16 +100,19 @@ A team gate — `claimlock check --changed <base>` — blocks on every claim you
 change touched, including claims you did not write. `claimlock who <id>` names
 who verified each pin. You have two honest moves:
 
-1. **Re-check it yourself when you can.** `claimlock diff <id>`, read the
-   enforcement site as it is now, run the evidence (or name it plainly if you
-   cannot run it), fix the body or `sources` if your change moved the behaviour,
-   then `claimlock verify <id>`. The same bar as your own claims.
-2. **Otherwise hand it off, in the same change:**
+1. **Re-check it yourself, when you can run its evidence.** `claimlock diff <id>`,
+   read the enforcement site as it is now, **run** the claim's evidence and see the
+   result, fix the body or `sources` if your change moved the behaviour, then
+   `claimlock verify <id>`. The same bar as your own claims: reading the new code
+   is where the re-check starts, not where it ends.
+2. **If you cannot run the evidence, do not `verify`.** No permission, no
+   environment, no time: hand it off in the same change,
 
-       claimlock owe <id> --to <owner's email> --reason "<what your change did>"
+       claimlock owe <id> --to <verifier's email> --reason "<what your change did>"
 
-   Owe it to the person who can re-check it — usually whoever `claimlock who <id>`
-   names — and commit the claim file with your change.
+   to whoever `claimlock who <id>` names (or another person who can re-check it),
+   and commit the claim file with your change. Or leave the claim stale and report
+   plainly that its re-check is owed.
 
 **`owe` is a hand-off, not a way past the gate.** An owed claim does not fail
 `check`, but it is visibly unverified: `check` lists it as `OWED`, its owner is
@@ -133,7 +136,8 @@ records that *you* checked it, now; once committed, `claimlock who` names you.
   means there are more — run `claimlock stale`; `…` after the markers means there
   are more — run `claimlock refs`. Re-check them before relying on them.
 - **End of turn** (only the user sees it; you do not): problems not present at
-  the previous check in this clone ("since the last check"), split into drift from
+  the last check in this clone — taken at session start, then at each end of turn
+  ("since the last check"), split into drift from
   uncommitted edits to cited sources and drift that arrived another way, such as
   a `git pull`. If the user relays it, answer each named claim with
   `claimlock diff <id>`.
@@ -148,6 +152,7 @@ records that *you* checked it, now; once committed, `claimlock who` names you.
 | "I'll verify it, CI is blocking the release" | Then the release ships a claim nobody re-checked, under your name. Re-check it, or `claimlock owe` it to someone who can. |
 | "It's not my claim, so I'll just owe it without looking" | If you can re-check it, do. `owe` is for a re-check you cannot do, not for skipping one. |
 | "I'll owe it to nobody in particular" | A hand-off with no one to receive it is a dismissal. Owe it to a person who can re-check it (`claimlock who <id>`), with a `--reason`. |
+| "I couldn't run the test, but the new code clearly still holds, so I'll verify" | A verify without its evidence run is a stamp. `claimlock owe` it to the verifier, or leave it red and say why. |
 | "Owing it would keep CI red" | `owe` never fails `check`. It keeps the claim visibly unverified instead of falsely verified. |
 | "Let me run verify to confirm it still matches" | That is `claimlock show` or `claimlock check`. `verify` stamps; it does not read. |
 | "I know this from earlier" | Earlier is not now. Search, or check the code in this turn. |

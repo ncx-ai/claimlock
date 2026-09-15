@@ -139,7 +139,8 @@ neither, `owe` exits 2.
 
 `owe` refuses (exit 1) a claim with problems, an `unverified` or `refuted` claim,
 a verified claim that is `fresh` (nothing is owed), a claim already owed to that
-same person, a `--to` that is not an email address, and a multi-line `--reason`.
+same person, a `--to` that is not an email address (or, without `--to`, a git
+`user.email` that is not one), and a multi-line `--reason`.
 Owing an owed claim to a different person resets `owed_since` — a new hand-off
 starts a new age.
 
@@ -153,7 +154,8 @@ claimlock stale --mine                          # owed to your git user.email
 claimlock list --owed-by amy@example.com
 ```
 
-An owed claim is not compared with its sources, so `diff` prints nothing for it;
+An owed claim is not compared with its sources, so `diff` prints only
+`claimlock: <id> is owed; only verified claims have pins`;
 its pins are still in the file, and `git cat-file -p <blob>` shows the content
 that was verified.
 
@@ -214,7 +216,7 @@ repository ignores, or outside git.
 |---|---|---|
 | SessionStart | Claude (as context) | First, the claims owed to your git `user.email`, if any. Then counts of invalid, conflicted, unpinned, unanchored, stale, missing and owed claims and dangling markers, the areas they're in, and a reminder to search before asserting. |
 | PostToolUse (after Bash / MCP tool calls) | Claude (as context) | Only when HEAD moved since the last check. Claims that became owed to you in that range and claim files with merge conflicts ("run `claimlock resolve`") come first; then now-non-fresh claims backed by files changed in the range, each naming the newest commit in the range that changed its source — author email (mailmap-aware) and subject (truncated); then dangling markers. |
-| Stop | The user (a `systemMessage`) | Problems new *since the last check* in this clone (not pre-existing ones) — claims that became stale, unanchored, invalid, conflicted or owed, and dangling markers — separating drift from your uncommitted edits to cited sources from drift that arrived another way (a `git pull`, a tool), plus any HEAD movement. A claim the HEAD-moved report already names in the same state is not listed twice, and anything the message could not show is reported again at the next Stop. |
+| Stop | The user (a `systemMessage`) | Problems new *since the last check* in this clone (not pre-existing ones) — claims that became invalid, conflicted, unpinned, unanchored, stale, missing or owed, and dangling markers — separating drift from your uncommitted edits to cited sources from drift that arrived another way (a `git pull`, a tool), plus any HEAD movement. A claim the HEAD-moved report already names in the same state is not listed twice, and anything the message could not show is reported again at the next Stop. |
 
 With a team, a few details matter. The email for "owed to you" is read when the
 session starts; with no git `user.email` then, owed-to-you notices stay silent for

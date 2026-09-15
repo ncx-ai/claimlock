@@ -108,8 +108,8 @@ markers`. Resolve the source files first, then:
 - `OWED` — some source matches neither side; the claim becomes `owed` by your git
   `user.email`, to re-check.
 - `LEFT` (exit 1, file untouched) — a conflict outside the `sources` block (body,
-  evidence, another field), sides citing different sources, or no usable git
-  `user.email`. A person edits those.
+  evidence, another field), sides citing different sources, or an `OWED` case
+  with no usable git `user.email`. A person edits those. `KEPT` needs no email.
 
 `resolve` never stages or commits, and never picks a pin nobody verified. Do not
 hand-pick a `blob:` line: that records a check against content it may not match.
@@ -130,7 +130,7 @@ Outside git, pins hash raw bytes, so a line-ending change stales the claim.
 |---|---|---|
 | Session start | Claude | Claims owed to your git `user.email` first (none shown if no email is set); then counts of invalid, conflicted, unpinned, unanchored, stale, missing and owed claims and of dangling markers, with the affected areas |
 | After Bash / MCP tool calls | Claude | Only when HEAD moved (commit, merge, rebase, pull, checkout): claims newly owed to you and conflicted claim files first; then now-non-fresh claims backed by files changed anywhere in that commit range, each naming the author email and subject of the newest commit that changed its source; then markers naming no claim |
-| End of turn | The user | Problems not present at the previous end-of-turn check in this clone ("since the last check" — pre-existing ones are not repeated), separating drift from uncommitted edits to cited sources from drift that arrived another way (a pull), plus a HEAD-moved report no tool call delivered; a claim the HEAD-moved report already names in the same state is not listed twice |
+| End of turn | The user | Problems not present at the last check in this clone — a baseline first taken at session start, then replaced by each end-of-turn check ("since the last check" — pre-existing ones are not repeated), separating drift from uncommitted edits to cited sources from drift that arrived another way (a pull), plus a HEAD-moved report no tool call delivered; a claim the HEAD-moved report already names in the same state is not listed twice |
 
 During an in-progress merge, rebase or cherry-pick, end of turn does not call any
 drift "your uncommitted edits". A `git pull` that stops on conflicts does not move

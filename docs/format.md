@@ -249,7 +249,7 @@ root-relative rule is skipped here; `problems()` reports it):
 
 | State | Meaning |
 |---|---|
-| `fresh` | The file exists, its current pin equals the pinned `blob`, and that pin is anchored (or anchoring is not evaluated). |
+| `fresh` | The file exists, its current pin equals the pinned `blob`, and that pin is anchored, its path is one git ignores, or anchoring is not evaluated (see "Anchoring"). |
 | `unpinned` | The source has no `blob` at all (e.g. imported, or added by hand without running `verify`). |
 | `unanchored` | The current pin equals the pinned `blob`, but inside git that content was never committed or staged at that path (see "Anchoring"). |
 | `stale` | The file exists but its current pin differs from the pinned `blob`. |

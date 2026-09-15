@@ -464,7 +464,7 @@ def build_parser():
         p.set_defaults(fn=fn)
         return p
 
-    add("init", cmd_init, "create .claimlock.toml, claims/ and a .gitignore entry")
+    add("init", cmd_init, "create .claimlock.toml, claims/, and .gitignore and .gitattributes entries")
     p = add("new", cmd_new, "scaffold an unverified claim")
     p.add_argument("id")
     p.add_argument("--area", default="unfiled")
