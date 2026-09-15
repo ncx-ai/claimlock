@@ -168,6 +168,23 @@ class ResolveAfterMerge(TmpCase):
         git(self.b, "checkout", "--theirs", "src.py")  # the pin hunk alone would be KEPT
         self.assert_left_untouched()
 
+    def test_a_hunk_spanning_evidence_into_sources_is_left(self):
+        # A real merge: both sides change the evidence ref AND re-pin, and git
+        # joins the two edits into one hunk whose sides each run from a
+        # `    ref:` line down through an identical `sources:` block. Resolving
+        # it would silently take "ours" for the evidence conflict (spec §5.3).
+        pull = self.both_verify("MAX = 2\n", "MAX = 3\n",
+                                a_edit=lambda t: t.replace("ref: suite::case", "ref: t::theirs"),
+                                b_edit=lambda t: t.replace("ref: suite::case", "ref: t::ours"))
+        self.assertNotEqual(pull.returncode, 0)
+        text = (self.b / "claims" / "c.md").read_text()
+        [h] = hunks(text.split("\n"))
+        self.assertEqual((h.ours[0], h.theirs[0]), ("    ref: t::ours", "    ref: t::theirs"),
+                         "precondition: one hunk starting in evidence")
+        self.assertIn("sources:", h.ours, "precondition: the hunk reaches into sources")
+        git(self.b, "checkout", "--ours", "src.py")  # the pins alone would be KEPT
+        self.assert_left_untouched()
+
     def test_no_identity_leaves_an_unmatched_source(self):
         self.both_verify("MAX = 2\n", "MAX = 3\n")
         git(self.b, "config", "--unset", "user.email")

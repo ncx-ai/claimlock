@@ -76,19 +76,31 @@ def _frontmatter_close(lines, inside):
 
 def _in_sources(lines, inside, close, h):
     """True only for a hunk wholly inside the frontmatter's `sources` block.
-    Confined to the frontmatter first: a body line may start with `sources:`."""
+    Confined to the frontmatter first: a body line may start with `sources:`.
+
+    Bounded at the top as well as the bottom, per side: a side that holds the
+    `sources:` line may have only blank lines before it (anything else — an
+    evidence entry's `    ref:` line, say — belongs to the field above, and
+    resolving would silently pick "ours" for that conflict), and a side that
+    does not hold it must sit under a preceding `sources:` key."""
     if close is None or h.end >= close:
         return False
     if not all(_SOURCE_LINE.match(line) for line in h.ours + h.theirs):
         return False
-    if any(line.startswith("sources:") for line in h.ours + h.theirs):
-        return True
-    j = h.start - 1
+    j, above = h.start - 1, None
     while j > 0:  # line 0 is the opening delimiter
         if j not in inside and _KEY.match(lines[j]):
-            return lines[j].startswith("sources:")
+            above = lines[j]
+            break
         j -= 1
-    return False
+    for side in (h.ours, h.theirs):
+        at = next((i for i, line in enumerate(side) if line.startswith("sources:")), None)
+        if at is None:
+            if not (above or "").startswith("sources:"):
+                return False
+        elif any(line.strip() for line in side[:at]):
+            return False
+    return True
 
 
 def _pins(text, name):
