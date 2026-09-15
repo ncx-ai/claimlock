@@ -159,16 +159,23 @@ def follow(project, cid) -> list:
     """Rewrite the path of every renamed source of `cid` to its new path,
     keeping `region`, `blob` and `hash` unchanged (spec §3.3). Works for any
     status. Refuses, file untouched: an unknown claim; a conflicted or
-    unparseable one; outside a git repository; one with no renamed sources;
-    one where a rename's target is already cited by one of its own
-    (non-renamed) sources.
+    unparseable one; a `pins:` value that is present but not a 40-hex digest
+    (already invalid — `frontmatter.rewrite` can only preserve a *string*
+    `pins:` value unchanged, never a malformed one, so this can't be carried
+    forward the way a mismatched-but-valid digest can); outside a git
+    repository; one with no renamed sources; one where two sources (renamed
+    or not) would end up citing the same new key.
 
     If the claim's `pins:` digest matched its old sources exactly, it is
-    recomputed over the new ones; otherwise (mismatched, malformed, or
-    absent) it is left exactly as it was — never invented, never dropped.
+    recomputed over the new ones; otherwise (mismatched, or absent) it is
+    left exactly as it was — never invented, never dropped.
 
     Returns [(old_key, new_key, new_state)] for each followed source, its
-    state freshly re-evaluated after the rewrite.
+    state freshly re-evaluated after the rewrite. Every `new_key` returned is
+    unique — the already-cited check below refuses before any collision
+    could reach the written sources — so looking up each one's post-rewrite
+    state in a `{key: state}` dict is safe and never collapses two distinct
+    sources onto one entry.
     """
     all_claims = C.load_claims(project)
     c = next((x for x in all_claims if x.id == cid), None)
@@ -178,29 +185,40 @@ def follow(project, cid) -> list:
         raise Refused(f"{cid} has merge conflicts — run claimlock resolve first")
     if c.parse_error:
         raise Refused(c.parse_error)
+    old_pins = c.meta.get("pins")
+    if old_pins is not None and not (isinstance(old_pins, str) and C.BLOB_RE.match(old_pins)):
+        raise Refused(f"{cid} has problems that must be fixed first (run: claimlock check)")
     if not gitio.in_git(project.root):
         raise Refused("follow needs a git repository")
     renames = C.renames_for(project, c.sources)
     renamed = [s for s in c.sources if s.path in renames]
     if not renamed:
         raise Refused(f"{cid}: no renamed sources")
-    stable_keys = {s.key for s in c.sources if s.path not in renames}
+    # Claimed keys start as every STABLE (non-renamed) source's key, then
+    # gain each renamed source's new key as it is accepted — so a second
+    # renamed source landing on a key already taken (by a stable source, or
+    # by an earlier renamed source in this same call) is caught here, before
+    # anything is written. Without tracking the latter, two sources renamed
+    # onto the same new path would both write `path: <target>` (the next
+    # `check` then reports it "listed twice") and `follow`'s own state lookup
+    # below would collapse them onto one dict entry.
+    claimed = {s.key for s in c.sources if s.path not in renames}
     new_sources, moves = [], []
     for s in c.sources:
         if s.path in renames:
             new_path, sha = renames[s.path]
             new_key = new_path if s.region is None else f"{new_path}#{s.region}"
-            if new_key in stable_keys:
+            if new_key in claimed:
                 raise Refused(f"{cid}: {new_path} is already cited")
+            claimed.add(new_key)
             new_sources.append(C.Source(new_path, s.blob, s.region, s.hash))
             moves.append((s.key, new_key))
         else:
             new_sources.append(s)
-    old_pins = c.meta.get("pins")
-    if isinstance(old_pins, str) and old_pins == C.pin_digest(c.sources):
+    if old_pins == C.pin_digest(c.sources):
         new_pins = C.pin_digest(new_sources)
     else:
-        new_pins = old_pins if isinstance(old_pins, str) else None
+        new_pins = old_pins
     text = frontmatter.rewrite(c.text, c.path.name,
                                sources=[_source_dict(s) for s in new_sources],
                                pins=new_pins)

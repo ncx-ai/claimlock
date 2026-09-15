@@ -23,6 +23,27 @@ def region_claim_text(cid, path, region, status="unverified", area="core"):
     return "\n".join(lines)
 
 
+def two_region_claim_text(cid, path1, path2, region, status="unverified", area="core"):
+    """A claim citing two region sources of the same region name, on
+    different files — for the two-renamed-onto-one-target collision test."""
+    lines = ["---", f"id: {cid}", f"area: {area}", f"status: {status}",
+             "evidence:", "  - kind: test", "    ref: s::c",
+             "sources:",
+             f"  - path: {path1}", f"    region: {region}",
+             f"  - path: {path2}", f"    region: {region}",
+             "---", "Holds.", ""]
+    return "\n".join(lines)
+
+
+MALFORMED_PINS_TEXT = "\n".join([
+    "---", "id: c", "area: core", "status: verified",
+    "evidence:", "  - kind: test", "    ref: s::c",
+    "sources:", "  - path: a.py",
+    "pins: not-a-real-digest",
+    "---", "Holds.", "",
+])
+
+
 CONFLICTED_TEXT = "\n".join([
     "---", "id: c", "area: core", "status: verified",
     "evidence:", "  - kind: test", "    ref: s::c",
@@ -268,6 +289,72 @@ class FollowRefusals(TmpCase):
         self.assertEqual(rc, 1)
         self.assertIn("c: lib/a.py is already cited", err)
         self.assertEqual((root / "claims/c.md").read_text(), before)
+
+    def test_two_whole_file_sources_renamed_onto_the_same_target_are_refused(self):
+        # Two independent renames (each detected via its OWN deleting commit's
+        # diff to HEAD) can legitimately resolve to the same new path: build
+        # it so a.py's own diff pairs with c.py, and b.py's own (separate,
+        # non-overlapping) diff independently pairs with c.py too — verified
+        # empirically (probe, 2026-09-15) that git's -M pairing picks a.py
+        # over b.py in the first diff (leaving b.py a plain D there) and
+        # cleanly pairs b.py alone in the second (a.py is already long gone
+        # by that diff's own start point).
+        root = make_repo(self.tmp / "r", use_git=True)
+        content = "one\ntwo\nthree\nfour\n"
+        write(root, "a.py", content)
+        write(root, "b.py", content)
+        write(root, "claims/c.md", claim_text("c", sources=("a.py", "b.py")))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "C1")
+        git(root, "mv", "a.py", "c.py")
+        git(root, "commit", "-qm", "C2")
+        git(root, "rm", "-q", "c.py")
+        git(root, "commit", "-qm", "C3")
+        git(root, "mv", "b.py", "c.py")
+        git(root, "commit", "-qm", "C4")
+        sha_a = git(root, "log", "-1", "--format=%H", "--diff-filter=D", "--", "a.py").strip()[:7]
+        sha_b = git(root, "log", "-1", "--format=%H", "--diff-filter=D", "--", "b.py").strip()[:7]
+        self.assertEqual(gitio.find_renames(root, ["a.py", "b.py"]),
+                         {"a.py": ("c.py", sha_a), "b.py": ("c.py", sha_b)},
+                         "precondition: both a.py and b.py must independently trace to c.py")
+        before = (root / "claims/c.md").read_text()
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("c: c.py is already cited", err)
+        self.assertEqual((root / "claims/c.md").read_text(), before)
+
+    def test_two_region_sources_renamed_onto_the_same_target_are_refused(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        content = "# claimlock:begin r1\nx\ny\n# claimlock:end r1\n"
+        write(root, "a.py", content)
+        write(root, "b.py", content)
+        write(root, "claims/c.md", two_region_claim_text("c", "a.py", "b.py", "r1"))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "C1")
+        git(root, "mv", "a.py", "c.py")
+        git(root, "commit", "-qm", "C2")
+        git(root, "rm", "-q", "c.py")
+        git(root, "commit", "-qm", "C3")
+        git(root, "mv", "b.py", "c.py")
+        git(root, "commit", "-qm", "C4")
+        before = (root / "claims/c.md").read_text()
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("c: c.py is already cited", err)
+        self.assertEqual((root / "claims/c.md").read_text(), before)
+
+    def test_malformed_pins_is_refused(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", MALFORMED_PINS_TEXT)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "init")
+        rc, out, err = run_cli(root, "follow", "c")
+        self.assertEqual(rc, 1)
+        self.assertIn("c has problems that must be fixed first (run: claimlock check)", err)
+        self.assertEqual((root / "claims/c.md").read_text(), MALFORMED_PINS_TEXT)
 
     def test_conflicted_claim(self):
         root = make_repo(self.tmp / "r", use_git=True)
