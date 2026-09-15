@@ -353,9 +353,11 @@ That's deliberate:
   tree top down to the file's directory. Changing any of them (by content, not
   timestamp) re-hashes the affected files on the next run instead of trusting a
   hash made under the old rules. Not covered: a file pulled in by a config
-  `include`, and a custom `core.attributesFile` edited in place (changing the
-  setting itself is covered); after editing one of those, delete
-  `.claimlock/cache/`.
+  `include`, a custom `core.attributesFile` edited in place (changing the
+  setting itself is covered), a system config outside `/etc` (Homebrew's or
+  Git for Windows' own `etc/gitconfig`), and a repository located by
+  `GIT_DIR` rather than a `.git` above the project; after editing one of
+  those, delete `.claimlock/cache/`.
 
 ## CI
 
@@ -386,6 +388,9 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
   `pins:` line and stays valid; its next `verify` adds one. A hand edit that
   already changed its `sources` (other than reordering them) is not caught
   until then.
+- **Upgrade everyone together, CI included.** An older claimlock reports
+  `unknown field 'pins'` on every claim this version verified, and its
+  `verify` leaves a stale `pins:` line that this version reads as invalid.
 
 ## Limits
 
@@ -406,14 +411,17 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
 - **Conflict detection scans the whole claim file.** A claim body that quotes
   both a `<<<<<<< ` line and a `>>>>>>> ` line — inside a code fence, say — reads
   as conflicted.
-- **Two re-verifications of one claim always conflict.** `verify` writes a
-  `pins:` digest of the claim's whole pin set, so a branch that re-verifies a
-  claim after changing its first source and another that re-verifies it after
-  changing its second conflict on that line, even though their `blob` lines
-  would merge cleanly — otherwise the merge would read fresh for a combination
-  of contents no single verification covered. `resolve` then keeps a side only
-  when the merged content is exactly that side's whole pin set; the combination
-  case becomes `owed`. Re-verifying identical content on both branches writes
+- **Two re-verifications of one claim conflict, or read invalid.** `verify`
+  writes a `pins:` digest of the claim's whole pin set, so a branch that
+  re-verifies a claim after changing its first source and another that
+  re-verifies it after changing its second conflict on that line, even though
+  their `blob` lines would merge cleanly — otherwise the merge would read fresh
+  for a combination of contents no single verification covered. (If one branch
+  used a claimlock without the digest, the lines can merge cleanly instead, and
+  the merged digest then fails to match: the claim is `invalid`.) `resolve`
+  keeps a side only when the merged content is exactly that side's whole pin
+  set, read from that side's own version of the claim; the combination case
+  becomes `owed`. Re-verifying identical content on both branches writes
   identical lines and does not conflict. Hand edits to `sources` other than
   reordering make the claim invalid until it is re-verified.
 - **`who` and `show` attribute by pin line.** A hand edit that only reorders

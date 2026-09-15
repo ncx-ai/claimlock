@@ -178,9 +178,11 @@ def _prune_sessions(data_dir, keep):
     a `<sid>.json.*.tmp`), one set per session, which would otherwise pile up
     forever. A session's idle time is measured from its newest file — the lock
     is touched each time it is taken and the state file on each save. Its
-    files are removed only while this process holds its lock, so a session
-    resuming at that moment is never interleaved (`_session_lock` takes the
-    lock again on a file removed under it). The current session is kept.
+    files are removed only while this process holds its lock, after checking
+    again that none has changed, so a session resuming at that moment is never
+    interleaved (`_session_lock` takes the lock again on a file removed under
+    it). Without `fcntl` (Windows) there is no lock and the check is best
+    effort. The current session is kept.
     Best effort: any error leaves the files for a later run."""
     d = data_dir / "sessions"
     try:
@@ -210,6 +212,10 @@ def _prune_sessions(data_dir, keep):
             if fcntl is not None and lock.exists():
                 f = open(lock, "a+")
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)  # OSError: in use, keep it
+                # The session may have run and saved between the scan and the
+                # lock; its files are then no longer idle.
+                if any(p.stat().st_mtime >= cutoff for p in paths if p.exists()):
+                    continue
             for p in sorted(paths, key=lambda p: p == lock):  # the lock last
                 p.unlink(missing_ok=True)
         except OSError:

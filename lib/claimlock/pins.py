@@ -100,7 +100,9 @@ class Hasher:
         self._primed = {}
         self._settings = None
         self._top = None
+        self._root_resolved = None
         self._attrs = {}
+        self._tags = {}
         if self.cache_path and self.cache_path.is_file():
             try:
                 loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
@@ -138,7 +140,12 @@ class Hasher:
         if self.mode != "git":
             return self.mode
         settings = self._git_settings()
-        parent = (self.root.resolve() / rel).parent
+        if self._root_resolved is None:
+            self._root_resolved = self.root.resolve()
+        parent = (self._root_resolved / rel).parent
+        tag = self._tags.get(parent)  # the same for every file in a directory
+        if tag is not None:
+            return tag
         try:
             parts = parent.relative_to(self._top).parts
         except ValueError:
@@ -150,7 +157,9 @@ class Hasher:
             if key not in self._attrs:
                 self._attrs[key] = _file_sig(d / ".gitattributes")
             sigs.append(self._attrs[key])
-        return "git:" + hashlib.sha1("\n".join([settings, *sigs]).encode("ascii")).hexdigest()
+        tag = "git:" + hashlib.sha1("\n".join([settings, *sigs]).encode("ascii")).hexdigest()
+        self._tags[parent] = tag
+        return tag
 
     def _cached(self, rel, st):
         e = self.cache.get(rel)

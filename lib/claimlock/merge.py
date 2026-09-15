@@ -3,13 +3,19 @@
 One side's pins are kept only when the merged working-tree content of every
 source equals that side's whole pin set (and the side's `pins:` digest, when
 it has one, matches its pins), so a kept claim is exactly what one
-verification covered. Otherwise — a source matches neither side, or the
+verification covered. A side's pin set is read from that side's own version
+of the claim (index stage 2 or 3), not from the conflicted file: lines that
+merged cleanly from the other branch appear on both sides of every hunk
+there, so a side rebuilt from it can hold pins its branch never verified.
+Without stages, only a side whose digest vouches for its pins can be kept. Otherwise — a source matches neither side, or the
 sources match pins from different sides — the claim becomes `owed` by whoever
 is merging. Conflicts anywhere else (prose, evidence, other fields) are left
 for a person, because no rule can decide them.
 """
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import claims as C
 from . import frontmatter, gitio
@@ -146,15 +152,28 @@ def resolve_claim(project, claim):
     hasher = C.open_hasher(project)
     cur = {path: hasher.blob(path, use_cache=False) if safe_source(project.root, path) else None
            for path, _ in ours}
+    merged_paths = sorted(cur)
+    rel = Path(os.path.relpath(claim.path, project.root)).as_posix()
 
-    for side_text, side, digest in ((ours_text, ours, ours_digest), (theirs_text, theirs, theirs_digest)):
-        whole = all(blob is not None and cur[path] == blob for path, blob in side)
-        if whole and (digest is None or digest == C.pin_digest(side)):
-            # A side without a digest predates it and stays without one.
-            text = frontmatter.rewrite(side_text, name, pins=digest,
-                                       sources=[{"path": p, "blob": b} for p, b in side])
-            outcome, message = "kept", "every source matches what one side verified"
-            break
+    for side_text, stage in ((ours_text, 2), (theirs_text, 3)):
+        staged = gitio.stage_text(project.root, rel, stage)
+        try:
+            side, digest = _pins(staged, name) if staged is not None else _pins(side_text, name)
+        except frontmatter.FrontmatterError:
+            continue
+        if sorted(p for p, _ in side) != merged_paths:
+            continue
+        if not all(blob is not None and cur[path] == blob for path, blob in side):
+            continue
+        if digest is not None and digest != C.pin_digest(side):
+            continue
+        if digest is None and staged is None:
+            continue  # rebuilt from the conflicted file, and nothing vouches for it
+        # A side without a digest predates it and stays without one.
+        text = frontmatter.rewrite(side_text, name, pins=digest,
+                                   sources=[{"path": p, "blob": b} for p, b in side])
+        outcome, message = "kept", "every source matches what one side verified"
+        break
     else:
         theirs_pin = dict(theirs)
         picked, unmatched = [], False

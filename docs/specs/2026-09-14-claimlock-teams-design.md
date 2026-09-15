@@ -379,8 +379,13 @@ T13. **The pin-set digest (T10) is implemented**, with these rulings on its
      pairs **sorted by path** (an unpinned source counts as `""`), so a hand
      reorder of `sources` keeps it and the ordering concern disappears.
      **Migration:** a claim without `pins:` is valid; its next `verify` writes
-     one. This does not reopen the gap, because the gap needs two
-     re-verifications and each now writes a digest line that conflicts.
+     one. A branch still running a claimlock without the digest can re-pin
+     without writing one; so that such a side cannot carry the other
+     branch's cleanly merged pins into a kept claim, `resolve` reads each
+     side's pin set from its own version of the claim (index stages 2/3),
+     and a side rebuilt from the conflicted file is kept only if its digest
+     matches. An older client cannot read `pins:` at all (unknown field), so
+     a team upgrades together.
      **Hand edits:** any other change to `sources` makes the claim invalid
      (`pins digest does not match the listed sources`) until it is
      re-verified; `verify` itself skips that check, since it is the repair.

@@ -218,6 +218,20 @@ def cat_blob(root, sha):
     return r.stdout if r is not None and r.returncode == 0 else None
 
 
+def stage_text(root, rel, stage):
+    """The text of root-relative `rel` at index stage `stage` (2 = ours, 3 =
+    theirs, during a conflicted merge, rebase or cherry-pick), with CRLF read
+    as LF; None outside git, when there is no such stage, or when it is not
+    UTF-8."""
+    r = run(root, "--literal-pathspecs", "show", f":{stage}:./{rel}")
+    if r is None or r.returncode != 0:
+        return None
+    try:
+        return r.stdout.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return None
+
+
 def _lines(out):
     return [l for l in (out or "").splitlines() if l]
 

@@ -2,6 +2,7 @@
 writes a `pins:` digest of the whole pin set, so two branches that re-verify
 different sources of one claim conflict instead of merging into a combination
 nobody verified (teams spec T10, implemented as T13)."""
+import re
 import shutil
 import subprocess
 import unittest
@@ -144,6 +145,28 @@ class ReverificationsOnTwoBranches(TmpCase):
         git(self.ben, "add", "-A")
         rc, out, _ = run_cli(self.ben, "check")
         self.assertNotIn("INVALID", out)
+
+    def test_a_side_without_a_digest_cannot_smuggle_in_a_combination(self):
+        # Ben's branch still runs a claimlock that writes no `pins:` line. His
+        # re-pin of b.py sits next to Amy's new digest line, so the merge
+        # conflicts there, while Amy's a.py pin merges cleanly into BOTH
+        # conflict sides. Read from the conflicted file, Ben's side looks like
+        # a whole pin set matching the merged content; only his real version
+        # (index stage 3) shows he never verified A2.
+        def legacy_repin(text):
+            old = re.search(r"  - path: b.py\n    blob: ([0-9a-f]{40})", text).group(1)
+            return re.sub(r"\npins: [0-9a-f]{40}", "", text).replace(old, blob_of_bytes(b"B2\n"))
+
+        self.reverify(self.amy, "a.py", "A2\n", push=True)
+        write(self.ben, "b.py", "B2\n")
+        _edit(self.ben, legacy_repin)
+        git(self.ben, "commit", "-qam", "legacy re-pin")
+        self.assertNotEqual(self.pull_ben().returncode, 0, "precondition: the claim conflicts")
+        self.assertEqual(((self.ben / "a.py").read_text(), (self.ben / "b.py").read_text()), ("A2\n", "B2\n"))
+        rc, out, err = run_cli(self.ben, "resolve")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("OWED", out)
+        self.assertIn("status: owed", _claim(self.ben))
 
     def test_content_equal_to_one_whole_side_is_kept(self):
         self.reverify(self.amy, "a.py", "A2\n", push=True)
