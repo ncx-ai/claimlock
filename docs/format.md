@@ -610,8 +610,9 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
    paths (`could not list changes since <merge-base> (git failed)`) — never an
    empty scope that would pass.
 
-`check --json` prints one object: `claims`, `sources_hashed`, `counts` (the
-five blocking counts, `renamed` included), `scope` (sorted in-scope ids, or
+`check --json` prints one object: `claims`, `sources_hashed`, `counts` (six
+blocking counts: `invalid`, `unpinned`, `unanchored`, `stale`, `missing`,
+`renamed`), `scope` (sorted in-scope ids, or
 `null` without `--changed`), and `results`, one per claim, with `id`, `area`,
 `status`, `problems`, `state`, `sources` (`path` — the source's **key**,
 `path` or `path#region` — and `state`; a `renamed` entry gains
