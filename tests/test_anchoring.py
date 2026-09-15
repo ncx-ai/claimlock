@@ -1,6 +1,7 @@
 """A pin is anchored when every clone can recover its content from git:
 it appears at that path in a reachable commit, or it is staged right now."""
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -189,6 +190,23 @@ class Anchoring(TmpCase):
         write(root, "claims/c.md", claim_text("c", sources=("src/[id].ts",)))
         rc, _, err = run_cli(root, "verify", "c")
         self.assertEqual(rc, 0, err)
+        self.assertEqual(state_of(root), "unanchored")
+
+    def test_a_symlinked_source_anchors_at_its_target(self):
+        # A pin hashes the link target's content; git stores the link text at
+        # the link's path, so that content is anchored only at the target path.
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "real.py", "one\n")
+        os.symlink("real.py", root / "link.py")
+        write(root, "claims/c.md", claim_text("c", sources=("link.py",)))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        self.assertEqual(state_of(root), "fresh")
+        # Control: the target anchors real content, it is not an exemption.
+        write(root, "real.py", "two\n")  # uncommitted and unstaged
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
         self.assertEqual(state_of(root), "unanchored")
 
     def test_diff_explains_an_unanchored_pin(self):

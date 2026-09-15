@@ -6,12 +6,13 @@ the other.
 """
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import frontmatter, gitio
 from .pins import Hasher
-from .project import safe_source
+from .project import is_within, safe_source
 
 STATUSES = ("verified", "unverified", "refuted", "owed")
 KINDS = ("test", "measurement", "source", "run")
@@ -266,7 +267,8 @@ def anchors_for(project, sources):
     if gitio.root_is_ignored(project.root):
         return None
     valid = [s for s in sources if safe_source(project.root, s.path) is not None]
-    paths = sorted({s.path for s in valid})
+    cited = {s.path for s in valid}
+    paths = sorted(cited | _symlink_targets(project.root, cited))
     if not paths:
         return Anchors(set(), set())
     blobs = gitio.anchored_blobs(project.root, paths)
@@ -277,6 +279,30 @@ def anchors_for(project, sources):
     if ignored is None:
         ignored = set()
     return Anchors(blobs, ignored)
+
+
+def _symlink_targets(root, rels):
+    """Root-relative paths of the regular files that cited symlinks resolve to,
+    when those files lie inside the root. A pin hashes a symlink's target
+    content, while git stores the link text at the link's own path — so that
+    content can only ever be anchored at the target's path. Plain `lstat` and
+    `resolve`, no git; a link escaping the root is already refused by
+    `safe_source`, and one that is dangling or names a non-file adds nothing."""
+    base = Path(root).resolve()
+    out = set()
+    for rel in rels:
+        p = Path(root) / rel
+        try:
+            if not stat.S_ISLNK(os.lstat(p).st_mode):
+                continue
+            target = p.resolve(strict=True)
+            if not stat.S_ISREG(os.stat(target).st_mode):
+                continue
+        except (OSError, RuntimeError):
+            continue
+        if is_within(target, base):
+            out.add(target.relative_to(base).as_posix())
+    return out
 
 
 def freshness(claim, project, hasher, anchors=None, as_status=None):
