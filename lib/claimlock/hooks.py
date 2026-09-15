@@ -321,9 +321,11 @@ def head_check(project, st):
 
 
 class _HeadReport(str):
-    """The HEAD-moved message, already cut to LIMIT, carrying which claim ids
-    and `path:id` markers survived that cut, so Stop does not name them a
-    second time — and never suppresses one nobody saw."""
+    """The HEAD-moved message, already cut to LIMIT, carrying the `(kind, id)`
+    pairs that survived that cut — kind is the survey bucket ("stale",
+    "owed", "conflicted", "dangling", …) and id a claim id or `path:id`
+    marker — so Stop does not repeat them in that same bucket, and never
+    suppresses one nobody saw, nor one shown only under another kind."""
     named = frozenset()
 
 
@@ -334,34 +336,34 @@ def _cap(text, n):
 def _head_report(old, new, hit, dangling, owed_new=(), conflicted=()):
     # Ordered by what a reader must not miss: hand-offs and conflicts come
     # before the attribution list, whose subjects make it the long part.
-    pieces = []  # (text, the id or marker it names, or None)
+    pieces = []  # (text, the (kind, id) it names, or None)
 
     def add(text, name=None):
         pieces.append((text, name))
 
-    def names(items, limit):
+    def names(items, limit, kind):
         for i, x in enumerate(items[:limit]):
             if i:
                 add(", ")
-            add(x, x)
+            add(x, (kind, x))
         if len(items) > limit:
             add("…")
 
     add(f"claimlock: HEAD moved {(old or 'none')[:7]}→{new[:7]} (a commit, merge, rebase, pull or checkout).")
     if owed_new:
         add(" Now owed to you: ")
-        names(owed_new, 10)
+        names(owed_new, 10, "owed")
         add(".")
     if conflicted:
         add(f" {len(conflicted)} claim file(s) have merge conflicts (")
-        names(conflicted, 5)
+        names(conflicted, 5, "conflicted")
         add(") — run `claimlock resolve`.")
     if hit:
         add(f" Files changed in that range back {len(hit)} claim(s) that are no longer fresh: ")
         for i, (cid, state, src, w) in enumerate(hit[:10]):
             if i:
                 add("; ")
-            add(cid, cid)
+            add(cid, (state, cid))
             if w:
                 email = _cap(w[1], EMAIL_CAP) or "unknown"
                 add(f' ({state}): {src} changed by {email} in {w[0]} "{_cap(w[2], SUBJECT_CAP)}"')
@@ -370,7 +372,7 @@ def _head_report(old, new, hit, dangling, owed_new=(), conflicted=()):
         add(("…" if len(hit) > 10 else "") + ".")
     if dangling:
         add(" Markers naming no claim: ")
-        names(dangling, 10)
+        names(dangling, 10, "dangling")
         add(".")
     add(" Re-check each with `claimlock diff <id>`; `claimlock verify <id>` only after re-checking.")
     named, end = set(), 0
@@ -418,13 +420,11 @@ def stop(project, payload, data_dir):
     # baseline gains the key below.
     new = {k: ([x for x in v if x not in set(base[k])] if k in base else []) for k, v in s.items()}
     head_msg = head_check(project, st)
-    st["baseline"] = s
-    _save_state(path, st)
     # "Since the last check", not "this session": drift that arrived by
     # `git pull` is new to this baseline too. Anything the HEAD-moved report
-    # below already names is not repeated here.
+    # already names under the same kind is not repeated here.
     named = getattr(head_msg, "named", frozenset())
-    new = {k: [x for x in v if x not in named] for k, v in new.items()}
+    new = {k: [x for x in v if (k, x) not in named] for k, v in new.items()}
     # Drift whose cited source you have edited but not committed is yours;
     # the rest arrived some other way (a pull, a tool, another process).
     # Mid-merge/rebase/cherry-pick, the working tree differs from HEAD because
@@ -440,25 +440,52 @@ def stop(project, payload, data_dir):
             (yours if mine else others).setdefault(kind, []).append(item)
     # The HEAD report goes first: it is already within LIMIT, so everything its
     # `named` suppressed from the lines below is visible in the final message.
-    parts = [head_msg] if head_msg else []
-    if yours:
-        parts.append("claimlock: from your uncommitted edits, "
-                     + "; ".join(_since_phrase(k, v) for k, v in yours.items())
-                     + ". Inspect with `claimlock diff <id>`.")
-    if others:
-        parts.append("claimlock: since the last check, "
-                     + "; ".join(_since_phrase(k, v) for k, v in others.items())
-                     + ". Inspect with `claimlock diff <id>` or `claimlock refs`.")
-    return {"systemMessage": "\n".join(parts)[:LIMIT]} if parts else None
+    pieces = [(str(head_msg), None)] if head_msg else []
+    for lead, groups, tail in (
+            ("claimlock: from your uncommitted edits, ", yours, ". Inspect with `claimlock diff <id>`."),
+            ("claimlock: since the last check, ", others,
+             ". Inspect with `claimlock diff <id>` or `claimlock refs`.")):
+        if not groups:
+            continue
+        if pieces:
+            pieces.append(("\n", None))
+        pieces.append((lead, None))
+        for i, (kind, items) in enumerate(groups.items()):
+            if i:
+                pieces.append(("; ", None))
+            pieces.extend(_since_pieces(kind, items))
+        pieces.append((tail, None))
+    shown, end = set(), 0
+    for text, key in pieces:
+        end += len(text)
+        if key is not None and end <= LIMIT:
+            shown.add(key)
+    # Carry forward what the message did not show — cut by LIMIT, or only
+    # counted past a phrase's first five — by keeping it out of the baseline,
+    # so the next Stop reports it again. Built before the state is saved.
+    unshown = {(k, x) for groups in (yours, others) for k, items in groups.items() for x in items} - shown
+    st["baseline"] = {k: [x for x in v if (k, x) not in unshown] for k, v in s.items()}
+    _save_state(path, st)
+    text = "".join(text for text, _ in pieces)[:LIMIT]
+    return {"systemMessage": text} if text else None
 
 
-def _since_phrase(kind, items):
-    shown = ", ".join(items[:5]) + ("…" if len(items) > 5 else "")
+def _since_pieces(kind, items):
+    """One "N claims became <kind> (a, b, …)" phrase as (text, (kind, id) | None)
+    pieces: the first five ids are listed, the rest only counted."""
     n = len(items)
     if kind == "dangling":
-        return f"{n} dangling marker{'' if n == 1 else 's'} appeared ({shown})"
+        head = f"{n} dangling marker{'' if n == 1 else 's'} appeared ("
+    else:
+        head = f"{n} claim{'' if n == 1 else 's'} became {kind} ("
+    out = [(head, None)]
+    for i, x in enumerate(items[:5]):
+        if i:
+            out.append((", ", None))
+        out.append((x, (kind, x)))
     tail = " — run `claimlock resolve`" if kind == "conflicted" else ""
-    return f"{n} claim{'' if n == 1 else 's'} became {kind} ({shown}){tail}"
+    out.append((("…" if n > 5 else "") + ")" + tail, None))
+    return out
 
 
 def post_tool_use(project, payload, data_dir):

@@ -256,14 +256,44 @@ class Stop(HookCase):
         for n in range(100, 400):
             hit = [(f"h{i}-{'x' * n}", "stale", "x.py", None) for i in range(10)]
             report = hooks_mod._head_report("a" * 40, "b" * 40, hit, [])
-            if max(report.index(x) + len(x) for x in report.named) > hooks_mod.LIMIT - 60:
+            if max(report.index(x) + len(x) for _, x in report.named) > hooks_mod.LIMIT - 60:
                 break
         else:
             self.fail("no report ends near LIMIT")
         with mock.patch("claimlock.hooks.head_check", return_value=report):
             msg = self.hook_inprocess(root, "stop")["systemMessage"]
         self.assertEqual(len(msg), 2000)  # precondition: the parts together were cut
-        self.assertEqual([x for x in sorted(report.named) if x not in msg], [])
+        self.assertEqual([x for _, x in sorted(report.named) if x not in msg], [])
+
+    def test_an_item_beyond_the_listed_five_is_reported_again_until_shown(self):
+        # A phrase lists 5 ids and only counts the rest; those were not shown,
+        # so the baseline must not absorb them.
+        root = self.store()
+        ids = [f"s{i}" for i in range(7)]
+        for cid in ids:
+            write(root, f"claims/{cid}.md", claim_text(cid, sources=("a.py",)))
+        self.assertEqual(run_cli(root, "verify", *ids)[0], 0)
+        self.hook(root, "session-start")
+        write(root, "a.py", "two!\n")  # c and s0..s6 go stale
+        first = self.hook(root, "stop")["systemMessage"]
+        self.assertIn("8 claims became stale (c, s0, s1, s2, s3…)", first)
+        second = (self.hook(root, "stop") or {}).get("systemMessage", "")
+        self.assertIn("3 claims became stale (s4, s5, s6)", second)
+        self.assertIsNone(self.hook(root, "stop"))
+
+    @NEED_GIT
+    def test_suppression_is_per_kind(self):
+        # An owed claim has no freshness state, so one real claim cannot be
+        # both owed and stale; the report is patched to name "c" only as owed
+        # while c is stale from an uncommitted edit.
+        root = self.store(use_git=True)
+        self.hook_inprocess(root, "session-start")
+        write(root, "a.py", "two!\n")
+        report = hooks_mod._head_report("a" * 40, "b" * 40, [], [], ["c"])
+        self.assertEqual(report.named, frozenset([("owed", "c")]))
+        with mock.patch("claimlock.hooks.head_check", return_value=report):
+            msg = self.hook_inprocess(root, "stop")["systemMessage"]
+        self.assertIn("from your uncommitted edits, 1 claim became stale (c)", msg)
 
     def test_a_baseline_from_before_owed_and_conflicted_reports_neither_once(self):
         root = self.store()
@@ -491,9 +521,10 @@ class HeadReportText(unittest.TestCase):
         text = hooks_mod._head_report("a" * 40, "b" * 40, hit, [], ["owed-one"], ["conf-one"])
         self.assertEqual(len(text), 2000)
         self.assertTrue(text.index("owed-one") < text.index("conf-one") < text.index("id-00"))
-        visible = frozenset(x for x in ["owed-one", "conf-one"] + [h[0] for h in hit] if x in text)
-        self.assertIn(hit[0][0], visible)
-        self.assertNotIn(hit[9][0], visible)
+        pairs = [("owed", "owed-one"), ("conflicted", "conf-one")] + [("stale", h[0]) for h in hit]
+        visible = frozenset(pair for pair in pairs if pair[1] in text)
+        self.assertIn(("stale", hit[0][0]), visible)
+        self.assertNotIn(("stale", hit[9][0]), visible)
         self.assertEqual(text.named, visible)
 
 
@@ -665,6 +696,56 @@ class TeamHooks(HookCase):
         msg = self.hook(self.b, "stop")["systemMessage"]
         self.assertIn("since the last check, 1 claim became stale (c)", msg)
         self.assertNotIn("from your uncommitted edits", msg)
+
+    def test_stop_during_a_revert_does_not_blame_your_edits(self):
+        write(self.b, "src.py", "MAX = 2\n")
+        write(self.b, "notes.txt", "one\n")
+        git(self.b, "add", "-A")
+        git(self.b, "commit", "-qm", "two")
+        write(self.b, "src.py", "MAX = 3\n")
+        write(self.b, "notes.txt", "two\n")
+        self.assertEqual(run_cli(self.b, "verify", "c")[0], 0)
+        git(self.b, "add", "-A")
+        git(self.b, "commit", "-qm", "three")
+        to_revert = git(self.b, "rev-parse", "HEAD").strip()
+        write(self.b, "notes.txt", "three\n")
+        git(self.b, "commit", "-qam", "notes")
+        self.hook(self.b, "session-start")  # c fresh
+        r = subprocess.run(["git", "revert", "--no-edit", to_revert], cwd=self.b, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0, "precondition: notes.txt conflicts")
+        self.assertEqual((self.b / "src.py").read_text(), "MAX = 2\n", "precondition: src.py reverted cleanly")
+        self.assertTrue((self.b / ".git" / "REVERT_HEAD").exists(), "precondition: a revert is in progress")
+        msg = self.hook(self.b, "stop")["systemMessage"]
+        self.assertIn("since the last check, 1 claim became stale (c)", msg)
+        self.assertNotIn("from your uncommitted edits", msg)
+
+    def test_stop_carries_forward_drift_it_could_not_show(self):
+        deep = "src/" + "deep-directory/" * 3
+        ids = [f"c{i:02d}" for i in range(12)]
+        for i, cid in enumerate(ids):
+            write(self.a, f"{deep}s{i:02d}.py", "V = 1\n")
+            write(self.a, f"claims/{cid}.md", claim_text(cid, sources=(f"{deep}s{i:02d}.py",)))
+        write(self.a, "mine.py", "M = 1\n")
+        write(self.a, "claims/mine.md", claim_text("mine", sources=("mine.py",)))
+        self.assertEqual(run_cli(self.a, "verify", *ids, "mine")[0], 0)
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "claims")
+        self.push_a()
+        self.assertEqual(self.pull_b().returncode, 0)
+        self.hook(self.b, "session-start")
+        write(self.b, "mine.py", "M = 2\n")  # uncommitted
+        for i in range(12):
+            write(self.a, f"{deep}s{i:02d}.py", "V = 2\n")
+        git(self.a, "commit", "-qam", "S" * 90)
+        self.push_a()
+        self.assertEqual(self.pull_b().returncode, 0)
+        first = self.hook(self.b, "stop")["systemMessage"]
+        self.assertEqual(len(first), 2000)
+        self.assertNotIn("(mine)", first, "precondition: the HEAD report crowds out Stop's own line")
+        second = (self.hook(self.b, "stop") or {}).get("systemMessage", "")
+        self.assertIn("from your uncommitted edits, 1 claim became stale (mine)", second)
+        third = (self.hook(self.b, "stop") or {}).get("systemMessage", "")
+        self.assertNotIn("mine", third)
 
 
 @NEED_GIT

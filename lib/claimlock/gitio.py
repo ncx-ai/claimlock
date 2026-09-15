@@ -263,10 +263,13 @@ def range_log(root, old, new):
 
 
 def operation_in_progress(root) -> bool:
-    """True while a merge, rebase or cherry-pick is stopped mid-way: its
-    working-tree changes are git's, not the person's own edits."""
+    """True while a merge, rebase, cherry-pick, revert or `git am` is stopped
+    mid-way: its working-tree changes are git's, not the person's own edits.
+    `rebase-apply` / `rebase-merge` are directories, present for the whole
+    of an in-progress `am` or rebase."""
     args = []
-    for name in ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD"):
+    for name in ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+                 "rebase-apply", "rebase-merge"):
         args += ["--git-path", name]
     out = _text(run(root, "rev-parse", *args))
     if out is None:
