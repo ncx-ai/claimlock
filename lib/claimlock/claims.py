@@ -279,12 +279,16 @@ def anchors_for(project, sources):
     return Anchors(blobs, ignored)
 
 
-def freshness(claim, project, hasher, anchors=None):
+def freshness(claim, project, hasher, anchors=None, as_status=None):
     """(state, [(path, state)]) for a verified claim; (None, []) otherwise.
 
     Worst source wins: missing > stale > unanchored > unpinned > fresh.
+    `as_status="verified"` evaluates a claim's pins as if it were verified —
+    `diff` and `show` pass it for an `owed` claim, whose pins are kept
+    exactly so the hand-off recipient can see what moved. `evaluate` never
+    does: an owed claim has no freshness verdict in `check` or the hooks.
     """
-    if claim.parse_error or claim.conflicted or claim.status != "verified":
+    if claim.parse_error or claim.conflicted or (as_status or claim.status) != "verified":
         return None, []
     per = []
     for s in claim.sources:

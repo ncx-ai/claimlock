@@ -110,11 +110,26 @@ def _print_failing(r):
         print(f"         {HINT[r.state].format(id=r.claim.id)}")
 
 
-def _owed_line(project, r):
+def _owed_line(project, r, state=None):
     since = r.claim.owed_since or "?"
     behind = gitio.commits_behind(project.root, since) if since not in ("?", "none") else None
     ago = "" if behind is None else f", {behind} commit{'' if behind == 1 else 's'} ago"
-    return f"OWED     {r.claim.id} → {r.claim.owed_by} since {since}{ago}"
+    note = f" ({state})" if state in C.NON_FRESH else ""
+    return f"OWED     {r.claim.id} → {r.claim.owed_by} since {since}{ago}{note}"
+
+
+def _owed_states(project, hasher, owed):
+    """{id: worst source state} for owed claims, their pins evaluated as if
+    verified (the same evaluation `diff` and `show` use). Listing only: an
+    owed claim never blocks and carries no verdict in `evaluate`."""
+    if not owed:
+        return {}
+    sources = [s for r in owed for s in r.claim.sources if P.safe_source(project.root, s.path) is not None]
+    hasher.prime([s.path for s in sources])
+    anchors = C.anchors_for(project, sources)
+    out = {r.claim.id: C.freshness(r.claim, project, hasher, anchors, as_status="verified")[0] for r in owed}
+    hasher.save()
+    return out
 
 
 def cmd_check(args):
@@ -156,6 +171,7 @@ def cmd_check(args):
             } for r in results],
         }, indent=2))
     else:
+        owed_states = _owed_states(project, hasher, owed)
         for r in blocking:
             _print_failing(r)
         if elsewhere:
@@ -163,7 +179,7 @@ def cmd_check(args):
             for r in elsewhere:
                 print(f"  {r.claim.id}: {'invalid' if r.problems else r.state}")
         for r in owed:
-            print(_owed_line(project, r))
+            print(_owed_line(project, r, owed_states.get(r.claim.id)))
         summary = ", ".join(f"{v} {k}" for k, v in counts.items())
         if owed:
             summary += f", {len(owed)} owed"
@@ -258,6 +274,11 @@ def cmd_show(args):
             if isinstance(e, dict):
                 print(f"  [{e.get('kind')}] {e.get('ref')}")
     states = dict(r.per_source)
+    if _pins_status(c) and not r.problems:
+        _, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources),
+                             as_status=_pins_status(c))
+        hasher.save()
+        states = dict(per)
     if c.sources:
         print("Sources (a change here makes this claim stale):")
         in_git = gitio.in_git(project.root)
@@ -356,10 +377,11 @@ def cmd_diff(args):
         print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
         return 1
     hasher = C.open_hasher(project)
-    state, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources))
+    state, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources),
+                             as_status=_pins_status(c))
     hasher.save()
     if state is None:
-        print(f"claimlock: {c.id} is {c.status}; only verified claims have pins")
+        print(f"claimlock: {c.id} is {c.status}; only verified or owed claims have pins")
         return 0
     if state == "fresh":
         print(f"claimlock: {c.id} is fresh — every source matches its pin")
@@ -390,11 +412,25 @@ def cmd_diff(args):
             # A warm stat cache can report `stale` without reading the file.
             print(f"--- {path}: cannot be read ({e.strerror or e})")
             continue
-        sys.stdout.writelines(difflib.unified_diff(
-            old.decode("utf-8", "replace").splitlines(keepends=True),
-            new.decode("utf-8", "replace").splitlines(keepends=True),
-            fromfile=f"{path} @ {pins[path][:12]} (verified)", tofile=f"{path} (now)"))
+        # Compared as lines without their endings: git serves the pinned blob
+        # normalized (LF) while a core.autocrlf=true checkout holds CRLF, and
+        # comparing with the endings kept marks every line changed.
+        old_lines = old.decode("utf-8", "replace").splitlines()
+        new_lines = new.decode("utf-8", "replace").splitlines()
+        if old_lines == new_lines:
+            if old != new:
+                print(f"--- {path}: only line endings differ from the pinned content")
+            continue
+        print("\n".join(difflib.unified_diff(
+            old_lines, new_lines, fromfile=f"{path} @ {pins[path][:12]} (verified)",
+            tofile=f"{path} (now)", lineterm="")))
     return 0
+
+
+def _pins_status(claim):
+    """The status to evaluate a claim's pins as, for `diff` and `show`: an owed
+    claim's pins are what was last verified, so they read as if verified."""
+    return "verified" if claim.status == "owed" else None
 
 
 def cmd_refs(args):

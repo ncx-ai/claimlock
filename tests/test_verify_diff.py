@@ -1,7 +1,8 @@
+import json
 import shutil
 import unittest
 
-from helpers import TmpCase, claim_text, git, make_repo, run_cli, write
+from helpers import TmpCase, claim_text, clone, git, init_bare, make_repo, run_cli, write
 from claimlock.pins import blob_of_bytes
 
 NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
@@ -68,6 +69,93 @@ class Diff(TmpCase):
         rc, out, _ = run_cli(root, "diff", "c")
         self.assertIn("a.py: does not exist or cannot be read", out)
         self.assertEqual(run_cli(root, "diff", "nope")[0], 1)
+
+
+@NEED_GIT
+class OwedDiff(TmpCase):
+    """Spec §4.1 / T12: an owed claim keeps its pins, so `diff` and `show`
+    evaluate them as if verified — the hand-off recipient needs exactly that."""
+
+    def setUp(self):
+        super().setUp()
+        root = self.root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "a.py", "one\n")
+        write(root, "claims/c.md", verifiable("c"))
+        self.assertEqual(run_cli(root, "verify", "c")[0], 0)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        write(root, "a.py", "two\n")
+        git(root, "commit", "-qam", "two")
+        self.assertEqual(run_cli(root, "owe", "c", "--to", "bob@example.com")[0], 0)
+
+    def test_diff_shows_what_moved_in_an_owed_claim(self):
+        rc, out, err = run_cli(self.root, "diff", "c")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("-one", out)
+        self.assertIn("+two", out)
+        self.assertNotIn("only verified", out)
+
+    def test_show_lists_per_source_state_of_an_owed_claim(self):
+        rc, out, _ = run_cli(self.root, "show", "c")
+        self.assertEqual(rc, 0)
+        self.assertIn("a.py — stale (", out)
+
+    def test_check_owed_line_carries_the_worst_source_state(self):
+        rc, out, _ = run_cli(self.root, "check")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"OWED     c → bob@example\.com since [0-9a-f]{7}, 0 commits ago \(stale\)\n")
+        (self.root / "a.py").unlink()
+        rc, out, _ = run_cli(self.root, "check")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"OWED     c → bob@example\.com since [0-9a-f]{7}, 0 commits ago \(missing\)\n")
+
+    def test_a_fresh_owed_claim_line_has_no_annotation(self):
+        write(self.root, "a.py", "one\n")  # back to the pinned content
+        rc, out, _ = run_cli(self.root, "check")
+        self.assertRegex(out, r"OWED     c → bob@example\.com since [0-9a-f]{7}, 0 commits ago\n")
+        rc, out, _ = run_cli(self.root, "check", "--json")
+        self.assertIsNone(json.loads(out)["results"][0]["state"], "evaluate gives owed no verdict")
+
+
+@NEED_GIT
+class DiffLineEndings(TmpCase):
+    def test_autocrlf_checkout_diffs_only_the_edited_line(self):
+        bare = init_bare(self.tmp / "o.git")
+        a = clone(bare, self.tmp / "a", "amy@example.com", "core.autocrlf=false")
+        write(a, ".gitignore", ".claimlock/\n")
+        write(a, ".claimlock.toml", "")
+        write(a, "a.py", "l1\nl2\nl3\nl4\nl5\n")
+        write(a, "claims/c.md", verifiable("c"))
+        self.assertEqual(run_cli(a, "verify", "c")[0], 0)
+        git(a, "add", "-A")
+        git(a, "commit", "-qm", "c")
+        git(a, "push", "-q", "origin", "main")
+        b = clone(bare, self.tmp / "b", "ben@example.com", "core.autocrlf=true")
+        self.assertIn(b"\r\n", (b / "a.py").read_bytes(), "precondition: a CRLF checkout")
+        (b / "a.py").write_bytes(b"l1\r\nl2\r\nL3\r\nl4\r\nl5\r\n")
+        rc, out, err = run_cli(b, "diff", "c")
+        self.assertEqual(rc, 0, err)
+        body = [l for l in out.splitlines() if not l.startswith(("---", "+++", "@@"))]
+        self.assertEqual([l for l in body if l.startswith("-")], ["-l3"], out)
+        self.assertEqual([l for l in body if l.startswith("+")], ["+L3"], out)
+
+    def test_a_line_ending_only_change_says_so(self):
+        # No conversion applies (core.autocrlf=false, no attributes), so the
+        # pin is the raw bytes — the same hash raw mode computes — and a
+        # CRLF-only rewrite reads stale. Outside git `diff` has no prior
+        # content at all, so this is the reachable form of that case.
+        root = make_repo(self.tmp / "r", use_git=True)
+        git(root, "config", "core.autocrlf", "false")
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "a.py", "one\ntwo\n")
+        write(root, "claims/c.md", verifiable("c"))
+        run_cli(root, "verify", "c")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        (root / "a.py").write_bytes(b"one\r\ntwo\r\n")
+        rc, out, _ = run_cli(root, "diff", "c")
+        self.assertEqual(out, "--- a.py: only line endings differ from the pinned content\n")
 
 
 @NEED_GIT
