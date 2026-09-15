@@ -143,7 +143,11 @@ def cmd_check(args):
         if base is None:
             print(f"claimlock: cannot find a merge base between {args.changed!r} and HEAD", file=sys.stderr)
             return 2
-        changed = set(gitio.changed_since(project.root, base))
+        listed = gitio.changed_since(project.root, base)
+        if listed is None:
+            print(f"claimlock: could not list changes since {base} (git failed)", file=sys.stderr)
+            return 2
+        changed = set(listed)
         scope = {r.claim.id for r in results
                  if _rel(project, r.claim.path) in changed or any(s.path in changed for s in r.claim.sources)}
 

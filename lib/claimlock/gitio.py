@@ -162,9 +162,12 @@ def merge_base(root, base):
 
 
 def changed_since(root, commit):
-    """Paths changed by commits in commit..HEAD, relative to (and limited to) `root`."""
+    """Paths changed by commits in commit..HEAD, relative to (and limited to)
+    `root`: [] for a genuinely empty range, None when git fails. The gate must
+    tell those apart — an empty scope passes, so a failure read as [] would
+    pass a change nobody looked at."""
     out = _text(run(root, "diff", "--name-only", "--relative", "--no-renames", commit, "HEAD"))
-    return _lines(out) if out is not None else []
+    return _lines(out) if out is not None else None
 
 
 def verifier(root, claim_rel, blob):

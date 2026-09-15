@@ -1,10 +1,14 @@
+import contextlib
+import io
 import json
 import os
 import re
 import shutil
 import unittest
+import unittest.mock as mock
 
 from helpers import TmpCase, claim_text, git, make_repo, run_cli, write
+from claimlock import cli, gitio
 
 NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
 NO_IDENTITY = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -77,6 +81,25 @@ class ScopedGate(TmpCase):
         self.assertEqual(data["scope"], ["c1"])
         self.assertEqual((by_id["c1"]["in_scope"], by_id["c1"]["blocking"]), (True, True))
         self.assertEqual((by_id["c2"]["in_scope"], by_id["c2"]["blocking"]), (False, False))
+
+    def test_a_git_failure_listing_changes_is_exit_2(self):
+        # merge-base succeeds; the `git diff` that lists the changes fails (a
+        # timeout on a very large range, say). An empty scope would pass.
+        write(self.root, "src1.py", "ONE\n")
+        git(self.root, "commit", "-qam", "change src1")  # a working gate blocks on this
+        real = gitio.run
+
+        def diff_fails(root, *args):
+            return None if args and args[0] == "diff" else real(root, *args)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(gitio, "run", diff_fails), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["-C", str(self.root), "check", "--changed", "main"])
+        self.assertEqual(rc, 2, out.getvalue() + err.getvalue())
+        self.assertIn("claimlock: could not list changes since ", err.getvalue())
+        self.assertIn("(git failed)", err.getvalue())
+        self.assertEqual(out.getvalue(), "", "nothing that reads as a pass")
 
     def test_bad_base_is_exit_2(self):
         rc, _, err = run_cli(self.root, "check", "--changed", "no-such-ref")
