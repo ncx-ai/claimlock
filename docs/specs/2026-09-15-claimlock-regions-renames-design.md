@@ -34,6 +34,7 @@ may nest or overlap. Extraction of one name fails, with a reason, when:
 - a second `begin` for it — `region '<name>' begins more than once`
 - no `end` after its `begin` — `region '<name>' has no end marker`
 - an `end` before any `begin` — `region '<name>' ends before it begins`
+- a second `end` for it, with no matching second `begin` — `region '<name>' ends more than once`
 - the file is not valid UTF-8 — `not UTF-8, so regions cannot be read`
 
 A failed extraction reads the source `missing` (with the reason in `diff` and

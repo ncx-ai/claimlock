@@ -176,7 +176,7 @@ def cmd_check(args):
             "results": [{
                 "id": r.claim.id, "area": r.claim.area, "status": r.claim.status,
                 "problems": r.problems, "state": r.state,
-                "sources": [{"path": p, "state": s} for p, s in r.per_source],
+                "sources": [{"path": key, "state": state} for key, state in r.per_source],
                 "in_scope": in_scope(r), "blocking": r.claim.id in blocking_ids,
                 "owed_by": r.claim.owed_by,
             } for r in results],
@@ -225,8 +225,8 @@ def cmd_stale(args):
             print(f"{r.claim.id}\t{r.claim.area}\towed\t{r.claim.owed_by}")
         elif owner is None and r.state in C.NON_FRESH:
             rc = 1
-            paths = ",".join(p for p, s in r.per_source if s != "fresh")
-            print(f"{r.claim.id}\t{r.claim.area}\t{r.state}\t{paths}")
+            keys = ",".join(key for key, state in r.per_source if state != "fresh")
+            print(f"{r.claim.id}\t{r.claim.area}\t{r.state}\t{keys}")
     return rc
 
 

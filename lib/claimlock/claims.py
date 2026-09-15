@@ -262,7 +262,7 @@ def problems(claim, project, *, as_status=None, digest=True):
         out.append("'sources' must be a list")
     seen = set()
     for e in src if isinstance(src, list) else []:
-        region = None
+        region = raw_region = None
         if isinstance(e, str):
             path = e
         elif isinstance(e, dict) and isinstance(e.get("path"), str):
@@ -294,10 +294,14 @@ def problems(claim, project, *, as_status=None, digest=True):
             continue
         if safe_source(project.root, path) is None:
             out.append(f"source path {path!r} must be relative and stay inside the project root")
-        key = path if region is None else f"{path}#{region}"
-        if key in seen:
-            out.append(f"source {key!r} is listed twice")
-        seen.add(key)
+        # Keyed by the raw region value, not the validated one: a malformed
+        # region name must not fall back to the bare path and collide with a
+        # genuine whole-file entry for the same path, while two identical
+        # malformed entries are still duplicates of each other.
+        dup_key = path if raw_region is None else f"{path}#{raw_region}"
+        if dup_key in seen:
+            out.append(f"source {dup_key!r} is listed twice")
+        seen.add(dup_key)
 
     # A claim with no `pins:` line predates the digest and is accepted; its
     # next verify writes one.

@@ -90,6 +90,19 @@ class Extract(unittest.TestCase):
             extract(b"\xff", "r1")
         self.assertEqual(str(ctx.exception), "not UTF-8, so regions cannot be read")
 
+    def test_second_complete_pair_is_loud_not_silently_ignored(self):
+        data = (b"# claimlock:begin r1\na\n# claimlock:end r1\n"
+                b"b\n# claimlock:begin r1\nc\n# claimlock:end r1\n")
+        with self.assertRaises(RegionError) as ctx:
+            extract(data, "r1")
+        self.assertEqual(str(ctx.exception), "region 'r1' begins more than once")
+
+    def test_orphan_trailing_end_after_a_complete_pair(self):
+        data = b"# claimlock:begin r1\na\n# claimlock:end r1\nb\n# claimlock:end r1\n"
+        with self.assertRaises(RegionError) as ctx:
+            extract(data, "r1")
+        self.assertEqual(str(ctx.exception), "region 'r1' ends more than once")
+
     def test_region_hash_is_the_blob_hash_of_the_region_text(self):
         self.assertEqual(region_hash("x\ny\n"), blob_of_bytes(b"x\ny\n"))
 
@@ -147,6 +160,24 @@ class Problems(TmpCase):
                 "  - path: a.py\n    region: r1\n---\nb\n")
         got = self.probs(text)
         self.assertEqual([g for g in got if "listed twice" in g], [])
+
+    def test_malformed_region_not_confused_with_whole_file_duplicate(self):
+        # A malformed region name must not fall back to the bare path for
+        # duplicate detection — that would wrongly collide it with a
+        # legitimate whole-file entry for the same path.
+        text = ("---\nid: c\nsources:\n"
+                "  - path: a.py\n"
+                "  - path: a.py\n    region: Bad_Name\n---\nb\n")
+        got = self.probs(text)
+        self.assertEqual([g for g in got if "listed twice" in g], [])
+        self.assertTrue(any("malformed region name" in g for g in got), got)
+
+    def test_two_identical_malformed_regions_are_still_duplicates(self):
+        text = ("---\nid: c\nsources:\n"
+                "  - path: a.py\n    region: Bad_Name\n"
+                "  - path: a.py\n    region: Bad_Name\n---\nb\n")
+        got = self.probs(text)
+        self.assertIn("source 'a.py#Bad_Name' is listed twice", got)
 
     def test_unknown_key_still_reported(self):
         text = "---\nid: c\nsources:\n  - path: a.py\n    color: red\n---\nb\n"

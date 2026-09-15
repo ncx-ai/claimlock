@@ -17,7 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import gitio
+from . import gitio, regions
 
 # An entry whose mtime is this recent is not cached: a same-size edit inside
 # the filesystem's timestamp granularity would otherwise be invisible. Git's
@@ -258,7 +258,6 @@ class Hasher:
             data = (self.root / rel).read_bytes()
         except OSError:
             return None, "does not exist or cannot be read"
-        from . import regions  # local: regions imports blob_of_bytes from here
         try:
             text = regions.extract(data, name)
         except regions.RegionError as e:
