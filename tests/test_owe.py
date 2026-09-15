@@ -66,6 +66,24 @@ class Owe(TmpCase):
         head = git(root, "rev-parse", "--short=7", "HEAD").strip()
         self.assertIn(f"owed c → t@example.com (since {head})", out)
 
+    @NEED_GIT
+    def test_an_email_owed_in_another_case_is_yours(self):
+        root = self.store(use_git=True)
+        git(root, "config", "user.email", "bob@example.com")
+        write(root, "a.py", "two\n")
+        self.assertEqual(run_cli(root, "owe", "c", "--to", "Bob@Example.com")[0], 0)
+        self.assertRegex((root / "claims" / "c.md").read_text(), r'\nowed_by: "?Bob@Example\.com"?\n',
+                         "the value written keeps the case given")
+        rc, out, _ = run_cli(root, "stale", "--mine")
+        self.assertEqual((rc, out), (0, "c\tcore\towed\tBob@Example.com\n"))
+        self.assertIn("c (core) [owed → Bob@Example.com]", run_cli(root, "list", "--owed-by", "BOB@example.COM")[1])
+        rc, _, err = run_cli(root, "owe", "c", "--to", " bob@example.com ")
+        self.assertEqual(rc, 1)
+        self.assertIn("already owed", err)
+        rc, _, err = run_cli(root, "owe", "c")  # default --to: git user.email, same person
+        self.assertEqual(rc, 1)
+        self.assertIn("already owed", err)
+
     def test_refuses_refuted_invalid_and_bad_email(self):
         root = self.store()
         write(root, "a.py", "two\n")

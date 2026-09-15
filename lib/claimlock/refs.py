@@ -7,9 +7,9 @@ Globs use fnmatch semantics (`*` crosses directories); a leading `**/` also
 matches at the root. Hidden directories, node_modules and the claims
 directory are never scanned. Inside a git work tree the candidates come from
 `git ls-files --cached --others --exclude-standard`, so gitignored files are
-not scanned either; outside git (or if git fails) the tree is walked —
-except when the store root is itself ignored by an enclosing repository,
-where the tree is walked.
+not scanned either. The tree is walked instead outside git, when git fails,
+and when the store root itself lies inside a directory an enclosing
+repository ignores (git lists nothing under it there).
 """
 import fnmatch
 import os

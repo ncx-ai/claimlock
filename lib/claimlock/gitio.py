@@ -44,20 +44,36 @@ def _prefix(root):
     return _text(run(root, "rev-parse", "--show-prefix"))
 
 
-def anchored_blobs(root, rels):
-    """Blob ids every clone can recover for these root-relative paths: every
-    blob that appeared at one of them in any commit reachable from any ref
-    (full history — a merge that matches one parent at the path otherwise
-    prunes the other side, even though its blobs stay reachable), plus the
+def anchored_blobs(root, rels, pins=None):
+    """Blob ids every clone can recover for these root-relative paths: the
     blob at every index stage (a conflicted merge; `ls-files -s` lists one
-    line per stage) currently staged for each. None outside git or on
+    line per stage) currently staged for each, plus every blob that appeared
+    at one of them in any commit reachable from any ref (full history — a
+    merge that matches one parent at the path otherwise prunes the other
+    side, even though its blobs stay reachable). None outside git or on
     failure. `--literal-pathspecs` on both commands: a source path containing
     glob metacharacters (`src/[id].ts`) must never match an unrelated file.
+
+    The index is read first. When `pins` (the blob ids being checked) is
+    given and every one is already staged, the history walk is skipped and
+    the index set returned: it answers the same for each of those pins, and
+    the common case — every pin is HEAD or staged content — then runs no
+    `rev-list`. If the index read fails, the history walk still runs.
 
     `cat-file -e` is not used: it also reports loose objects that no commit
     references (written by `hash-object -w`, or staged then unstaged)."""
     if not rels:
         return set()
+    blobs = set()
+    s = run(root, "--literal-pathspecs", "ls-files", "-s", "-z", "--", *rels)
+    if s is not None and s.returncode == 0:
+        for rec in s.stdout.split(b"\0"):
+            meta, tab, _ = rec.partition(b"\t")
+            parts = meta.split()
+            if tab and len(parts) >= 2:
+                blobs.add(parts[1].decode("ascii", "replace"))
+        if pins is not None and set(pins) <= blobs:
+            return blobs
     prefix = _prefix(root)
     if prefix is None:
         return None
@@ -66,18 +82,10 @@ def anchored_blobs(root, rels):
     if r is None or r.returncode != 0:
         return None
     wanted = {prefix + rel for rel in rels}
-    blobs = set()
     for line in r.stdout.decode("utf-8", "replace").splitlines():
         sha, _, path = line.partition(" ")
         if path in wanted:
             blobs.add(sha)
-    s = run(root, "--literal-pathspecs", "ls-files", "-s", "-z", "--", *rels)
-    if s is not None and s.returncode == 0:
-        for rec in s.stdout.split(b"\0"):
-            meta, tab, _ = rec.partition(b"\t")
-            parts = meta.split()
-            if tab and len(parts) >= 2:
-                blobs.add(parts[1].decode("ascii", "replace"))
     return blobs
 
 
@@ -198,11 +206,6 @@ def verifier(root, claim_rel, blob):
 def commits_behind(root, commit):
     out = _text(run(root, "rev-list", "--count", f"{commit}..HEAD"))
     return int(out) if out and out.isdigit() else None
-
-
-def has_blob(root, sha) -> bool:
-    r = run(root, "cat-file", "-e", f"{sha}^{{blob}}")
-    return r is not None and r.returncode == 0
 
 
 def cat_blob(root, sha):

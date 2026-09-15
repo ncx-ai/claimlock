@@ -150,15 +150,17 @@ def owe(project, cid, to=None, reason=None, today=None):
     email = to or gitio.user_email(project.root)
     if not email:
         raise NeedsIdentity("nobody to hand this to — pass --to <email> or set git config user.email")
-    if not C.EMAIL_RE.match(email):
+    who = C.normalize_email(email)
+    if who is None:
         raise Refused(f"{email!r} is not an email address")
+    email = email.strip()  # written as given, compared normalized
     if c.status == "verified":
         hasher = C.open_hasher(project)
         state, _ = C.freshness(c, project, hasher, C.anchors_for(project, c.sources))
         hasher.save()
         if state == "fresh":
             raise Refused(f"{cid} is fresh — nothing is owed")
-    elif c.owed_by == email:
+    elif C.normalize_email(c.owed_by) == who:
         raise Refused(f"{cid} is already owed by {email}")
     # Re-owing to someone else resets owed_since: a new hand-off starts a new age.
     since = gitio.short_head(project.root) or "none"

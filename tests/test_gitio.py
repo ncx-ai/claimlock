@@ -1,9 +1,12 @@
 import shutil
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
-from helpers import TmpCase, git, write
+from helpers import TmpCase, git, make_repo, write
+from claimlock import claims as C
 from claimlock import gitio
+from claimlock import project as P
 from claimlock.pins import blob_of_bytes
 
 NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
@@ -13,7 +16,6 @@ class NoGit(TmpCase):
     def test_everything_degrades_to_empty(self):
         self.assertFalse(gitio.in_git(self.tmp))
         self.assertIsNone(gitio.head(self.tmp))
-        self.assertFalse(gitio.has_blob(self.tmp, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"))
         self.assertIsNone(gitio.cat_blob(self.tmp, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"))
         self.assertEqual(gitio.changed_paths(self.tmp, None, "HEAD"), [])
         self.assertEqual(gitio.head_mark_paths(self.tmp), [])
@@ -47,7 +49,6 @@ class WithGit(TmpCase):
         proj = self.top / "proj"
         self.assertEqual(gitio.head(proj), first)
         blob = blob_of_bytes(b"one\n")
-        self.assertTrue(gitio.has_blob(proj, blob))
         self.assertEqual(gitio.cat_blob(proj, blob), b"one\n")
         # the root commit: every file under the project dir, relative to it
         self.assertEqual(gitio.changed_paths(proj, None, first), ["a.py"])
@@ -73,6 +74,51 @@ class WithGit(TmpCase):
         self.assertTrue(gitio.root_is_ignored(self.top / "scratch" / "proj"))
         self.assertFalse(gitio.root_is_ignored(self.top / "open"))
         self.assertFalse(gitio.root_is_ignored(self.top))
+
+
+@NEED_GIT
+class AnchoringOrder(TmpCase):
+    """`anchored_blobs` reads the index first and walks history only when a
+    pin being checked is not staged: the same answer, no `rev-list` in the
+    common case (every pin is HEAD or staged content)."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make_repo(self.tmp / "r", use_git=True)
+        write(self.root, "a.py", "one\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "one")
+
+    def anchors(self, blob):
+        calls, real = [], gitio.run
+
+        def recording(root, *args):
+            calls.append(args)
+            return real(root, *args)
+
+        with mock.patch.object(gitio, "run", recording):
+            got = C.anchors_for(P.load(self.root), [C.Source("a.py", blob)])
+        return got, [a for a in calls if "rev-list" in a]
+
+    def test_no_history_walk_when_every_pin_is_staged(self):
+        blob = blob_of_bytes(b"one\n")
+        got, rev_lists = self.anchors(blob)
+        self.assertTrue(got.ok("a.py", blob))
+        self.assertEqual(rev_lists, [])
+
+    def test_a_pin_only_in_history_still_walks_it_and_anchors(self):
+        write(self.root, "a.py", "two\n")
+        git(self.root, "commit", "-qam", "two")
+        blob = blob_of_bytes(b"one\n")
+        got, rev_lists = self.anchors(blob)
+        self.assertTrue(got.ok("a.py", blob))
+        self.assertEqual(len(rev_lists), 1)
+
+    def test_a_pin_nowhere_is_not_anchored(self):
+        blob = blob_of_bytes(b"never committed\n")
+        got, rev_lists = self.anchors(blob)
+        self.assertFalse(got.ok("a.py", blob))
+        self.assertEqual(len(rev_lists), 1)
 
 
 if __name__ == "__main__":

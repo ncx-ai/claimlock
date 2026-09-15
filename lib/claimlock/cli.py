@@ -110,9 +110,16 @@ def _print_failing(r):
         print(f"         {HINT[r.state].format(id=r.claim.id)}")
 
 
-def _owed_line(project, r, state=None):
+def _owed_line(project, r, state=None, behind_cache=None):
     since = r.claim.owed_since or "?"
-    behind = gitio.commits_behind(project.root, since) if since not in ("?", "none") else None
+    if since in ("?", "none"):
+        behind = None
+    elif behind_cache is not None and since in behind_cache:
+        behind = behind_cache[since]
+    else:
+        behind = gitio.commits_behind(project.root, since)
+        if behind_cache is not None:
+            behind_cache[since] = behind  # one `rev-list --count` per distinct owed_since
     ago = "" if behind is None else f", {behind} commit{'' if behind == 1 else 's'} ago"
     note = f" ({state})" if state in C.NON_FRESH else ""
     return f"OWED     {r.claim.id} → {r.claim.owed_by} since {since}{ago}{note}"
@@ -182,8 +189,9 @@ def cmd_check(args):
             print("pre-existing (not changed here):")
             for r in elsewhere:
                 print(f"  {r.claim.id}: {'invalid' if r.problems else r.state}")
+        behind = {}
         for r in owed:
-            print(_owed_line(project, r, owed_states.get(r.claim.id)))
+            print(_owed_line(project, r, owed_states.get(r.claim.id), behind))
         summary = ", ".join(f"{v} {k}" for k, v in counts.items())
         if owed:
             summary += f", {len(owed)} owed"
@@ -193,12 +201,19 @@ def cmd_check(args):
 
 
 def _owner(args, project):
+    """The normalized email `--mine` / `--owed-by` filter on, or None for no filter."""
     if getattr(args, "mine", False):
         email = gitio.user_email(project.root)
         if not email:
             raise ops.NeedsIdentity("--mine needs git config user.email (or use --owed-by <email>)")
-        return email
-    return getattr(args, "owed_by", None)
+        return C.normalize_email(email) or email.strip().casefold()
+    by = getattr(args, "owed_by", None)
+    return None if by is None else (C.normalize_email(by) or by.strip().casefold())
+
+
+def _owed_to(claim, owner):
+    """True for an owed claim whose `owed_by` is `owner` (already normalized)."""
+    return claim.status == "owed" and C.normalize_email(claim.owed_by) == owner
 
 
 def cmd_stale(args):
@@ -206,7 +221,7 @@ def cmd_stale(args):
     owner = _owner(args, project)
     rc = 0
     for r in results:
-        if r.claim.status == "owed" and (owner is None or r.claim.owed_by == owner):
+        if r.claim.status == "owed" and (owner is None or _owed_to(r.claim, owner)):
             print(f"{r.claim.id}\t{r.claim.area}\towed\t{r.claim.owed_by}")
         elif owner is None and r.state in C.NON_FRESH:
             rc = 1
@@ -221,7 +236,7 @@ def cmd_list(args):
     for r in results:
         if args.status and r.claim.status != args.status:
             continue
-        if owner is not None and not (r.claim.status == "owed" and r.claim.owed_by == owner):
+        if owner is not None and not _owed_to(r.claim, owner):
             continue
         flag = f" [{r.state}]" if r.state in C.NON_FRESH else ""
         flag += " [invalid]" if r.problems else ""

@@ -27,6 +27,17 @@ NON_FRESH = ("unpinned", "unanchored", "stale", "missing")
 _SEVERITY = {"fresh": 0, "unpinned": 1, "unanchored": 2, "stale": 3, "missing": 4}
 
 
+def normalize_email(s):
+    """The one identity comparison: `s` stripped and casefolded when it is an
+    email address, else None. Every "is this owed to that person" check
+    compares normalized values; the value written into `owed_by` keeps the
+    case the person gave."""
+    if not isinstance(s, str):
+        return None
+    s = s.strip()
+    return s.casefold() if EMAIL_RE.match(s) else None
+
+
 class StoreMissing(Exception):
     def __init__(self, path):
         super().__init__(f"no claims directory at {path} — run `claimlock init`")
@@ -271,7 +282,7 @@ def anchors_for(project, sources):
     paths = sorted(cited | _symlink_targets(project.root, cited))
     if not paths:
         return Anchors(set(), set())
-    blobs = gitio.anchored_blobs(project.root, paths)
+    blobs = gitio.anchored_blobs(project.root, paths, pins={s.blob for s in valid if s.blob})
     if blobs is None:
         return None
     remaining = sorted({s.path for s in valid if s.blob not in blobs})

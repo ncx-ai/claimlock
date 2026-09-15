@@ -569,6 +569,19 @@ class TeamHooks(HookCase):
         ctx = self.hook(self.b, "session-start", session="s2")["hookSpecificOutput"]["additionalContext"]
         self.assertTrue(ctx.startswith("claimlock: owed to you: 1 (c)"), ctx)
 
+    def test_a_hand_off_in_another_email_case_is_still_yours(self):
+        self.hook(self.b, "session-start")
+        write(self.a, "src.py", "MAX = 9\n")
+        git(self.a, "commit", "-qam", "raise MAX")
+        self.assertEqual(run_cli(self.a, "owe", "c", "--to", "Ben@Example.com")[0], 0)
+        git(self.a, "commit", "-qam", "owe c to Ben")
+        git(self.a, "push", "-q", "origin", "main")
+        self.assertEqual(self.pull_b().returncode, 0)
+        ctx = self.hook(self.b, "post-tool-use")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Now owed to you: c", ctx)
+        ctx = self.hook(self.b, "session-start", session="s2")["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith("claimlock: owed to you: 1 (c)"), ctx)
+
     def test_a_conflicted_merge_says_run_resolve(self):
         self.hook(self.b, "session-start")
         write(self.a, "src.py", "MAX = 2\n")
@@ -633,11 +646,18 @@ class TeamHooks(HookCase):
         write(self.a, "src.py", "MAX = 9\n")
         git(self.a, "commit", "-qam", "raise MAX")
         self.assertEqual(run_cli(self.a, "owe", "c", "--to", "amy@example.com")[0], 0)
-        git(self.a, "commit", "-qam", "owe c to amy")
+        # A dangling marker in the same range makes the HEAD-moved report
+        # non-empty, so the owed-to-you branch genuinely runs and is judged.
+        write(self.a, "notes.md", "Claim: `nope`\n")
+        git(self.a, "add", "-A")
+        git(self.a, "commit", "-qm", "owe c to amy")
         self.push_a()
-        self.pull_b()
+        self.assertEqual(self.pull_b().returncode, 0)
         out = self.hook(self.b, "post-tool-use")
-        self.assertNotIn("owed to you", json.dumps(out).lower())
+        self.assertIsNotNone(out, "precondition: HEAD moved and the report ran")
+        ctx = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Markers naming no claim: notes.md:nope", ctx)
+        self.assertNotIn("owed to you", ctx.lower())
         ctx = self.hook(self.b, "session-start", session="s2")["hookSpecificOutput"]["additionalContext"]
         self.assertNotIn("owed to you", ctx)
 

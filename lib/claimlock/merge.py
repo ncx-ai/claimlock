@@ -159,10 +159,11 @@ def resolve_claim(project, claim):
         if not email:
             return "left", (f"{name}: a source matches neither side, and there is no git user.email "
                             f"to record who owes the re-check — set one, then run claimlock resolve")
-        if not C.EMAIL_RE.match(email):
+        if C.normalize_email(email) is None:
             return "left", (f"{name}: a source matches neither side, and git user.email {email!r} is not "
                             f"an email address to record who owes the re-check — fix it, then run "
                             f"claimlock resolve")
+        email = email.strip()
         since = gitio.short_head(project.root) or "none"
         text = frontmatter.rewrite(ours_text, name, status="owed", sources=picked,
                                    set_fields={"owed_by": email, "owed_since": since})

@@ -63,6 +63,19 @@ class ScopedGate(TmpCase):
         self.assertEqual(rc, 0, out)
         self.assertRegex(out, r"OWED     c1 → bob@example\.com since [0-9a-f]{7}, 1 commit ago")
 
+    def test_commits_behind_is_counted_once_per_owed_since(self):
+        write(self.root, "src1.py", "ONE\n")
+        git(self.root, "commit", "-qam", "change src1")
+        self.assertEqual(run_cli(self.root, "owe", "c1", "c2", "--to", "bob@example.com")[0], 0)
+        git(self.root, "commit", "-qam", "hand off both")
+        out = io.StringIO()
+        with mock.patch.object(gitio, "commits_behind", wraps=gitio.commits_behind) as counted, \
+                contextlib.redirect_stdout(out):
+            rc = cli.main(["-C", str(self.root), "check"])
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertEqual(out.getvalue().count("1 commit ago"), 2, out.getvalue())
+        self.assertEqual(counted.call_count, 1)
+
     def test_a_claim_committed_with_an_uncommitted_pin_blocks(self):
         write(self.root, "src1.py", "ONE\n")
         run_cli(self.root, "verify", "c1")

@@ -307,9 +307,9 @@ def head_check(project, st):
             src = next((s.path for s in r.claim.sources if s.path in changed), None)
             if src is not None:
                 hit.append((r.claim.id, r.state, src, who.get(src)))
-    me = st.get("email")
+    me = C.normalize_email(st.get("email"))
     owed_new = sorted(r.claim.id for r in results
-                      if me and r.claim.status == "owed" and r.claim.owed_by == me
+                      if me and r.claim.status == "owed" and C.normalize_email(r.claim.owed_by) == me
                       and _claim_rel(project, r.claim) in changed)
     conflicted = sorted(r.claim.id for r in results if r.claim.conflicted)
     ids = {r.claim.id for r in results}
@@ -390,8 +390,9 @@ def session_start(project, payload, data_dir):
     st = {"root": str(project.root), "baseline": s}
     _init_head(project, st)
     _save_state(_state_path(data_dir, payload), st)
-    me = st.get("email")
-    mine = sorted(r.claim.id for r in results if me and r.claim.status == "owed" and r.claim.owed_by == me)
+    me = C.normalize_email(st.get("email"))
+    mine = sorted(r.claim.id for r in results
+                  if me and r.claim.status == "owed" and C.normalize_email(r.claim.owed_by) == me)
     lead = (f"claimlock: owed to you: {len(mine)} ({', '.join(mine[:10])}{'…' if len(mine) > 10 else ''}).\n"
             if mine else "")
     n = len(results)
