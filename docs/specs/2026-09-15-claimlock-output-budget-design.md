@@ -60,7 +60,7 @@ Constants live in `lib/claimlock/cli.py` beside the formatting that uses them.
   state. The per-claim hint line is gone. This applies with and without
   `--full`: it is pure duplication.
 - At most `SOURCE_LINES` per-source lines per claim, then
-  `         … and <n> more sources`.
+  `         … and <n> more sources — claimlock check --full`.
 - At most `LISTED_CLAIMS` failing claims, then
   `… and <n> more failing claims — claimlock check --full`.
 - The `pre-existing (not changed here):` list and the `OWED` lines keep their
