@@ -10,7 +10,7 @@ from . import VERSION
 from . import claims as C
 from . import gitio
 from . import hooks
-from . import importer, merge, ops, rank, refs, regions, selftest
+from . import evidence, importer, merge, ops, rank, refs, regions, selftest
 from . import project as P
 
 HINT = {
@@ -809,6 +809,23 @@ def cmd_refs(args):
     return 1 if dangling else 0
 
 
+def cmd_evidence(args):
+    project = _project(args)
+    claims = C.load_claims(project)
+    checks, scanned = evidence.audit(project, claims)
+    unresolved = [c for c in checks if c.outcome == "unresolved"]
+    unlocatable = [c for c in checks if c.outcome == "unlocatable"]
+    resolved = [c for c in checks if c.outcome == "resolved"]
+    cap = None if args.full else LISTED_CLAIMS
+    _print_capped(unresolved, cap, "… and {n} more unresolved evidence refs — claimlock evidence --full",
+                  lambda c: print(f"UNRESOLVED {c.claim_id}  {c.ref}"))
+    _print_capped(unlocatable, cap, "… and {n} more unlocatable evidence refs — claimlock evidence --full",
+                  lambda c: print(f"UNLOCATABLE {c.claim_id}  {c.ref}"))
+    print(f"claimlock: {len(resolved)} resolved, {len(unresolved)} unresolved, "
+          f"{len(unlocatable)} unlocatable in {scanned} files scanned")
+    return 1 if unresolved else 0
+
+
 def cmd_affected(args):
     project = _project(args)
     base = _base(args)
@@ -921,6 +938,9 @@ def build_parser():
     p = add("refs", cmd_refs, "fail on Claim markers that name no claim; report claims no prose cites")
     p.add_argument("--orphans", action="store_true", help="list claims no prose cites (never fails the gate)")
     p.add_argument("--full", action="store_true", help="with --orphans, print every uncited claim, uncapped")
+    p = add("evidence", cmd_evidence, "resolve every kind: test evidence ref to a real test")
+    p.add_argument("--full", action="store_true",
+                   help="list every unresolved/unlocatable evidence ref, uncapped")
     p = add("affected", cmd_affected, "claims whose sources include these paths")
     p.add_argument("paths", nargs="+")
     p = add("import", cmd_import, "import claims from the original ground-truth format")

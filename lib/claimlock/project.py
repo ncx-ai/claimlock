@@ -15,6 +15,7 @@ DEFAULTS = {
     "claims_dir": "claims",
     "marker_globs": ["**/*.md"],
     "marker_pattern": r"Claim: `([a-z0-9][a-z0-9-]*)`",
+    "evidence_globs": ["**/*"],
 }
 
 
@@ -29,6 +30,7 @@ class Project:
     marker_globs: list
     marker_pattern: re.Pattern
     has_config: bool
+    evidence_globs: list
 
     @property
     def state_dir(self) -> Path:
@@ -81,6 +83,9 @@ def load(start: Path) -> Project:
     globs = cfg["marker_globs"]
     if not isinstance(globs, list) or not all(isinstance(g, str) for g in globs):
         raise ConfigError(f"{CONFIG}: marker_globs must be a list of strings")
+    ev_globs = cfg["evidence_globs"]
+    if not isinstance(ev_globs, list) or not all(isinstance(g, str) for g in ev_globs):
+        raise ConfigError(f"{CONFIG}: evidence_globs must be a list of strings")
     try:
         pattern = re.compile(cfg["marker_pattern"])
     except (re.error, TypeError) as e:
@@ -93,7 +98,7 @@ def load(start: Path) -> Project:
     if claims_dir == root.resolve():
         # Every *.md in the root (README.md aside) would load as a claim.
         raise ConfigError(f"{CONFIG}: claims_dir must be a subdirectory of the project root")
-    return Project(root, claims_dir, list(globs), pattern, has_config)
+    return Project(root, claims_dir, list(globs), pattern, has_config, list(ev_globs))
 
 
 def safe_source(root: Path, rel: str):

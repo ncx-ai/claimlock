@@ -45,6 +45,11 @@ class Root(TmpCase):
         self.assertEqual(p.claims_dir, root / "docs" / "claims")
         self.assertEqual(p.marker_globs, ["*.txt"])
         self.assertEqual(p.marker_pattern.pattern, "See ([a-z-]+)")
+        self.assertEqual(p.evidence_globs, ["**/*"])
+
+    def test_evidence_globs_config_value(self):
+        root = make_repo(self.tmp / "r", False, config='evidence_globs = ["src/**"]\n')
+        self.assertEqual(load(root).evidence_globs, ["src/**"])
 
     def test_config_errors(self):
         cases = [
@@ -52,6 +57,7 @@ class Root(TmpCase):
             ("toml", "claims_dir = \n", CONFIG),
             ("type", "claims_dir = 3\n", "claims_dir must be a string"),
             ("globs", 'marker_globs = "*.md"\n', "marker_globs must be a list"),
+            ("evidence-globs", 'evidence_globs = "**/*"\n', "evidence_globs must be a list"),
             ("nogroup", 'marker_pattern = "Claim"\n', "capture group"),
             ("badre", 'marker_pattern = "("\n', "marker_pattern"),
             ("escape", 'claims_dir = "../elsewhere"\n', "escapes"),

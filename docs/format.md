@@ -1049,12 +1049,77 @@ of 41 claims uncited on the real store measured 2026-09-16 means a failing
 default would be a migration cliff, and a claim nobody cites is a
 documentation gap, not a false statement.
 
+## Evidence resolution (`claimlock evidence`)
+
+A `kind: test` evidence entry names a test. Nothing about a claim's `sources`
+changes when the test it cites is renamed or deleted, so a `verified` claim
+can go on citing a test that no longer exists forever — `check` has no way to
+notice. `claimlock evidence` is the command that resolves that citation
+against the tree, on demand (it is never run by `check`, a hook, or any other
+gate — see "Cost" below).
+
+**Only `kind: test` refs are ever resolved.** `measurement`, `source` and
+`run` refs are prose by design (see the `evidence` field in "Fields" above)
+and are never parsed, never reported, even when the words they contain
+happen to match nothing in the tree.
+
+**The locator rule**: the longest token matching `[A-Za-z_][A-Za-z0-9_]*` in
+the ref that is at least 8 characters long. This handles both shapes actually
+seen in practice — a scoped path like `crate::module::the_test_name`, and one
+prose ref naming two tests — with one rule and no per-language parsing. Ties
+(two tokens of the same length) resolve to whichever `max()` meets first,
+which is deterministic for a given ref; nothing depends on which one wins.
+
+Every `kind: test` entry gets exactly one of three outcomes:
+
+- **`RESOLVED`** — the locator appears (as a whole identifier token) in some
+  file matched by `evidence_globs`. Not printed; only counted in the census.
+- **`UNRESOLVED`** — the locator appears in no scanned file. Printed as
+  `UNRESOLVED <claim-id>  <ref>`, capped at `LISTED_CLAIMS` (20, `--full` to
+  see the rest). **This is the only outcome that fails the gate** — `evidence`
+  exits 1 when any exist.
+- **`UNLOCATABLE`** — the ref has no token 8 characters or longer, so there is
+  nothing to search for. Printed as `UNLOCATABLE <claim-id>  <ref>`, capped
+  the same way. This does **not** fail the gate: a citation claimlock cannot
+  check is a different fact from one that is wrong.
+
+The census line always prints:
+
+```
+claimlock: <resolved> resolved, <unresolved> unresolved, <unlocatable> unlocatable in <scanned> files scanned
+```
+
+Scanned files come from `refs.files(project, None, globs)` (the same walker
+`refs.scan` uses, minus the marker regex) with `globs` defaulting to the
+config key `evidence_globs` (default `["**/*"]`, distinct from `marker_globs`,
+which defaults to `**/*.md` and is irrelevant here). The walker already skips
+hidden directories, `node_modules`, the claims directory, gitignored files,
+and anything that fails to decode as UTF-8 — `evidence` does not re-implement
+any of that.
+
+**Nothing here executes anything.** `claimlock evidence` reads files and
+looks for an identifier token; it never runs a command a claim cites, because
+claim files arrive by `git pull` and are untrusted input. This is also why a
+`kind: run` ref (a narrated procedure, not a command) is never a candidate
+for resolution — there is nothing there to execute even if execution were
+in scope.
+
+**Cost.** A full evidence scan is measured at roughly an order of magnitude
+slower than `check`'s baseline over the same tree (see the [design
+spec](specs/2026-09-16-claimlock-orphans-evidence-design.md) §5), because it
+reads and decodes the *whole* matched tree rather than just each verified
+claim's declared sources. That is why it is its own command
+and never wired into `check`, a hook, or any other gate that runs on every
+edit — narrow `evidence_globs` if it grows too slow on a large tree; a
+persisted index is deliberately not the answer (it would add its own
+staleness surface).
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | Clean: no blocking claims (for `check`; `owed` never blocks), no non-fresh verified claims (for `stale`), no dangling markers (for `refs`), no `LEFT` outcome (for `resolve`), and successful read-only commands. |
-| `1` | Findings or a refusal: `check` found a blocking claim; `stale` found a non-fresh verified claim; `refs` found a dangling marker; `search` found nothing; `show`/`who`/`diff` named no claim; `import` reported per-file errors; `verify`, `follow`, `owe`, `new` or `init` was refused; `resolve` left a claim or named no claim. |
+| `0` | Clean: no blocking claims (for `check`; `owed` never blocks), no non-fresh verified claims (for `stale`), no dangling markers (for `refs`), no `UNRESOLVED` evidence refs (for `evidence`; `UNLOCATABLE` never blocks), no `LEFT` outcome (for `resolve`), and successful read-only commands. |
+| `1` | Findings or a refusal: `check` found a blocking claim; `stale` found a non-fresh verified claim; `refs` found a dangling marker; `evidence` found an `UNRESOLVED` ref; `search` found nothing; `show`/`who`/`diff` named no claim; `import` reported per-file errors; `verify`, `follow`, `owe`, `new` or `init` was refused; `resolve` left a claim or named no claim. |
 | `2` | Cannot run: bad `.claimlock.toml`, no claims directory, or a claims directory that cannot be listed; `init`/`import` into a target directory that doesn't exist; `check --changed` outside git, with no merge base, or when git fails to list the changes; `owe` with no `--to` and no git `user.email`; `--mine` with no git `user.email`. |
 
 `claimlock hook <event>` **always exits 0** — a hook must never fail the
