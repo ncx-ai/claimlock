@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import gitio, regions
+from .hashing import blob_of_bytes  # re-exported: existing `pins.blob_of_bytes` imports keep working
 
 # An entry whose mtime is this recent is not cached: a same-size edit inside
 # the filesystem's timestamp granularity would otherwise be invisible. Git's
@@ -31,13 +32,6 @@ RACY_NS = 2_000_000_000
 _GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
             "GIT_ATTR_NOSYSTEM", "GIT_ATTR_SOURCE", "HOME", "XDG_CONFIG_HOME")
-
-
-def blob_of_bytes(data: bytes) -> str:
-    h = hashlib.sha1()
-    h.update(b"blob %d\0" % len(data))
-    h.update(data)
-    return h.hexdigest()
 
 
 def _file_sig(path) -> str:

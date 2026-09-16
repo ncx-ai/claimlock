@@ -87,6 +87,29 @@ class LauncherOnOldPython(unittest.TestCase):
             log = (data / "hook-errors.log").read_text()
             self.assertEqual(log.count("3.11"), 3)
 
+    def test_hook_log_over_1mib_is_not_appended_to(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            data.mkdir()
+            log = data / "hook-errors.log"
+            log.write_bytes(b"x" * (1024 * 1024 + 1))
+            r = self._run("hook", "stop", env={"CLAUDE_PLUGIN_DATA": str(data)})
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+            self.assertEqual(log.stat().st_size, 1024 * 1024 + 1)
+
+    def test_hook_log_under_1mib_is_still_appended(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            data.mkdir()
+            log = data / "hook-errors.log"
+            log.write_bytes(b"x" * 100)
+            r = self._run("hook", "stop", env={"CLAUDE_PLUGIN_DATA": str(data)})
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+            self.assertGreater(log.stat().st_size, 100)
+            self.assertIn("3.11", log.read_bytes()[100:].decode())
+
     def test_hook_without_plugin_data_still_exits_0(self):
         r = self._run("hook", "stop")
         self.assertEqual((r.returncode, r.stdout), (0, ""))

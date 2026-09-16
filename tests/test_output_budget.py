@@ -238,6 +238,45 @@ class OwedAndElsewhereListsAreCappedToo(TmpCase):
         self.assertNotIn("more owed claims", out)
 
 
+@NEED_GIT
+class ElsewhereListSortsProblemsFirst(TmpCase):
+    """Cleanup item 3 (spec §4): `cmd_check` sorts `blocking` problems-first
+    but left `elsewhere` (the "pre-existing (not changed here):" list) in
+    claim-id order, so an invalid claim sorting alphabetically last could
+    fall past LISTED_CLAIMS and never be named anywhere but the census."""
+
+    def test_invalid_pre_existing_claim_past_the_stale_run_still_appears(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        ids = [f"claim-{i:03d}" for i in range(22)]
+        for cid in ids:
+            src = f"src/{cid}.py"
+            write(root, src, "original\n")
+            write(root, f"claims/{cid}.md", claim_text(cid, sources=(src,)))
+        run_cli(root, "verify", *ids)
+        write(root, "src/zzz-invalid.py", "content\n")
+        write(root, "claims/zzz-invalid.md",
+              "---\nid: zzz-invalid\narea: core\nstatus: unverified\n"
+              "evidence:\n  - kind: test\n    ref: s::c\n"
+              "sources:\n  - path: src/zzz-invalid.py\n    blob: not-a-valid-blob\n"
+              "---\nBody.\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "base")
+        for cid in ids:
+            write(root, f"src/{cid}.py", "CHANGED\n")
+        git(root, "commit", "-qam", "drift on main")  # pre-existing, never re-verified
+        git(root, "checkout", "-q", "-b", "feature")
+        write(root, "unrelated.txt", "x\n")
+        git(root, "add", "unrelated.txt")
+        git(root, "commit", "-qm", "unrelated change")
+        rc, out, err = run_cli(root, "check", "--changed", "main")
+        self.assertEqual(rc, 0, out + err)  # nothing in scope, so this doesn't block
+        self.assertIn("pre-existing (not changed here):", out)
+        self.assertIn("  zzz-invalid: invalid", out)
+        self.assertEqual(out.count(": stale"), LISTED_CLAIMS - 1)
+        self.assertIn("… and 3 more pre-existing claims — claimlock check --full", out)
+
+
 class JsonKeepsOwedByDefault(TmpCase):
     def test_owed_claim_is_in_results_by_default(self):
         root = make_repo(self.tmp / "r", use_git=False)

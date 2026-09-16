@@ -142,6 +142,16 @@ def _hints_block(states_in_order, first_id):
             for state in states_in_order if state in HINT and state in first_id]
 
 
+def _rename_target(by_key, renames, key):
+    """(new_path, sha) for the source at `key`, per `renames` (as returned by
+    `C.renames_for`) — or None when that source isn't in `by_key` or wasn't
+    renamed. The one lookup shared by every site that reports a rename
+    (`_print_failing`, `_source_entries`, `cmd_diff`); each still formats the
+    result its own way."""
+    s = by_key.get(key)
+    return renames.get(s.path) if s else None
+
+
 def _print_failing(r, cap):
     """`cap`: max problem/source detail lines per claim (SOURCE_LINES, or None
     for --full). The per-state hint is printed once for the whole run by
@@ -161,8 +171,7 @@ def _print_failing(r, cap):
             if st == "fresh":
                 continue
             if st == "renamed":
-                s = by_key.get(key)
-                info = r.renames.get(s.path) if s else None
+                info = _rename_target(by_key, r.renames, key)
                 if info:
                     new, sha = info
                     lines.append(f"{key}: renamed → {new} ({sha})")
@@ -214,8 +223,7 @@ def _source_entries(r):
     for key, state in r.per_source:
         entry = {"path": key, "state": state}
         if state == "renamed":
-            s = by_key.get(key)
-            info = r.renames.get(s.path) if s else None
+            info = _rename_target(by_key, r.renames, key)
             if info:
                 entry["renamed_to"] = info[0]
         out.append(entry)
@@ -251,6 +259,10 @@ def cmd_check(args):
     # the census (item D, 2026-09-15 fix wave).
     blocking.sort(key=lambda r: 0 if r.problems else 1)
     elsewhere = [r for r in results if _failing(r) and not in_scope(r)]
+    # Same stable, problems-first sort as `blocking` above: `elsewhere` is
+    # also capped at LISTED_CLAIMS, and an invalid claim sorting after a run
+    # of merely stale ones would otherwise fall past the cap unnamed.
+    elsewhere.sort(key=lambda r: 0 if r.problems else 1)
     owed = [r for r in results if r.claim.status == "owed" and not r.problems]
     blocking_ids = {r.claim.id for r in blocking}
     counts = {"invalid": sum(1 for r in blocking if r.problems)}
@@ -566,7 +578,8 @@ def cmd_diff(args):
             continue
         s = srcs.get(key)
         if st == "renamed":
-            new, sha = renames.get(s.path, (None, None)) if s else (None, None)
+            info = _rename_target(srcs, renames, key)
+            new, sha = info if info else (None, None)
             print(f"--- {key}: renamed to {new} in {sha} — run: claimlock follow {c.id}")
             continue
         if st == "missing":

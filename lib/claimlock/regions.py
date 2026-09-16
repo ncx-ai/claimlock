@@ -8,8 +8,9 @@ naturally refuses to match a name that is a strict prefix of a longer one
 (`claimlock:begin r1-extra` never opens `r1`, because the match for `r1`
 would have to stop one character short of what the regex actually consumes).
 """
-import hashlib
 import re
+
+from .hashing import blob_of_bytes
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _MARKER_RE = re.compile(r"claimlock:(begin|end)\s+([a-z0-9][a-z0-9-]*)")
@@ -59,12 +60,8 @@ def extract(data: bytes, name: str) -> str:
 
 
 def region_hash(text: str) -> str:
-    """The same blob-hash function as whole-file pins (`pins.blob_of_bytes`),
-    applied to region text. Computed here directly (not imported from
-    `pins`), so `pins.py` can import this module at module scope without a
-    circular import."""
-    data = text.encode("utf-8")
-    h = hashlib.sha1()
-    h.update(b"blob %d\0" % len(data))
-    h.update(data)
-    return h.hexdigest()
+    """The same blob-hash function as whole-file pins, applied to region
+    text: both live in `hashing.blob_of_bytes`, imported here rather than
+    from `pins` (which imports this module at module scope, so `regions`
+    importing `pins` back would be circular)."""
+    return blob_of_bytes(text.encode("utf-8"))

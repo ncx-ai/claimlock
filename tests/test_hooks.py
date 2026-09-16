@@ -77,6 +77,16 @@ class Contract(HookCase):
         self.assertIn("boom", log)
         self.assertIn("a note", log)
 
+    def test_log_survives_home_lookup_failure(self):
+        # _log_dir's Path.home() raises RuntimeError (not OSError) when HOME
+        # is unset and the user has no passwd entry — this must not escape
+        # _append_log, whose whole job is to swallow errors.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HOME", None)
+            with mock.patch.object(hooks_mod.Path, "home", side_effect=RuntimeError("no home")):
+                hooks_mod._log(None, "stop")  # must not raise
+                hooks_mod._log_note(None, "x")  # must not raise
+
     def test_bare_claims_dir_without_config_is_inert(self):
         # I3: a directory that merely happens to be named claims/ is not a
         # store for hooks. Only .claimlock.toml activates them, and deciding

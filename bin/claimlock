@@ -18,9 +18,19 @@ if sys.version_info < (3, 11):
             try:
                 import datetime
                 os.makedirs(data, exist_ok=True)
-                with open(os.path.join(data, "hook-errors.log"), "a") as f:
-                    f.write("%s hook %s: claimlock needs Python 3.11+ (found %s); hook skipped\n"
-                            % (datetime.datetime.now().isoformat(), " ".join(sys.argv[2:3]), found))
+                log_path = os.path.join(data, "hook-errors.log")
+                # Unbounded on every hook invocation otherwise: skip the
+                # append once the file is already over 1 MiB rather than
+                # growing it forever (there is no lib/ import available yet
+                # on this old-Python path to share hooks.py's own cap).
+                try:
+                    oversized = os.stat(log_path).st_size > 1024 * 1024
+                except OSError:
+                    oversized = False
+                if not oversized:
+                    with open(log_path, "a") as f:
+                        f.write("%s hook %s: claimlock needs Python 3.11+ (found %s); hook skipped\n"
+                                % (datetime.datetime.now().isoformat(), " ".join(sys.argv[2:3]), found))
             except Exception:
                 pass
         sys.exit(0)

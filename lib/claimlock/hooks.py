@@ -234,7 +234,12 @@ def _log_dir(where):
 
 def _append_log(where, text):
     """Append to hook-errors.log, first moving a log over LOG_MAX_BYTES to
-    hook-errors.log.1 (replacing an older one), so it never grows unbounded."""
+    hook-errors.log.1 (replacing an older one), so it never grows unbounded.
+
+    Catches Exception, not OSError: `_log_dir`'s `Path.home()` raises
+    RuntimeError (not OSError) when HOME is unset and the user has no passwd
+    entry, and this is the handler whose entire job is to swallow errors —
+    nothing may escape it."""
     try:
         d = _log_dir(where)
         d.mkdir(parents=True, exist_ok=True)
@@ -246,7 +251,7 @@ def _append_log(where, text):
             pass
         with open(path, "a", encoding="utf-8") as f:
             f.write(text)
-    except OSError:
+    except Exception:  # noqa: BLE001 — this handler exists to swallow errors
         pass
 
 
