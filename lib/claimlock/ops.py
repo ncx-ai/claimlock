@@ -22,6 +22,7 @@ CONFIG_TEMPLATE = """\
 # claims_dir = "claims"
 # marker_globs = ["**/*.md"]
 # marker_pattern = 'Claim: `([a-z0-9][a-z0-9-]*)`'
+# evidence_globs = ["**/*"]
 """
 
 CLAIM_TEMPLATE = """\

@@ -812,7 +812,7 @@ def cmd_refs(args):
 def cmd_evidence(args):
     project = _project(args)
     claims = C.load_claims(project)
-    checks, scanned = evidence.audit(project, claims)
+    checks, scanned, skipped = evidence.audit(project, claims)
     unresolved = [c for c in checks if c.outcome == "unresolved"]
     unlocatable = [c for c in checks if c.outcome == "unlocatable"]
     resolved = [c for c in checks if c.outcome == "resolved"]
@@ -821,8 +821,13 @@ def cmd_evidence(args):
                   lambda c: print(f"UNRESOLVED {c.claim_id}  {c.ref}"))
     _print_capped(unlocatable, cap, "… and {n} more unlocatable evidence refs — claimlock evidence --full",
                   lambda c: print(f"UNLOCATABLE {c.claim_id}  {c.ref}"))
-    print(f"claimlock: {len(resolved)} resolved, {len(unresolved)} unresolved, "
-          f"{len(unlocatable)} unlocatable in {scanned} files scanned")
+    census = (f"claimlock: {len(resolved)} resolved, {len(unresolved)} unresolved, "
+              f"{len(unlocatable)} unlocatable in {scanned} files scanned")
+    if skipped:
+        # Named, not folded into "scanned" — a locator living only in a
+        # skipped file must not read as though the tree came up clean.
+        census += f", {skipped} skipped (too large)"
+    print(census)
     return 1 if unresolved else 0
 
 

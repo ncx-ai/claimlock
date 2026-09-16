@@ -16,7 +16,7 @@ it documents.
 | Question | Measured |
 |---|---:|
 | Claims no prose cites anywhere in the repo | **23 of 41** |
-| `kind: test` evidence refs that resolve to a real test | **121 of 121** |
+| `kind: test` evidence refs that resolve to a real test | **124 of 124** |
 | Guarantee-shaped prose lines in living docs | **1,004** |
 | Distinct `Claim:` markers in the whole repo | 20 |
 | `claimlock check` baseline | **0.096 s** |
@@ -29,11 +29,14 @@ maintained, re-verified and gated on, while the prose it was written to support
 never points at it. That is more than half this store.
 
 Evidence citations are the mirror case and are, today, **clean**: every one of
-121 `kind: test` refs resolves. The mechanism that would break them — a renamed
-or deleted test, leaving a `verified` claim citing a proof that no longer
-exists, with no state change and no gate firing — is real and undetectable, but
-it has **no current instances**. This work therefore treats it as prevention,
-not repair, and prices it accordingly (§3.2).
+124 `kind: test` refs resolves (124 checks — one per `kind: test` entry, not
+deduplicated by test name; an earlier count of 121 counted distinct names
+instead of entries and undercounted for that reason). The mechanism that
+would break them — a renamed or deleted test, leaving a `verified` claim
+citing a proof that no longer exists, with no state change and no gate
+firing — is real and undetectable, but it has **no current instances**. This
+work therefore treats it as prevention, not repair, and prices it accordingly
+(§3.2).
 
 ## 2. What measurement removed, and why
 

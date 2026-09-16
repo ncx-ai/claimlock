@@ -927,6 +927,7 @@ used when the whole file — or the key — is absent:
 | `claims_dir` | string | `"claims"` (resolved relative to the project root; must stay inside the root) |
 | `marker_globs` | list of strings | `["**/*.md"]` |
 | `marker_pattern` | string (regex, must have ≥ 1 capture group) | `` Claim: `([a-z0-9][a-z0-9-]*)` `` |
+| `evidence_globs` | list of strings | `["**/*"]` (narrow this if `claimlock evidence` grows too slow on a large tree; see "Evidence resolution" below) |
 
 The project root is the nearest ancestor directory containing
 `.claimlock.toml`; if none exists, the root falls back to `git rev-parse
@@ -1098,6 +1099,17 @@ which defaults to `**/*.md` and is irrelevant here). The walker already skips
 hidden directories, `node_modules`, the claims directory, gitignored files,
 and anything that fails to decode as UTF-8 — `evidence` does not re-implement
 any of that.
+
+Because `evidence_globs` defaults to `**/*` rather than `**/*.md`, a matched
+candidate can be a tracked fixture, PDF or model blob far larger than any
+source file — `refs`'s own scan never faced this, bounded as it is to
+markdown by default. A candidate over `evidence.MAX_SCAN_BYTES` (4 MiB — ample
+for any source file that could plausibly contain a test name) is skipped
+rather than read whole, to bound peak memory. A skip is counted separately
+from a scan, never folded into it, so it stays visible rather than reading as
+a clean miss: the census line gains a trailing `, <skipped> skipped (too
+large)` whenever at least one file was skipped this run, and says nothing
+extra when none were.
 
 **Nothing here executes anything.** `claimlock evidence` reads files and
 looks for an identifier token; it never runs a command a claim cites, because

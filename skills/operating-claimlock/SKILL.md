@@ -44,7 +44,11 @@ unless a machine is parsing it — the text form is smaller.
 
 CI, on a pull request:
 
-    claimlock self-test && claimlock check --changed origin/main && claimlock refs
+    claimlock self-test && claimlock check --changed origin/main && claimlock refs && claimlock evidence
+
+`evidence` catches what the other three can't: a cited test renamed or
+deleted with nothing about the claim's sources changing, so it stays
+`verified` forever unless something re-checks the citation itself.
 
 Locally, or in a pre-commit hook after `git add`, gate the whole working tree:
 

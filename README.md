@@ -160,6 +160,8 @@ Tokens are bytes/4.
 | `stale` | 1,912 (A) | — |
 | `affected <path>` | 345 (B) | — |
 | `refs` | 13 | — |
+| `refs --orphans` | 118 (C) | 190 (C) |
+| `evidence` | 336 (C) | 633 (C) |
 | SessionStart hook | 110 | capped at 2,000 characters |
 
 `search`'s size no longer scales with store size the way A/B did for the
@@ -172,9 +174,18 @@ substring match: **892** tokens by default, **5,805** with `--body`, on the
 same 30-claim fixture — uncapped, and every claim matched here, so this is
 close to a worst case for it.
 
+**C**: a fresh 41-claim fixture, every claim `unverified` and citing one
+`kind: test` ref that names no real test, with no file anywhere citing any
+of them in prose — measured 2026-09-16, so `evidence` reports 41 unresolved
+and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
+by default and uncapped with `--full`.
+
 Loaded or read, not printed: the two claimlock skills ~5,405 tokens when
-invoked; `README.md` ~9,688 and `docs/format.md` ~15,022 **if read** — they are
-reference for changing claimlock itself, not for routine claim work.
+invoked; `README.md` ~10,038 and `docs/format.md` ~16,359 **if read**
+(`len(path.read_bytes())/4`, measured 2026-09-16 after this table's own
+edits — both files grow again with edits like this one, so treat these as
+approximate) — they are reference for changing claimlock itself, not for
+routine claim work.
 
 The cheap sequence, in the order you work: `claimlock affected <paths>` while
 editing, one `claimlock check --changed <base>` before committing, and
