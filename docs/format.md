@@ -570,12 +570,12 @@ INVALID  <id>
          <problem>
          <problem>
          <problem>
-         … and <n> more problems
+         … and <n> more problems — claimlock check --full
 STALE    <id>
          <key>: stale
          <key>: stale
          <key>: stale
-         … and <n> more sources
+         … and <n> more sources — claimlock check --full
 RENAMED  <id>
          <key>: renamed → <new> (<sha7 | uncommitted>)
 … and <n> more failing claims — claimlock check --full
@@ -608,9 +608,11 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
   `<key>: renamed → <new> (<sha7 | uncommitted>)` — the new path and, in
   parentheses, the 7-character commit that renamed it, or the literal
   `uncommitted` for a staged-but-uncommitted `git mv`. At most `SOURCE_LINES`
-  of these per claim, then `         … and <n> more sources`; likewise at most
-  `SOURCE_LINES` `<problem>` lines, then `         … and <n> more problems`.
-  `--full` prints every source line and every problem.
+  of these per claim, then
+  `         … and <n> more sources — claimlock check --full`; likewise at most
+  `SOURCE_LINES` `<problem>` lines, then
+  `         … and <n> more problems — claimlock check --full`. `--full` prints
+  every source line and every problem.
 - At most `LISTED_CLAIMS` failing claims are listed, then
   `… and <n> more failing claims — claimlock check --full`. The
   `pre-existing (not changed here):` list and the `OWED` lines are each capped

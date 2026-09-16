@@ -68,8 +68,11 @@ class SourceAndProblemCaps(CheckStoreMixin, TmpCase):
         root, ids = self.store(1, sources_per_claim=5)
         rc, out, err = run_cli(root, "check")
         self.assertEqual(rc, 1, out + err)
-        self.assertIn("         … and 2 more sources", out)
+        self.assertIn("         … and 2 more sources — claimlock check --full", out)
         self.assertEqual(out.count(": stale"), SOURCE_LINES)
+        # A single claim never trips the LISTED_CLAIMS cap, so this is the
+        # only place `--full` can appear — it must still be reachable.
+        self.assertIn("claimlock check --full", out)
 
     def test_five_problems_capped_at_three(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -91,8 +94,25 @@ class SourceAndProblemCaps(CheckStoreMixin, TmpCase):
         write(root, "claims/bad-claim.md", text)
         rc, out, err = run_cli(root, "check")
         self.assertEqual(rc, 1, out + err)
-        self.assertIn("         … and 2 more problems", out)
+        self.assertIn("         … and 2 more problems — claimlock check --full", out)
         self.assertEqual(out.count("has a malformed blob"), SOURCE_LINES)
+        self.assertIn("claimlock check --full", out)
+
+
+class ExactCapBoundary(CheckStoreMixin, TmpCase):
+    def test_exactly_LISTED_CLAIMS_prints_no_note(self):
+        root, ids = self.store(LISTED_CLAIMS)
+        rc, out, err = run_cli(root, "check")
+        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(out.count("STALE    claim-"), LISTED_CLAIMS)
+        self.assertNotIn("more failing claims", out)
+
+    def test_one_over_LISTED_CLAIMS_prints_the_note(self):
+        root, ids = self.store(LISTED_CLAIMS + 1)
+        rc, out, err = run_cli(root, "check")
+        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(out.count("STALE    claim-"), LISTED_CLAIMS)
+        self.assertIn("… and 1 more failing claims — claimlock check --full", out)
 
 
 class FullFlagRestoresEverything(CheckStoreMixin, TmpCase):
@@ -178,6 +198,44 @@ class JsonKeepsOwedByDefault(TmpCase):
         ids = {r["id"] for r in data["results"]}
         self.assertIn("c", ids)
         self.assertEqual(data["omitted"], 0)
+
+
+class MixedStoreJsonBudget(TmpCase):
+    """A store where most claims are fresh (the realistic case) is the real
+    guard on `--json`'s filtering — an all-blocking fixture can't show it,
+    since filtering then omits nothing (see BudgetCeilings.test_json_output_is_bounded)."""
+
+    def _mixed_store(self, n_fresh, n_blocking):
+        root = make_repo(self.tmp / "r", use_git=False)
+        fresh_ids = [f"fresh-{i:03d}" for i in range(n_fresh)]
+        blocking_ids = [f"blocking-{i:03d}" for i in range(n_blocking)]
+        for cid in fresh_ids + blocking_ids:
+            path = f"src/{cid}.py"
+            write(root, path, f"{cid} v1\n")
+            write(root, f"claims/{cid}.md", claim_text(cid, sources=[path]))
+        rc, out, err = run_cli(root, "verify", *(fresh_ids + blocking_ids))
+        assert rc == 0, (out, err)
+        for cid in blocking_ids:
+            write(root, f"src/{cid}.py", f"{cid} CHANGED\n")
+        return root, fresh_ids, blocking_ids
+
+    def test_default_json_is_bounded_and_holds_only_the_blocking_claims(self):
+        root, fresh_ids, blocking_ids = self._mixed_store(24, 6)
+        rc, out, err = run_cli(root, "check", "--json")
+        self.assertEqual(rc, 1, out + err)
+        data = json.loads(out)
+        self.assertEqual({r["id"] for r in data["results"]}, set(blocking_ids))
+        self.assertEqual(len(data["results"]), 6)
+        self.assertEqual(data["omitted"], 24)
+        size = len(out.encode("utf-8"))
+        self.assertLessEqual(size, 3000, f"mixed-store default `check --json` was {size} bytes")
+
+        rc, out_full, err = run_cli(root, "check", "--json", "--full")
+        self.assertEqual(rc, 1, out_full + err)
+        full_size = len(out_full.encode("utf-8"))
+        self.assertLessEqual(size, full_size / 2,
+                              f"default {size} B should be at most half of --full {full_size} B "
+                              f"(24 fresh + 6 blocking claims)")
 
 
 class BudgetCeilings(CheckStoreMixin, TmpCase):

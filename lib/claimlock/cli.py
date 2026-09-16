@@ -112,6 +112,17 @@ def _capped(items, cap, more):
     return items[:cap], more.format(n=len(items) - cap)
 
 
+def _print_capped(items, cap, more, fn):
+    """`fn(item)` for at most `cap` items, then `more.format(n=...)` when cut
+    (see `_capped`) — the shape shared by the failing/pre-existing/owed lists
+    in `cmd_check`."""
+    shown, note = _capped(items, cap, more)
+    for item in shown:
+        fn(item)
+    if note:
+        print(note)
+
+
 def _hints_block(states_in_order, first_id):
     """The `hints:` lines: one per state present (that has a hint — `invalid`
     does not), `  <state>: <HINT[state] with {id} replaced by first_id[state]>`.
@@ -126,7 +137,7 @@ def _print_failing(r, cap):
     `cmd_check`, never here."""
     if r.problems:
         print(f"{_paint('31', 'INVALID ')} {r.claim.id}")
-        shown, note = _capped(r.problems, cap, "… and {n} more problems")
+        shown, note = _capped(r.problems, cap, "… and {n} more problems — claimlock check --full")
         for x in shown:
             print(f"         {x}")
         if note:
@@ -146,7 +157,7 @@ def _print_failing(r, cap):
                     lines.append(f"{key}: renamed → {new} ({sha})")
                     continue
             lines.append(f"{key}: {st}")
-        shown, note = _capped(lines, cap, "… and {n} more sources")
+        shown, note = _capped(lines, cap, "… and {n} more sources — claimlock check --full")
         for line in shown:
             print(f"         {line}")
         if note:
@@ -250,24 +261,15 @@ def cmd_check(args):
     else:
         owed_states = _owed_states(project, hasher, owed)
         src_cap = None if full else SOURCE_LINES
-        shown, note = _capped(blocking, cap, "… and {n} more failing claims — claimlock check --full")
-        for r in shown:
-            _print_failing(r, src_cap)
-        if note:
-            print(note)
+        _print_capped(blocking, cap, "… and {n} more failing claims — claimlock check --full",
+                      lambda r: _print_failing(r, src_cap))
         if elsewhere:
             print("pre-existing (not changed here):")
-            shown, note = _capped(elsewhere, cap, "  … and {n} more pre-existing claims — claimlock check --full")
-            for r in shown:
-                print(f"  {r.claim.id}: {'invalid' if r.problems else r.state}")
-            if note:
-                print(note)
+            _print_capped(elsewhere, cap, "  … and {n} more pre-existing claims — claimlock check --full",
+                          lambda r: print(f"  {r.claim.id}: {'invalid' if r.problems else r.state}"))
         behind = {}
-        shown, note = _capped(owed, cap, "… and {n} more owed claims — claimlock check --full")
-        for r in shown:
-            print(_owed_line(project, r, owed_states.get(r.claim.id), behind))
-        if note:
-            print(note)
+        _print_capped(owed, cap, "… and {n} more owed claims — claimlock check --full",
+                      lambda r: print(_owed_line(project, r, owed_states.get(r.claim.id), behind)))
         first_id = {}
         for r in blocking:
             if r.problems:
