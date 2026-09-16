@@ -149,7 +149,7 @@ own figures are separate — see note 1 below). Tokens are bytes/4.
 |---|---:|---:|
 | `check` | 1,055 (A) / 295 (B) | 2,496 (A) |
 | `check --json` | 6,552 (A) / 4,270 (B) | 15,841 (B) |
-| `search <question>` (ranked, `--top` default 10) | 264¹ | 829¹ (`--body`) |
+| `search <question>` (ranked, `--top` default 10) | 385 | 1,414 (`--literal`, all matches) |
 | `show <id>` (largest real claim) | 2,024 | 4,047 |
 | `diff <id>` (large file rewritten) | 669 | 11,116 |
 | `list` | 1,491 (A) | — |
@@ -158,7 +158,6 @@ own figures are separate — see note 1 below). Tokens are bytes/4.
 | `refs` | 13 | — |
 | SessionStart hook | 110 | capped at 2,000 characters |
 
-¹ `search` is now ranked and capped at `--top` (default 10), so its default
 size no longer scales with store size the way A/B did for the other rows —
 measured 2026-09-16 on a fresh 30-claim fixture where every claim matches the
 query (`stream`), not stores A/B. `--literal` restores the old uncapped
