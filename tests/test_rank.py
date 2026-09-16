@@ -180,8 +180,40 @@ class RelevanceFloor(unittest.TestCase):
     vocabulary entirely, report no hits. Otherwise rank normally and return
     every claim BM25 scores — no per-document-frequency gate any more."""
 
+    # 19 filler claims, unrelated to "fails"/"payment"/"channel"/"undeclared",
+    # so that "fails" (present in all 5 FAILS_CLAIMS below) sits at 5/24 ≈
+    # 20.8% document frequency — comfortably UNDER the old df<=25%
+    # "discriminating" ceiling. This is deliberate: the fix-round regression
+    # tests below need the old rule to treat "fails" as a qualifying,
+    # discriminating term (which it does at this ratio) so that the old
+    # rule's wrong answer is actually reproduced, rather than accidentally
+    # matching the new rule's silence for an unrelated reason (a 5-doc
+    # corpus makes df<=25% unreachable by ANY term, which is failure #3, a
+    # different bug — see RegressionFromTheRealStore).
+    _FILLER_TOPICS = [
+        ("ledger reconciles nightly", "ledger totals reconcile automatically every night"),
+        ("schema reconcile columns", "a declared schema reconciles added renamed and dropped columns"),
+        ("auth tokens are paseto", "boogy issues paseto v4 tokens signed with an ed25519 key"),
+        ("api keys are hashed", "an api key is hashed before it is stored anywhere"),
+        ("rate limit buckets by caller", "the ingress rate limiter buckets by caller not by service"),
+        ("peer fetch strips headers", "a cross service call strips identity bearing headers"),
+        ("store scan caps rows", "an unindexed store scan is capped at five million rows"),
+        ("cpu deadline traps guest", "a guest that spins past its deadline is trapped"),
+        ("sweeper locks one service", "the reclamation sweeper takes a per service lock"),
+        ("grant expiry drops membership", "a websocket grant expiring drops the room not the socket"),
+        ("llm fallback needs account", "platform fallback needs a configured operator account"),
+        ("grpc web status reads zero", "a failed grpc web call reads status zero on failure"),
+        ("frontend assets are addressed", "frontend assets are stored content addressed by hash"),
+        ("stream reconnect reruns handler", "a reconnecting client reruns the whole handler"),
+        ("audit never stores secrets", "an audit event never records a secret value"),
+        ("outbox relays jobs inline", "the outbox relays a staged job inline after commit"),
+        ("ledger reservation expires", "a reservation expires when its lease is not settled"),
+        ("tx conflict returns 409", "a transaction commit conflict returns 409 no retry"),
+        ("schema conflict blocks deploy", "a schema conflict blocks a deploy with 409"),
+    ]
+
     def _five_claims(self):
-        return [
+        claims = [
             doc("ws-publish-needs-channel", id="ws publish needs a declared channel",
                 body="what happens when a channel is undeclared: publishing fails with an error"),
             doc("retry-fails-when-budget-exceeded", id="retry fails when budget exceeded",
@@ -193,6 +225,9 @@ class RelevanceFloor(unittest.TestCase):
             doc("job-fails-when-retries-exhausted", id="job fails when retries exhausted",
                 body="what happens when a retry budget is exhausted: the job fails"),
         ]
+        for i, (head, body) in enumerate(self._FILLER_TOPICS):
+            claims.append(doc(f"filler-{i}", id=head, body=body))
+        return claims
 
     def test_all_content_terms_absent_means_no_hits_and_names_them(self):
         # "what", "happens", "when" and "a" are stop words; "payment" is the
@@ -206,19 +241,25 @@ class RelevanceFloor(unittest.TestCase):
         self.assertEqual(index.unknown(content_terms), ["payment"])
 
     def test_half_content_terms_absent_means_no_hits(self):
-        # "payment" and "fails" are both content terms ("fails" is present
-        # in every claim, "payment" in none): exactly 1 of 2 (50%) absent,
-        # which the spec's "at least half" wording silences. This is
-        # regression #2 from the fix-round brief: "fails" being common and
-        # real must NOT be enough to answer a query about payments.
+        # "payment" and "fails" are both content terms: "fails" sits at
+        # 5/24 ≈ 20.8% document frequency (present but genuinely uncommon,
+        # not ubiquitous), "payment" in none. 1 of 2 (50%) absent silences
+        # the query. This is regression #2 from the fix-round brief: "fails"
+        # being real and present-but-uncommon must NOT be enough to answer a
+        # query about payments on its own.
+        #
+        # Guards: the old df<=25% rule marks "fails" (20.8%) discriminating
+        # and returns the 5 "fails" claims as a wrong, confident answer.
+        # Checked to fail under 1d61157 (copy of lib/claimlock/rank.py from
+        # that commit, run against this fixture): returns 6 hits instead of
+        # []; see the fix-round report for the exact before/after output.
         index = Index(self._five_claims())
         self.assertEqual(search(index, "what happens when a payment fails"), [])
 
     def test_all_content_terms_present_ranks_normally(self):
-        # Every content term ("channel", "undeclared") exists in the corpus,
-        # so the floor must not fire even though "channel"/"undeclared" are
-        # not rare (this used to fail under the old df<=25% rule too, since
-        # a 5-claim corpus makes 25% unreachable by any term — regression #3).
+        # Every content term ("channel", "undeclared") exists in the corpus
+        # (both appear in exactly one of 24 claims), so the floor must not
+        # fire even though they are individually rare.
         index = Index(self._five_claims())
         hits = search(index, "what happens when a channel is undeclared")
         self.assertIn("ws-publish-needs-channel", [cid for _, cid in hits])
@@ -249,51 +290,87 @@ class RegressionFromTheRealStore(unittest.TestCase):
     breaking."""
 
     def test_common_but_real_terms_still_surface_the_right_claim(self):
-        # "grpc" at 39% and "error" at 46% document frequency (both over the
-        # old 25% ceiling) must not delete the real answer, and an unrelated
-        # claim that only shares the rarer word "handling" must not win.
+        # Regression #1: the correct answer must be reachable ONLY through
+        # terms common in the corpus ("grpc" at 5/13 ≈ 38.5%, "error" at
+        # 5/13 ≈ 38.5%, both over the old 25% ceiling) — it carries NO rare
+        # term of its own. "handling" (1/13 ≈ 7.7%, discriminating under the
+        # old rule) appears ONLY in the unrelated claim, which is exactly
+        # what let the old rule's only "qualifying" term point at the wrong
+        # claim. (An earlier version of this fixture put "handling" in the
+        # correct answer's own body too, which let it independently qualify
+        # under the old rule and pass on the bug — see the fix-round
+        # report's before/after for that mistake and its correction.)
+        #
+        # Guards: the old df<=25% rule drops the correct answer from the
+        # results ENTIRELY (neither "grpc" nor "error" qualifies at ~38.5%,
+        # and it shares no other term with a rare word), leaving only the
+        # unrelated "handling" claim. Checked to fail under 1d61157 (copy of
+        # lib/claimlock/rank.py from that commit, run against this fixture):
+        # returns exactly one hit, 'unrelated-handling-claim' — the correct
+        # answer is absent, not merely outranked. See the fix-round report
+        # for the exact before/after output.
         docs = [
             doc("grpc-error-details-are-bounded-never-fatal",
                 id="grpc error details are bounded never fatal",
-                body="a structured grpc error detail is dropped rather than failing the "
-                     "whole rpc call; grpc error handling never turns a detail overflow fatal"),
-            doc("grpc-status-rides-reserved-headers", id="grpc status rides reserved headers",
-                body="grpc status travels on reserved response headers; no forged error can appear there"),
+                body="a structured grpc error detail is dropped rather than failing the whole "
+                     "rpc call; the status channel still carries the error code across the response"),
+            doc("grpc-status-rides-reserved-headers", id="grpc status rides reserved response headers",
+                body="grpc status travels over reserved headers; forgery is not possible from a guest"),
             doc("grpc-reflection-is-host-native", id="grpc reflection is host native",
-                body="a grpc reflection query is answered by the host, no guest involved"),
-            doc("schema-conflict-blocks-provision", id="schema conflict blocks provision",
-                body="a schema error blocks provisioning with a 409 conflict"),
-            doc("tx-conflict-is-409", id="tx conflict is 409",
-                body="a commit error on a transaction conflict returns 409, no auto retry; "
-                     "this has nothing to do with grpc"),
+                body="a grpc reflection query is answered entirely by the host, no guest code runs"),
+            doc("grpc-conformance-harness", id="grpc conformance harness checks five protocols",
+                body="the grpc conformance server exercises every protocol projection"),
+            doc("grpc-mount-serves-three-protocols", id="grpc mount serves three wire protocols at once",
+                body="a single grpc mount answers connect grpc and grpc web"),
+            doc("schema-conflict-blocks-provision", id="schema conflict blocks provision with 409",
+                body="a schema error blocks provisioning and restores the previous deployment"),
+            doc("tx-conflict-is-409", id="tx commit conflict is 409 no auto retry",
+                body="a commit error on a transaction conflict returns 409"),
+            doc("ingress-rate-limit-rejects", id="ingress rate limit rejects with 429",
+                body="a rate limit error returns 429 with retry after"),
+            doc("api-key-invalid-returns-401", id="invalid api key returns 401",
+                body="an authentication error occurs when the key hash does not match"),
             doc("unrelated-handling-claim", id="generic request handling claim",
                 body="this claim is about handling requests in an unrelated subsystem entirely"),
-            doc("filler-one", id="filler claim one", body="totally unrelated content here"),
-            doc("filler-two", id="filler claim two", body="totally unrelated content here"),
-            doc("filler-three", id="filler claim three", body="totally unrelated content here"),
-            doc("filler-four", id="filler claim four", body="totally unrelated content here"),
-            doc("filler-five", id="filler claim five", body="totally unrelated content here"),
-            doc("filler-six", id="filler claim six", body="totally unrelated content here"),
-            doc("filler-seven", id="filler claim seven", body="totally unrelated content here"),
+            doc("filler-one", id="filler claim one about ledgers", body="totally unrelated ledger content here"),
+            doc("filler-two", id="filler claim two about websockets",
+                body="totally unrelated websocket content here"),
+            doc("filler-three", id="filler claim three about jobs",
+                body="totally unrelated background job content here"),
         ]
-        # sanity: "grpc" and "error" really are common in this fixture, well
-        # over the old 25% ceiling, so this is a faithful repro.
+
+        # sanity: "grpc" and "error" really are common (both >25%) and
+        # "handling" really is rare (<=25%) and present ONLY in the
+        # unrelated claim, so this is a faithful repro of regression #1.
         def doc_ratio(term):
             hits = sum(1 for _, f in docs if term in tokens(f["id"] + " " + f["body"]))
             return hits / len(docs)
 
         self.assertGreater(doc_ratio("grpc"), 0.25)
         self.assertGreater(doc_ratio("error"), 0.25)
+        self.assertLessEqual(doc_ratio("handling"), 0.25)
+        correct_id, correct_fields = docs[0]
+        self.assertNotIn("handling", tokens(correct_fields["id"] + " " + correct_fields["body"]),
+                          "the correct-answer fixture must carry no rare term of its own")
 
         index = Index(docs)
         hits = search(index, "grpc error handling")
         self.assertTrue(hits, "grpc-error query returned nothing — the old df floor is back")
-        self.assertEqual(hits[0][1], "grpc-error-details-are-bounded-never-fatal")
+        self.assertEqual(hits[0][1], correct_id)
 
     def test_unanswerable_query_over_a_common_word_stays_silent(self):
-        # "fails" is present in most claims (a real, common word); "payment"
-        # is absent. The right behaviour is silence, not an answer built
-        # from "fails" alone.
+        # Regression #2: "fails" sits at 5/24 ≈ 20.8% document frequency in
+        # _five_claims() — present, and genuinely uncommon rather than
+        # ubiquitous, same shape as the real store's "fails" at 32%; the old
+        # rule reads that as discriminating and answers on it alone.
+        # "payment" is absent entirely. The right behaviour is silence, not
+        # an answer built from "fails" alone.
+        #
+        # Guards: the old df<=25% rule marks "fails" (20.8%) discriminating
+        # and returns the 5 "fails" claims as a wrong, confident answer.
+        # Checked to fail under 1d61157 (copy of lib/claimlock/rank.py from
+        # that commit, run against this fixture): returns 6 hits instead of
+        # []; see the fix-round report for the exact before/after output.
         index = Index(RelevanceFloor()._five_claims())
         self.assertEqual(search(index, "what happens when a payment fails"), [])
 
