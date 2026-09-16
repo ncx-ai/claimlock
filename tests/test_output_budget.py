@@ -409,10 +409,27 @@ class ShowFullFlagRestoresWholeBodyAndRefs(TmpCase):
               claim_text("c", sources=["src/a.py"], evidence=(("test", long_ref),), body=body))
         rc, out, err = run_cli(root, "show", "c", "--full")
         self.assertEqual(rc, 0, out + err)
-        self.assertIn(body, out)
-        self.assertNotIn("more lines", out)
-        self.assertIn(f"[test] {long_ref}", out)
-        self.assertNotIn("…", out)
+        # The exact shape `show c --full` prints for this (unpinned,
+        # unverified) claim: status line, blank, the whole body, blank,
+        # Evidence: with the whole ref, Sources: with the source's unpinned
+        # state, blank, file:. `body` and `long_ref` come from the fixture
+        # itself; the surrounding template is what this test pins — the
+        # guarantee that `--full` restores everything byte-for-byte only
+        # holds if a regression here fails the test, not merely if a
+        # substring goes missing.
+        expected = (
+            "c (core) — unverified\n"
+            "\n"
+            f"{body}\n"
+            "\n"
+            "Evidence:\n"
+            f"  [test] {long_ref}\n"
+            "Sources (a change here makes this claim stale):\n"
+            "  src/a.py — - (unpinned)\n"
+            "\n"
+            "file: claims/c.md\n"
+        )
+        self.assertEqual(out, expected)
 
 
 class ShowBudgetCeiling(TmpCase):
@@ -450,7 +467,12 @@ class ListHeadlineTruncated(TmpCase):
         write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=long_line))
         rc, out, err = run_cli(root, "list", "--full")
         self.assertEqual(rc, 0, out + err)
-        self.assertIn(f"    {long_line}", out)
+        # `long_line` is the fixture's own value; the surrounding template
+        # (mark, id, area, indent) is what this test pins, so a regression in
+        # the un-clipped path fails the test rather than merely disappearing
+        # from a substring check.
+        expected = f"? c (core)\n    {long_line}\n"
+        self.assertEqual(out, expected)
 
 
 class ListStatusFlagLineUnchanged(TmpCase):
@@ -464,6 +486,40 @@ class ListStatusFlagLineUnchanged(TmpCase):
         rc, out, err = run_cli(root, "list")
         self.assertEqual(rc, 0, out + err)
         self.assertIn("✓ c (core) [stale]", out)
+
+
+class ListBudgetCeiling(TmpCase):
+    """Regression guard (R1), not a design target. Spec §6 asks for a
+    per-command output-budget test; `list`'s only got exercised for exact
+    shape above, not size, until now.
+
+    The headline here is made much longer than HEADLINE_CHARS on purpose: a
+    realistic ~200-char headline (this class's sibling `ListHeadlineTruncated`
+    fixture) is still clipped to 120 either way, but the per-claim header line
+    (`? claim-000 (core)`) is fixed overhead that keeps default well over half
+    of --full unless the headline itself dominates the line — so a fixture
+    that actually demonstrates the clip saving needs a headline long enough
+    for that overhead to be negligible by comparison."""
+
+    def test_30_claims_with_long_headlines_is_bounded_and_half_of_full(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        long_line = "h" * 2000
+        for i in range(30):
+            cid = f"claim-{i:03d}"
+            write(root, f"src/{cid}.py", "x\n")
+            write(root, f"claims/{cid}.md", claim_text(cid, sources=[f"src/{cid}.py"], body=long_line))
+
+        rc, out, err = run_cli(root, "list")
+        self.assertEqual(rc, 0, out + err)
+        size = len(out.encode("utf-8"))
+        self.assertLessEqual(size, 5000,
+                              f"default `list` over 30 claims with 2000-char headlines was {size} bytes")
+
+        rc, out_full, err = run_cli(root, "list", "--full")
+        self.assertEqual(rc, 0, out_full + err)
+        full_size = len(out_full.encode("utf-8"))
+        self.assertLessEqual(size, full_size / 2,
+                              f"default {size} B should be at most half of --full {full_size} B (30 claims)")
 
 
 if __name__ == "__main__":
