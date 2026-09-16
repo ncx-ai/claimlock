@@ -99,10 +99,36 @@ at least half of the remaining content terms are absent from the corpus
 entirely, report no match. Otherwise rank normally.
 
 Measured on the real 41-claim store (2026-09-16): **7 of 9** natural-language
-questions at rank 1, **5 of 5** unanswerable queries silent. It costs no
-recall — every answerable query in the set has an absent-fraction of 0.00, so
-the floor never fires on one. It is independent of document frequency, so it
-also works at n=1 (§3.6).
+questions at rank 1, **5 of 5** unanswerable queries silent. On that store it
+costs no recall — every answerable query in the set has an absent-fraction of
+0.00, so the floor never fires on one. It is independent of document
+frequency, so it also works at n=1 (§3.6).
+
+**Corrected 2026-09-16 (fix-wave item B): "costs no recall" does not hold in
+general — it was true of the 41-claim store measured above, not a property of
+the floor.** A reviewer built a second real corpus (192 claims generated from
+a different real document, median **70** indexed tokens per claim versus
+**430** for the store measured above) and measured **2 of 18** answerable
+queries silenced, each with an answering claim actually present in the
+store — e.g. "how do I give someone administrator rights at startup" (absent
+fraction 0.60) against a claim stating "Grants admin scope to this handle at
+startup." The mechanism is exactly the one this section already names for
+document frequency, applied to absence instead: a terse store has a small
+vocabulary, so an ordinary paraphrase ("administrator" vs "admin") reads as
+*entirely* absent rather than merely rare, and the floor cannot tell that
+apart from a query with no real answer. This is now folded into "what it does
+not solve" below, and a self-generated benchmark of this shape is asserted in
+`tests/test_search_ranking.py::TerseCorpusBenchmark` (spec §4).
+
+**Reassurance measured alongside the above: τ (`ABSENT_FRACTION_FLOOR`) is
+not a knife edge.** Sweeping the threshold on both corpora found wide,
+overlapping plateaus, not a value the result depends on precariously: corpus
+A (41 claims) gives identical results for every τ in **[0.34, 1.0]**, and
+corpus B (the terse 192-claim store above) gives identical results across
+**[0.34, 0.60]** — the shipped 0.5 sits inside both. The failure above is not
+"0.5 is the wrong number"; every τ in the range that matters gives the same
+2/18, because the silenced queries have an absent fraction of 0.60 or higher,
+well clear of the plateau's edge in either direction.
 
 **Why not document frequency.** Three df-based rules were built and measured
 against that store; all three failed, and the reason is the same each time:
@@ -122,10 +148,18 @@ this scale**, which is what the shipped rule uses.
 
 - A query whose content words all exist in the store, but scattered across
   unrelated claims, is still answered. The floor sees vocabulary, not topicality.
-- The stop list is a fixed English set of ~60 words; a store in another language
-  gets no benefit from it.
-- The 0.5 threshold is measured on one store of 41 claims. It should be
-  re-measured against a second real store before it is treated as settled.
+- The stop list is a fixed English set of 71 words (`len(rank.STOP_WORDS)`); a
+  store in another language gets no benefit from it.
+- **On a terse store, an ordinary paraphrase can read as absent and cost real
+  recall** (item B, above): measured 2 of 18 answerable queries silenced on a
+  192-claim, median-70-token corpus, each with an answering claim actually
+  present. This is not a threshold-tuning problem — the τ sweep above shows
+  the result is flat across a wide range — it is a property of a small
+  per-claim vocabulary. A terser store needs the querier to use more of the
+  store's own words, or to fall back to `--literal` for a known term or path.
+- The 0.5 threshold was re-measured against a second real store (item B) and
+  held: both corpora agree on a wide τ plateau. It is no longer settled only
+  on one store, but it is still measured on two, not proven in general.
 
 ### 3.5 CLI
 
@@ -162,11 +196,44 @@ asserts, as a floor:
 
 Aggregate rates are asserted, with the measured value in the failure message.
 
+**The fixture is a smoke test, not evidence about real stores (item G, fix
+wave).** It passes **18/18 with zero misses**, while a reviewer's real store
+measured rank-1 **70%** (14/20) and top-3 **90%** on real queries — both
+*below* the fixture's own asserted 80%/100% floors. The fixture's claims run
+~430 tokens each; a real store is often terser (item B), and BM25 has less
+vocabulary per document to match a paraphrase against. Passing this benchmark
+is necessary, not sufficient — it proves the ranker and floor work as
+designed on one hand-built corpus, not that they will hit the same rates on
+whatever store an agent actually has. `TerseCorpusBenchmark` (same file)
+asserts a second, harder, self-generated fixture (18 claims shaped like the
+terse real corpus — a one-line fact plus a shared boilerplate paragraph,
+median ~73 indexed tokens, several claims sharing most of their vocabulary)
+and a correspondingly lower, honest floor (75% rank-1, 85% top-3; measured on
+that fixture: 89%/89%, i.e. 16 of 18) — never another project's content, and
+never the main fixture's own 80%/100% asserted again on an easier corpus.
+
 ## 5. Cost
 
 Budget: under 50 ms to build and query at 500 claims, measured and reported. If
 it exceeds that, the answer is to report it — **not** to add a persisted index,
 which would reintroduce the staleness surface §2 rejects.
+
+Measured curve (index build + query, 2026-09-16), synthetic claims via
+`tests/test_search_ranking.py::_synthetic_claims`:
+
+| Claims | Time |
+|---:|---:|
+| 500 | 10 ms |
+| 2,000 | 33 ms |
+| 5,000 | 87 ms |
+| 20,000 | 314 ms |
+
+Only the 500-claim point is pinned by `Cost.test_build_and_query_cost_at_500_claims`;
+the rest is this measured curve, recorded so a future budget change has a
+real trend to compare against rather than one point. Via the CLI (whole-command
+cost, not just the index) at 2,000 claims: ranked `search` **0.238 s** vs
+`list` **0.184 s** on the same store — claim loading dominates both, and
+ranking adds **~29%** on top of it.
 
 ## 6. Non-goals
 

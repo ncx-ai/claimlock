@@ -140,16 +140,19 @@ field-level and format detail: [`docs/format.md`](docs/format.md).
 Every command prints a bounded report; `--full` restores the complete output.
 `search` is bounded a different way — ranked and capped at `--top` (default
 10) regardless of store size; `--body` still shows matching body lines under
-each hit but stays capped at `--top`, and `--literal` is what restores its old
-uncapped substring behaviour. Measured at `228f748` against two stores —
-**A**: 41 real claims, every one failing; **B**: 201 claims, 54 stale (`search`'s
-own figures are separate — see note 1 below). Tokens are bytes/4.
+each hit but stays capped at whichever mode applies (`--top` under ranking,
+uncapped under `--literal`, which is what restores its old substring
+behaviour). Measured at `228f748` against two stores — **A**: 41 real claims,
+every one failing; **B**: 201 claims, 54 stale. `search`'s own row is measured
+separately below the table, on a generated fixture, because it depends on
+the query and the cap rather than store size the way the other rows do.
+Tokens are bytes/4.
 
 | Command | ~tokens | with `--full` |
 |---|---:|---:|
 | `check` | 1,055 (A) / 295 (B) | 2,496 (A) |
 | `check --json` | 6,552 (A) / 4,270 (B) | 15,841 (B) |
-| `search <question>` (ranked, `--top` default 10) | 385 | 1,414 (`--literal`, all matches) |
+| `search <question>` (ranked, `--top` default 10) | 311 | see below |
 | `show <id>` (largest real claim) | 2,024 | 4,047 |
 | `diff <id>` (large file rewritten) | 669 | 11,116 |
 | `list` | 1,491 (A) | — |
@@ -158,14 +161,18 @@ own figures are separate — see note 1 below). Tokens are bytes/4.
 | `refs` | 13 | — |
 | SessionStart hook | 110 | capped at 2,000 characters |
 
-size no longer scales with store size the way A/B did for the other rows —
-measured 2026-09-16 on a fresh 30-claim fixture where every claim matches the
-query (`stream`), not stores A/B. `--literal` restores the old uncapped
-substring match: 750 tokens by default, 2,445 with `--body`, on the same
-30-claim fixture (every claim matched, so this is close to a worst case).
+`search`'s size no longer scales with store size the way A/B did for the
+other rows above — measured 2026-09-16 on a fresh 30-claim fixture where
+every claim has 8 body lines matching the query `needle` (the same fixture
+`tests/test_output_budget.py::SearchBudgetCeiling` asserts against, so this
+number is reproducible, not a one-off): ranked default (`--top` 10) **311**
+tokens, ranked `--body` **1,949**. `--literal` restores the old uncapped
+substring match: **892** tokens by default, **5,805** with `--body`, on the
+same 30-claim fixture — uncapped, and every claim matched here, so this is
+close to a worst case for it.
 
-Loaded or read, not printed: the two claimlock skills ~5,136 tokens when
-invoked; `README.md` ~8,812 and `docs/format.md` ~13,205 **if read** — they are
+Loaded or read, not printed: the two claimlock skills ~5,405 tokens when
+invoked; `README.md` ~9,688 and `docs/format.md` ~15,022 **if read** — they are
 reference for changing claimlock itself, not for routine claim work.
 
 The cheap sequence, in the order you work: `claimlock affected <paths>` while

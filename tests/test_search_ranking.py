@@ -305,6 +305,144 @@ class Benchmark(unittest.TestCase):
                 self.assertIn(expected, ids, f"{query!r} should surface {expected!r} in the top 3, got {ids}")
 
 
+def _terse_claim(cid, fact, area):
+    """One terse fixture claim (~70 indexed body tokens): a one-line fact
+    plus a shared boilerplate paragraph. Item B/G (2026-09-16 fix wave): a
+    reviewer built a second real corpus, 192 claims generated from a
+    different real document, median 70 indexed tokens per claim versus this
+    file's own 430-token fixture claims above, and measured 2 of 18
+    answerable queries silenced by the relevance floor. This benchmark
+    reproduces that SHAPE (terse claims, paraphrase-heavy queries, several
+    claims sharing most of their vocabulary via the shared boilerplate
+    below) with a self-contained fixture generated here — never another
+    project's content — so the honest recall cost at this vocabulary size
+    is asserted in this repo, not only claimed in prose."""
+    body = fact + " " + _TERSE_BOILERPLATE
+    return claim(cid, fact, body, area, f"crates/terse-example/src/{cid}.rs", f"test:{cid.replace('-', '_')}")
+
+
+# Shared almost verbatim across every terse claim below, the way a family of
+# related settings in one real doc restates the same "read once at startup,
+# needs a restart, falls back to a default" boilerplate around each one --
+# this is what makes the corpus's vocabulary small and heavily overlapping
+# (§3.4's "terse store has a small vocabulary" mechanism) despite 18 distinct
+# claims.
+_TERSE_BOILERPLATE = (
+    "This setting is read once at process start from the environment and cached for "
+    "the lifetime of the running instance; changing it requires a restart to take "
+    "effect, and an unset or malformed value falls back to the compiled-in default "
+    "rather than refusing to start. Operators typically set it in the deployment "
+    "manifest or compose file alongside the other runtime configuration knobs."
+)
+
+# (id, one-line fact, area, natural-language query). Ids and facts share
+# nouns (the "phrase-like id" convention the real store also follows), and
+# each query paraphrases the VERB or question structure while keeping a
+# couple of the claim's own nouns -- a realistic paraphrase, not a synonym
+# swap of every word. Two queries ("rotate"/"kick in") paraphrase past what
+# the small terse vocabulary can recover, by design: the point of this
+# benchmark is to show that cost honestly, not to tune it away.
+TERSE_POSITIVES = [
+    ("grants-admin-role-at-startup", "Grants the admin role to this account at startup.", "auth",
+     "does the admin role get applied to an account automatically at startup"),
+    ("rejects-connections-past-pool-max", "Rejects a new connection once the pool reaches its maximum size.", "pool",
+     "what happens to a connection when the pool is already at its maximum"),
+    ("retries-failed-webhook-delivery", "Retries a failed webhook delivery up to five times with backoff.", "webhooks",
+     "how many times is a failed webhook delivery retried"),
+    ("caches-dns-lookup-for-sixty-seconds", "Caches a dns lookup result for sixty seconds.", "network",
+     "how long does a dns lookup stay cached"),
+    ("rotates-log-file-daily", "Rotates the log file once every day.", "logging",
+     "how often does the log file rotate"),
+    ("throttles-uploads-per-client-per-minute", "Limits how many uploads a single client can make per minute.", "uploads",
+     "is there a per client limit on uploads per minute"),
+    ("encrypts-backup-archive-at-rest", "Encrypts every backup archive with a per tenant key before storing it.", "backup",
+     "is a backup archive encrypted with a tenant key before it is stored"),
+    ("skips-health-checks-while-draining", "Stops answering health checks while the instance is draining connections.",
+     "ops", "does the instance answer health checks while it is draining connections"),
+    ("requires-tls-for-admin-route", "Refuses a plaintext request to an admin route.", "auth",
+     "can an admin route be reached with a plaintext request"),
+    ("compresses-response-over-one-kilobyte", "Compresses a response body once it exceeds one kilobyte.", "http",
+     "at what response size does compression kick in"),
+    ("batches-metric-flush-every-ten-seconds", "Batches metric points and flushes them every ten seconds.",
+     "observability", "how often are metric points flushed"),
+    ("expires-session-cookie-after-idle", "Expires a session cookie after thirty minutes of idle time.", "auth",
+     "how many minutes of idle time before a session cookie expires"),
+    ("deduplicates-webhook-delivery-by-key", "Drops a webhook delivery whose idempotency key was already processed.",
+     "webhooks", "is a webhook delivery dropped if its idempotency key was already processed"),
+    ("locks-account-after-failed-login", "Locks an account for fifteen minutes after five failed login attempts.",
+     "auth", "how many failed login attempts lock an account and for how long"),
+    ("shards-job-queue-by-tenant", "Splits the background job queue into one shard per tenant.", "jobs",
+     "is the background job queue split into shards per tenant"),
+    ("prunes-backup-after-retention-window", "Deletes a backup once it is older than the retention window.",
+     "backup", "does a backup get deleted after it is older than the retention window"),
+    ("signs-outbound-webhook-with-hmac", "Signs every outbound webhook body with an hmac secret.", "webhooks",
+     "is an outbound webhook body signed with an hmac secret"),
+    ("warms-cache-entries-on-startup", "Preloads the most recently used cache entries when the process starts.",
+     "cache", "are cache entries preloaded when the process starts"),
+]
+
+# Measured on this fixture (2026-09-16): median 73 indexed body tokens per
+# claim (vs. 430 for the CLAIMS fixture above), 16/18 = 89% rank-1 and top-3
+# (identical here — every hit found is found at rank 1). Both floors below
+# are set BELOW that measurement and below the main Benchmark's 80%/100%, on
+# purpose: this corpus shape genuinely costs more recall at real scale (item
+# B), and the honest floor should say so rather than assert the main
+# benchmark's numbers again on an easier fixture.
+TERSE_RANK1_FLOOR = 0.75
+TERSE_TOP3_FLOOR = 0.85
+
+
+class TerseCorpusBenchmark(unittest.TestCase):
+    """Item G (2026-09-16 fix wave): the main `Benchmark` above passes
+    18/18 with zero misses, but a reviewer's real second corpus (192 terse
+    claims, median 70 indexed tokens) measured rank-1 70% (14/20) and top-3
+    90% on real queries against a real store — both below `Benchmark`'s own
+    asserted floors. That gap is real: the main fixture's 430-token claims
+    give BM25 far more vocabulary per document to match a paraphrase
+    against than a terse real store does. This class is a second, harder,
+    self-generated fixture in that shape (never another project's content)
+    so the honest, lower floor for terse stores is asserted here, not only
+    claimed in the spec."""
+
+    def setUp(self):
+        self.index = Index([_terse_claim(cid, fact, area) for cid, fact, area, _ in TERSE_POSITIVES])
+
+    def test_body_tokens_are_terse_like_a_real_small_claim(self):
+        # A sanity check on the fixture itself, not the ranker: if this ever
+        # drifts far from "terse", the benchmark below stops being evidence
+        # about terse stores at all.
+        lens = [self.index.field_len["body"][cid] for cid, _, _, _ in TERSE_POSITIVES]
+        median = sorted(lens)[len(lens) // 2]
+        self.assertLess(median, 100, f"fixture body median is {median} indexed tokens — no longer terse")
+
+    def test_positives_meet_a_lower_honest_floor(self):
+        rank1_hits = 0
+        top3_hits = 0
+        misses = []
+        for cid, _, _, query in TERSE_POSITIVES:
+            results = search(self.index, query, limit=3)
+            ids = [hit_id for _, hit_id in results]
+            if ids[:1] == [cid]:
+                rank1_hits += 1
+            if cid in ids:
+                top3_hits += 1
+            else:
+                misses.append((query, cid, ids))
+        n = len(TERSE_POSITIVES)
+        rank1_rate = rank1_hits / n
+        top3_rate = top3_hits / n
+        self.assertGreaterEqual(
+            rank1_rate, TERSE_RANK1_FLOOR,
+            f"terse-corpus rank-1 rate {rank1_rate:.0%} ({rank1_hits}/{n}) is below the honest "
+            f"{TERSE_RANK1_FLOOR:.0%} floor for a terse store (spec §4); misses: {misses}",
+        )
+        self.assertGreaterEqual(
+            top3_rate, TERSE_TOP3_FLOOR,
+            f"terse-corpus top-3 rate {top3_rate:.0%} ({top3_hits}/{n}) is below the honest "
+            f"{TERSE_TOP3_FLOOR:.0%} floor for a terse store (spec §4); misses: {misses}",
+        )
+
+
 def _synthetic_claims(n, seed=1234):
     """`n` generated claims with phrase-like ids and varied natural-ish
     text, for the cost benchmark (spec §5) — not meant to be individually

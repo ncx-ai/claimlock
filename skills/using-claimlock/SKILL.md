@@ -23,9 +23,10 @@ The default sequence, every time:
 4. `claimlock search <topic>` reads one line per hit; add `--body` only when
    the headline isn't enough. `search` is ranked, so ask it a real question
    in your own words (`claimlock search "does a ledger reservation expire"`)
-   rather than guessing a substring; an empty result means no claim covers
-   this — that is itself a finding worth reporting, not something to work
-   around by guessing at the code.
+   rather than guessing a substring; an empty result means no claim in this
+   store uses these words — try `claimlock search --literal` for a path or
+   partial word, or rephrase; if it stays empty, that absence is itself
+   worth reporting, not something to work around by guessing at the code.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
 they are reference for changing claimlock itself (~13,200 and ~8,800 tokens);

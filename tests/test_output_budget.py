@@ -404,8 +404,10 @@ class SearchDefaultShape(TmpCase):
         self.assertEqual(rc, 1, out + err)
         # Task 2: neither "not" nor "there" appears anywhere in this one-claim
         # store's vocabulary, so the relevance floor fires and the message
-        # names both absent content terms.
-        self.assertEqual(out, "claimlock: nothing matches 'not-there' (no claim mentions: not, there)\n")
+        # names both absent content terms. Item F: every ranked no-match also
+        # names the most common remedy (`--literal`).
+        self.assertEqual(out, "claimlock: nothing matches 'not-there' (no claim mentions: not, there)"
+                              " — or try --literal for a substring or path\n")
 
     def test_a_hit_exits_zero(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -543,6 +545,51 @@ class SearchTopFlag(TmpCase):
         self.assertIn("--top", err)
 
 
+class SearchQueryWithBraceIsNeverAFormatString(TmpCase):
+    """Item A (2026-09-16 fix wave): the cut note used to build `more` as an
+    f-string carrying the raw query, then hand it to `_capped`, which calls
+    `.format(n=...)` on it -- so a query containing `{widget}`, `{n}`, `{}`
+    or `{0}` collided with that call. A brace in the query must never crash
+    the command (the hits are computed and worth printing) or corrupt the
+    printed note; the fix builds the note after the cut, never through
+    `_capped`'s `.format`."""
+
+    def _store_of(self, n):
+        root = make_repo(self.tmp / "r", use_git=False)
+        for i in range(n):
+            cid = f"item-{i:02d}"
+            write(root, f"src/{cid}.py", "x\n")
+            write(root, f"claims/{cid}.md",
+                  claim_text(cid, sources=[f"src/{cid}.py"], body="widget appears here"))
+        return root
+
+    def _assert_cut_note_intact(self, query):
+        root = self._store_of(15)
+        rc, out, err = run_cli(root, "search", query)
+        self.assertEqual(rc, 0, out + err)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 11, out)
+        self.assertEqual(lines[-1], f"… and 5 more — claimlock search {query!r} --top 15", out)
+        ids = [line.split(" ", 1)[0] for line in lines[:-1]]
+        self.assertEqual(ids, [f"item-{i:02d}" for i in range(10)])
+
+    def test_named_field_key_does_not_crash(self):
+        self._assert_cut_note_intact("widget appears {widget}")
+
+    def test_n_field_key_does_not_silently_corrupt_the_note(self):
+        # `{n}` happens to match `_capped`'s own placeholder name, so under
+        # the bug it did not raise -- it silently replaced the user's `{n}`
+        # with the cut count too, corrupting the printed command. Assert the
+        # query is echoed back verbatim.
+        self._assert_cut_note_intact("widget appears {n}")
+
+    def test_empty_braces_do_not_crash(self):
+        self._assert_cut_note_intact("widget appears {}")
+
+    def test_positional_index_does_not_crash(self):
+        self._assert_cut_note_intact("widget appears {0}")
+
+
 class SearchLiteralFlag(TmpCase):
     """Task 2, spec §3.5: `--literal` restores today's exact-substring
     matching, for paths and exact strings."""
@@ -568,6 +615,18 @@ class SearchLiteralFlag(TmpCase):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("nothing matches", out)
 
+    def test_top_is_not_validated_under_literal(self):
+        # Item H: --top bounds ranked output only; --literal is uncapped by
+        # design, so an otherwise-invalid --top (0, negative) is skipped
+        # rather than refused -- --literal --top 0 used to exit 2 for a flag
+        # this mode ignores outright.
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="widget appears here"))
+        rc, out, err = run_cli(root, "search", "--literal", "widget", "--top", "0")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("c (core, unverified)", out)
+
 
 class SearchNoMatchNamesAbsentTerms(TmpCase):
     """Task 2, spec §3.4/§3.5: the no-match message names the query's
@@ -580,22 +639,31 @@ class SearchNoMatchNamesAbsentTerms(TmpCase):
         rc, out, err = run_cli(root, "search", "what happens when a payment fails")
         self.assertEqual(rc, 1, out + err)
         self.assertEqual(out, "claimlock: nothing matches 'what happens when a payment fails' "
-                              "(no claim mentions: payment, fails)\n")
+                              "(no claim mentions: payment, fails)"
+                              " — or try --literal for a substring or path\n")
 
-    def test_stop_word_only_query_omits_the_clause(self):
+    def test_stop_word_only_query_omits_the_absent_terms_clause(self):
         # Every term here is a stop word, so there are no content terms to
-        # report as absent -- the clause is omitted rather than printed empty.
+        # report as absent -- that clause is omitted rather than printed
+        # empty, but item F's --literal remedy is still appended.
         root = make_repo(self.tmp / "r", use_git=False)
         write(root, "src/a.py", "x\n")
         write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="Something unrelated."))
         rc, out, err = run_cli(root, "search", "how do you use this")
         self.assertEqual(rc, 1, out + err)
-        self.assertEqual(out, "claimlock: nothing matches 'how do you use this'\n")
+        self.assertEqual(out, "claimlock: nothing matches 'how do you use this'"
+                              " — or try --literal for a substring or path\n")
 
 
 class SearchBodyUnderRanking(TmpCase):
-    """Task 2: `--body` still prints matching body lines, now under ranked
-    hits rather than substring-matched ones."""
+    """Task 2 / item D (2026-09-16 fix wave): `--body` still prints matching
+    body lines, now under ranked hits rather than substring-matched ones.
+    Item D: `_print_search_hit` used to keep the OLD whole-query substring
+    test even under ranking, so a question-shaped query -- never a literal
+    substring of any body line -- printed a header and a blank line and
+    nothing else. Fixed by matching per-line on the query's folded content
+    terms (`rank.fold`/`rank.tokens`/`rank.STOP_WORDS`), not the raw query
+    string."""
 
     def test_body_flag_prints_matching_lines_under_the_ranked_hit(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -606,6 +674,25 @@ class SearchBodyUnderRanking(TmpCase):
         rc, out, err = run_cli(root, "search", "pricing", "--body")
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(out, "pricing (core, unverified)\n    pricing line one\n    pricing line two\n\n")
+
+    def test_question_shaped_query_still_prints_matching_lines(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/background-job-charge.md", claim_text(
+            "background-job-charge", sources=["src/a.py"],
+            body="A background job is billed once when it is first attempted.\n"
+                 "Unrelated line here."))
+        # Never a literal substring of the body: the old code's raw
+        # whole-query substring test matched nothing here, printing only the
+        # header and a blank line. "jobs" (plural) also exercises the same
+        # corpus-aware folding `rank.search` itself uses -- the body only
+        # has "job" (singular).
+        rc, out, err = run_cli(root, "search", "how are background jobs charged", "--body")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(
+            out,
+            "background-job-charge (core, unverified)\n"
+            "    A background job is billed once when it is first attempted.\n\n")
 
 
 class ShowBodyCap(TmpCase):

@@ -367,23 +367,47 @@ def cmd_list(args):
     return 0
 
 
-def _print_search_hit(r, query, body_flag):
+def _print_search_hit(r, query, body_flag, match_terms=None):
     """One hit in either search mode: the header line, or (under `--body`)
-    the header plus every body line containing `query` (case-insensitive),
-    indented, followed by a blank line — unchanged shape from before ranking."""
+    the header plus every matching body line, indented, followed by a blank
+    line — unchanged shape from before ranking.
+
+    `match_terms=None` (used by `--literal`) keeps the original whole-query
+    substring test. Otherwise (ranked search) `match_terms` is the query's
+    folded, stop-word-free content terms (`_ranked_body_match_terms`), and a
+    line prints when it shares any token with that set — a question is
+    almost never a literal substring of a body line, so under ranking the
+    substring test used to match nothing and leave `--body` printing a bare
+    header (item D, 2026-09-16 fix wave)."""
     c = r.claim
     flag = f" [{r.state}]" if r.state in C.NON_FRESH else ""
     if body_flag:
         print(f"{c.id} ({c.area}, {c.status}){flag}")
-        q = query.lower()
-        for line in c.body.splitlines():
-            if q in line.lower():
-                print(f"    {line.strip()}")
+        if match_terms is None:
+            q = query.lower()
+            for line in c.body.splitlines():
+                if q in line.lower():
+                    print(f"    {line.strip()}")
+        else:
+            for line in c.body.splitlines():
+                if match_terms & set(rank.tokens(line)):
+                    print(f"    {line.strip()}")
         print()
     else:
         # rstrip: an empty headline (blank body) would otherwise leave the
         # two-space header/headline separator dangling at line end.
         print(f"{c.id} ({c.area}, {c.status}){flag}  {_clip(c.headline(), HEADLINE_CHARS)}".rstrip())
+
+
+def _ranked_body_match_terms(index, query):
+    """The set of terms `--body` matches body lines against under ranking
+    (item D): the query's terms, corpus-aware folded against `index`'s
+    vocabulary exactly as `rank.search` folds them, with stop words dropped
+    — the same content-term set the relevance floor computes, reused rather
+    than re-derived, so the two can never disagree about what counts as a
+    real word in this query."""
+    terms = rank.fold(rank.tokens(query), index.vocab)
+    return {t for t in terms if t not in rank.STOP_WORDS}
 
 
 def _search_literal(args, results):
@@ -444,24 +468,46 @@ def _absent_terms_note(index, query):
 def _search_ranked(args, results):
     """Ranked search (spec §3.5): build the index fresh from the already-
     loaded claims, rank, cap at `--top`, and name the exact command to see
-    the rest when the cap cuts something."""
+    the rest when the cap cuts something.
+
+    The cut note is built AFTER the cut, never through `_capped`'s
+    `.format` — the query is arbitrary user text (that is the whole point
+    of ranked search) and `_capped` calls `more.format(n=...)` on its
+    `more` argument. A query containing a brace (`claimlock search "widget
+    {widget}"`) used to collide with that call: `{widget}` raised
+    `KeyError`, `{}`/`{0}` raised `IndexError`, and `{n}` silently
+    overwrote the printed query with the cut count — all three uncaught,
+    exiting the process at 1, the same code as "no match" (item A, 2026-09-16
+    fix wave). Interpolating the query only after `_capped` is out of the
+    picture means no query text is ever re-scanned for `{...}`."""
     by_id = {r.claim.id: r for r in results}
     index = rank.Index(_search_index_docs(results))
     hits = rank.search(index, args.query)
     if not hits:
-        print(f"claimlock: nothing matches {args.query!r}{_absent_terms_note(index, args.query)}")
+        # Item F (2026-09-16 fix wave): tokenisation makes every partial
+        # word a false negative by default (`search unindex` finds nothing
+        # while `--literal unindex` finds "unindexed") -- name the most
+        # common remedy every time, not only when the absent-terms clause
+        # already suggests something is wrong.
+        print(f"claimlock: nothing matches {args.query!r}{_absent_terms_note(index, args.query)}"
+              f" — or try --literal for a substring or path")
         return 1
-    more = f"… and {{n}} more — claimlock search {args.query!r} --top {len(hits)}"
-    shown, note = _capped(hits, args.top, more)
+    match_terms = _ranked_body_match_terms(index, args.query) if args.body else None
+    shown, cut = hits[:args.top], hits[args.top:]
     for _, cid in shown:
-        _print_search_hit(by_id[cid], args.query, args.body)
-    if note:
-        print(note)
+        _print_search_hit(by_id[cid], args.query, args.body, match_terms)
+    if cut:
+        print(f"… and {len(cut)} more — claimlock search {args.query!r} --top {len(hits)}")
     return 0
 
 
 def cmd_search(args):
-    if args.top <= 0:
+    # Item H (2026-09-16 fix wave): `--top` bounds ranked output only --
+    # `--literal` is uncapped by design (spec §3.5), so `--top` has nothing
+    # to do under it and is not validated there either (skipped, not
+    # honoured): `--literal --top 0` used to be refused with exit 2 for a
+    # flag that mode ignores outright.
+    if not args.literal and args.top <= 0:
         print(f"claimlock: --top must be a positive integer (got {args.top})", file=sys.stderr)
         return 2
     _, _, results = _evaluate(args)

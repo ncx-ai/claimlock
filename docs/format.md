@@ -714,17 +714,27 @@ changes — `search` still exits 0 on a hit and 1 on no match.
 **The relevance floor.** Ranking always returns *something* for a query with
 any matching term, which would turn an honest "nothing" into a confident
 wrong answer for a query the store has no real vocabulary for. So before
-ranking, the query is folded and stripped of ~60 English stop words
-(`rank.STOP_WORDS`); if at least half of the remaining content terms are
+ranking, the query is folded and stripped of 71 English stop words
+(`len(rank.STOP_WORDS)`); if at least half of the remaining content terms are
 absent from the store's vocabulary *entirely* (not merely rare — document
 frequency was tried and measured to fail, see the design spec §3.4), `search`
 reports no match rather than answering off whatever term happens to be
 present. This is deliberately not perfect: a query whose words all exist in
 the store, just scattered across unrelated claims, is still answered (the
 floor sees vocabulary, not topicality), and the stop list is fixed English
-only. An **empty result is itself informative** — it means no claim in this
-store covers the topic, which is a fact worth reporting, not a search that
-failed. Full rationale: [the design spec](specs/2026-09-16-claimlock-search-ranking-design.md) §3.4.
+only. **On a terse store this genuinely costs recall, not just theoretically**
+— measured on a second real corpus (192 claims, median 70 indexed tokens per
+claim, versus 430 for the store the floor was designed against): 2 of 18
+answerable queries silenced, each with an answering claim actually present,
+because an ordinary paraphrase reads as entirely absent when the store's own
+vocabulary is small. The threshold itself is not fragile — both corpora agree
+on results across a wide range of the absence-fraction cutoff — but the floor
+firing on a real answer is a real, measured cost, not a hypothetical one. An
+**empty result does not mean no claim covers this** — it means no claim in
+this store uses these *words*; try `--literal` for a path or partial word, or
+rephrase using the store's own vocabulary. Full rationale, the exact numbers,
+and the τ-sensitivity measurement: [the design
+spec](specs/2026-09-16-claimlock-search-ranking-design.md) §3.4.
 
 `search <query>` prints one line per hit, best first, up to `--top` (default
 `SEARCH_TOP` = 10):
@@ -743,10 +753,10 @@ than `--top` hits, the cut names the exact command to see the rest:
 … and <n> more — claimlock search <query> --top <total hits>
 ```
 
-`--top 0` or a negative value is refused with exit 2 (not silently printing
-nothing) — `claimlock: --top must be a positive integer (got <N>)`. `--body`
-restores the matching lines, indented four spaces under each hit, followed by
-a blank line — still capped at `--top`:
+`--top 0` or a negative value is refused with exit 2 under ranking (not
+silently printing nothing) — `claimlock: --top must be a positive integer
+(got <N>)`. `--body` restores the matching lines, indented four spaces under
+each hit, followed by a blank line — still capped at `--top`:
 
 ```
 <id> (<area>, <status>)[ [<state>]]
@@ -755,23 +765,39 @@ a blank line — still capped at `--top`:
 
 ```
 
+Under ranking a line prints when it shares any token with the query's
+*folded, stop-word-dropped content terms* (`rank.fold`/`rank.tokens`/
+`rank.STOP_WORDS` — the same terms the relevance floor computes), not a raw
+substring test: a question is almost never a literal substring of a body
+line, so matching term-by-term is what makes `--body` still show something
+useful for a natural-language query. Under `--literal`, `--body` keeps the
+original case-insensitive whole-query substring test.
+
 `--literal` restores the pre-ranking behaviour exactly: a case-insensitive
 substring match against the same fields, uncapped, in store order — for a
 path or an exact string where a literal match is what you actually want
 (`claimlock search --literal 'src/limit.py'`). A multi-word natural-language
 query that ranking answers can (and typically does) return nothing under
-`--literal`, since it was never a literal substring of anything.
+`--literal`, since it was never a literal substring of anything. `--top` has
+nothing to bound under `--literal` (which is uncapped by design) and is not
+validated there either — `--literal --top 0` is not refused, `--top` is
+simply ignored.
 
 The no-match message is `claimlock: nothing matches '<query>'`, exit 1,
 extended under ranking with the query's content terms the store's vocabulary
-has no term for at all: `claimlock: nothing matches '<query>' (no claim
-mentions: <term>, <term>)`. Under ranking, no-match always means the floor
+has no term for at all — `claimlock: nothing matches '<query>' (no claim
+mentions: <term>, <term>)` — and, under ranking always, a reminder of the
+most common remedy: `claimlock: nothing matches '<query>' — or try --literal
+for a substring or path` (both clauses combine when there are absent terms to
+name: `... (no claim mentions: <term>) — or try --literal for a substring or
+path`). `--literal`'s own no-match message carries neither clause — it has no
+notion of "vocabulary", and suggesting `--literal` to someone already using
+it would be circular. Under ranking, no-match always means the floor
 fired — any content term present in the store's vocabulary guarantees at
-least one nonzero-scoring hit — so the clause names something whenever there
-was a content term to check; it is omitted only when the query was entirely
-stop words to begin with (nothing to check the vocabulary for).
-`--literal`'s no-match message never carries this clause — it has no notion
-of "vocabulary", only a substring that either occurs or does not.
+least one nonzero-scoring hit — so the absent-terms clause names something
+whenever there was a content term to check; it is omitted only when the query
+was entirely stop words to begin with (nothing to check the vocabulary for),
+in which case the message carries only the `--literal` remedy.
 
 `show <id>` is unchanged except for two caps, both restored whole by `--full`:
 the status line, any `INVALID`/state line, the `Evidence:` kind labels, the
