@@ -677,6 +677,54 @@ every claim in `results` and sets `"omitted": 0`. `claims`, `sources_hashed`,
 every claim from `results` before this existed; pass `--full` to get that
 shape back.
 
+## `claimlock search`, `claimlock show` and `claimlock list` output
+
+Budget constants live beside `check`'s in `lib/claimlock/cli.py`: `BODY_LINES
+= 40` (body lines printed by `show`), `EVIDENCE_CHARS = 200` (each evidence
+`ref` printed by `show`), `HEADLINE_CHARS = 120` (headline printed by
+`search` and `list`). Every claim's **headline** is the first non-blank line
+of its body, stripped (`Claim.headline()`).
+
+`search <query>` prints one line per hit by default, no body lines and no
+blank separator:
+
+```
+<id> (<area>, <status>)[ [<state>]]  <headline, clipped to HEADLINE_CHARS>
+```
+
+`[<state>]` appears only when the claim's state is non-fresh (e.g. ` [stale]`),
+immediately before the two spaces that separate the header from the headline.
+A headline over `HEADLINE_CHARS` is cut to its first `HEADLINE_CHARS - 1`
+characters plus a trailing `…` (`HEADLINE_CHARS` total). `--body` restores the
+matching lines, indented four spaces under each hit, followed by a blank
+line — today's uncapped shape:
+
+```
+<id> (<area>, <status>)[ [<state>]]
+    <matching body line>
+    <matching body line>
+
+```
+
+The no-match message (`claimlock: nothing matches '<query>'`, exit 1) and a
+hit's exit 0 are unchanged either way.
+
+`show <id>` is unchanged except for two caps, both restored whole by `--full`:
+the status line, any `INVALID`/state line, the `Evidence:` kind labels, the
+`Sources (a change here makes this claim stale):` block and the trailing
+`file:` line are never truncated.
+
+- The **body** is capped at `BODY_LINES` lines; when it holds more, the cut
+  prints `… <n> more lines — read <claim path>` — the same relative path the
+  trailing `file:` line names.
+- Each evidence **`ref`** is clipped to `EVIDENCE_CHARS` characters (its first
+  `EVIDENCE_CHARS - 1` plus a trailing `…` when longer) — the `[<kind>]` label
+  before it is never clipped.
+
+`list` is unchanged except that each claim's headline (the second, indented
+line) is clipped to `HEADLINE_CHARS` the same way as `search`'s; `--full`
+prints it whole. The status/mark and flag line is unchanged.
+
 ## `claimlock owe`
 
 `claimlock owe <id>... [--to <email>] [--reason <text>]` rewrites each claim to

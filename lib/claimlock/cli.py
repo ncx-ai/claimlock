@@ -28,6 +28,9 @@ MARK = {"verified": "✓", "unverified": "?", "refuted": "✗", "owed": "⇢"}
 # `--full` (or `--body` for search) always restores the uncapped output.
 LISTED_CLAIMS = 20   # failing/pre-existing/owed claims listed by `check`
 SOURCE_LINES = 3     # per-source detail lines, and per-problem lines, per claim in `check`
+BODY_LINES = 40      # body lines printed by `show`
+EVIDENCE_CHARS = 200 # each evidence `ref` printed by `show`
+HEADLINE_CHARS = 120 # headline printed by `search` and `list`
 
 CI_SNIPPET = """\
 Gate a change in CI on the claims it touched (pre-existing drift is listed, not blocking):
@@ -110,6 +113,13 @@ def _capped(items, cap, more):
     if cap is None or len(items) <= cap:
         return items, None
     return items[:cap], more.format(n=len(items) - cap)
+
+
+def _clip(text, chars):
+    """text unchanged, or text[:chars-1] + "…"."""
+    if len(text) <= chars:
+        return text
+    return text[:chars - 1] + "…"
 
 
 def _print_capped(items, cap, more, fn):
@@ -331,7 +341,10 @@ def cmd_list(args):
         flag += " [invalid]" if r.problems else ""
         flag += f" [owed → {r.claim.owed_by}]" if r.claim.status == "owed" else ""
         print(f"{MARK.get(r.claim.status, '?')} {r.claim.id} ({r.claim.area}){flag}")
-        print(f"    {r.claim.headline()}")
+        headline = r.claim.headline()
+        if not args.full:
+            headline = _clip(headline, HEADLINE_CHARS)
+        print(f"    {headline}")
     return 0
 
 
@@ -347,11 +360,14 @@ def cmd_search(args):
             continue
         hits += 1
         flag = f" [{r.state}]" if r.state in C.NON_FRESH else ""
-        print(f"{c.id} ({c.area}, {c.status}){flag}")
-        for line in c.body.splitlines():
-            if q in line.lower():
-                print(f"    {line.strip()}")
-        print()
+        if args.body:
+            print(f"{c.id} ({c.area}, {c.status}){flag}")
+            for line in c.body.splitlines():
+                if q in line.lower():
+                    print(f"    {line.strip()}")
+            print()
+        else:
+            print(f"{c.id} ({c.area}, {c.status}){flag}  {_clip(c.headline(), HEADLINE_CHARS)}")
     if not hits:
         print(f"claimlock: nothing matches {args.query!r}")
         return 1
@@ -374,13 +390,21 @@ def cmd_show(args):
     for x in r.problems:
         print(_paint("31", f"INVALID: {x}"))
     print()
-    print(c.body)
+    body_lines = c.body.splitlines()
+    more = f"… {{n}} more lines — read {_rel(project, c.path)}"
+    shown, note = _capped(body_lines, None if args.full else BODY_LINES, more)
+    print("\n".join(shown))
+    if note:
+        print(note)
     print()
     if c.evidence:
         print("Evidence:")
         for e in c.evidence:
             if isinstance(e, dict):
-                print(f"  [{e.get('kind')}] {e.get('ref')}")
+                ref = e.get('ref')
+                if not args.full and isinstance(ref, str):
+                    ref = _clip(ref, EVIDENCE_CHARS)
+                print(f"  [{e.get('kind')}] {ref}")
     states = dict(r.per_source)
     if _pins_status(c) and not r.problems:
         _, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources),
@@ -701,13 +725,17 @@ def build_parser():
     p = add("list", cmd_list, "list claims")
     p.add_argument("--area")
     p.add_argument("--status", choices=C.STATUSES)
+    p.add_argument("--full", action="store_true", help="print headlines whole, uncapped")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--owed-by", metavar="EMAIL", help="only claims owed by this email")
     g.add_argument("--mine", action="store_true", help="only claims owed by your git config user.email")
     p = add("search", cmd_search, "case-insensitive substring search")
     p.add_argument("query")
+    p.add_argument("--body", action="store_true",
+                   help="print matching body lines indented under each hit, uncapped")
     p = add("show", cmd_show, "one claim with evidence and per-source state")
     p.add_argument("id")
+    p.add_argument("--full", action="store_true", help="print the whole body and whole evidence refs, uncapped")
     p = add("verify", cmd_verify, "pin sources and mark verified (only after re-checking)")
     p.add_argument("ids", nargs="+")
     p = add("follow", cmd_follow, "rewrite a renamed source's path to where it moved, keeping its pins")

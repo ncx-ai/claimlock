@@ -113,9 +113,9 @@ Two **problems** fail `check` whatever the status:
 | `claimlock new` | Scaffold an unverified claim (`claimlock new <id> --area <area>`). |
 | `claimlock check` | The gate: exit 1 if any claim is invalid (including conflicted), or verified and `stale`, `missing`, `renamed`, `unpinned` or `unanchored`. `owed` claims are listed and never fail it. `--changed <base>` blocks only on claims whose sources or claim file changed in committed history since the merge base with `<base>` — see [Using claimlock as a team](#using-claimlock-as-a-team). Prints a bounded report — `--full` for every claim and source. |
 | `claimlock stale` | List non-fresh verified claims (exit 1 if any) and `owed` claims, tab-separated. `--owed-by <email>` / `--mine` list only claims owed by that person. |
-| `claimlock list` | List every claim with its status and flags. `--status <s>`, `--owed-by <email>`, `--mine` filter it. |
-| `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs. |
-| `claimlock show` | One claim in full: status (and owner, if owed), freshness per source, who verified each pin, evidence, body. |
+| `claimlock list` | List every claim with its status, flags and headline. `--status <s>`, `--owed-by <email>`, `--mine` filter it. A long headline is cut to 120 characters — `--full` prints it whole. |
+| `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs; one line per hit by default (id, area, status, headline) — `--body` restores the matching body lines indented under each hit. |
+| `claimlock show` | One claim in full: status (and owner, if owed), freshness per source, who verified each pin, evidence, body. The body is capped at 40 lines and each evidence `ref` at 200 characters — `--full` prints both whole. |
 | `claimlock verify` | Re-hash every source (cache bypassed), pin it, write the `pins:` digest of the whole pin set, and mark the claim verified — clearing `owed_by`/`owed_since`. Refuses a conflicted, refuted or incomplete claim. |
 | `claimlock follow` | Rewrite the path of each renamed source (reported by `check` as `renamed`) to its new path, keeping its pins; the claim then reads fresh if the content is unchanged. |
 | `claimlock owe` | Hand off a claim's re-check to someone (`--to <email>`, default your git `user.email`; `--reason "<one line>"`); status becomes `owed`. |
@@ -463,6 +463,12 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
   non-fresh state) plus `owed` claims, not every claim — a new `omitted` gives
   the count left out. A consumer that parsed every claim from `results` needs
   `--full`, which restores the old shape (`"omitted": 0`).
+- **`search`'s default output** is one line per hit (id, area, status,
+  headline), not the matching body lines indented under each hit — a consumer
+  that parsed those lines needs `--body`, which restores the old shape.
+  `show`'s body and evidence `ref`s are now capped (40 lines, 200 characters)
+  by default — `--full` restores them whole. `list`'s headline is capped at
+  120 characters — `--full` restores it whole.
 
 ## Limits
 

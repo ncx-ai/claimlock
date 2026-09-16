@@ -5,7 +5,7 @@ import json
 import unittest
 
 from helpers import TmpCase, claim_text, make_repo, pinned_text, run_cli, write
-from claimlock.cli import HINT, LISTED_CLAIMS, SOURCE_LINES
+from claimlock.cli import BODY_LINES, EVIDENCE_CHARS, HEADLINE_CHARS, HINT, LISTED_CLAIMS, SOURCE_LINES
 from claimlock.pins import blob_of_bytes
 
 
@@ -261,6 +261,209 @@ class BudgetCeilings(CheckStoreMixin, TmpCase):
         rc, out, err = run_cli(root, "check", "--json")
         size = len(out.encode("utf-8"))
         self.assertLessEqual(size, 16000, f"`check --json` on 30 claims was {size} bytes")
+
+
+class SearchDefaultShape(TmpCase):
+    """Task 2, spec §3.3: `search` prints one line per hit by default, no
+    indented body lines, no blank separator."""
+
+    def test_one_line_per_hit_no_body_lines(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        body = "\n".join(f"needle appears on line {k}" for k in range(6))
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=body))
+        rc, out, err = run_cli(root, "search", "needle")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out, "c (core, unverified)  needle appears on line 0\n")
+
+    def test_non_fresh_state_shown_before_the_two_spaces(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "orig\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="needle here"))
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        write(root, "src/a.py", "changed\n")
+        rc, out, err = run_cli(root, "search", "needle")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out, "c (core, verified) [stale]  needle here\n")
+
+    def test_200_char_headline_cut_to_120(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        long_line = "n" * 200
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=long_line))
+        rc, out, err = run_cli(root, "search", "n")
+        self.assertEqual(rc, 0, out + err)
+        expected_headline = long_line[:119] + "…"
+        self.assertEqual(len(expected_headline), 120)
+        self.assertEqual(out, f"c (core, unverified)  {expected_headline}\n")
+
+    def test_no_match_message_and_exit_code_unchanged(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="something"))
+        rc, out, err = run_cli(root, "search", "not-there")
+        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(out, "claimlock: nothing matches 'not-there'\n")
+
+    def test_a_hit_exits_zero(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="something"))
+        rc, out, err = run_cli(root, "search", "something")
+        self.assertEqual(rc, 0, out + err)
+
+
+class SearchBodyFlagRestoresOldOutput(TmpCase):
+    def test_body_flag_restores_indented_matching_lines(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        body = "needle one\nother\nneedle two"
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=body))
+        rc, out, err = run_cli(root, "search", "needle", "--body")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out, "c (core, unverified)\n    needle one\n    needle two\n\n")
+
+
+class SearchBudgetCeiling(TmpCase):
+    """Regression guard (R1), not a design target."""
+
+    def test_search_matching_30_claims_is_bounded(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        for i in range(30):
+            cid = f"claim-{i:03d}"
+            write(root, f"src/{cid}.py", "x\n")
+            write(root, f"claims/{cid}.md",
+                  claim_text(cid, sources=[f"src/{cid}.py"],
+                             body="needle appears here for every claim in this fixture."))
+        rc, out, err = run_cli(root, "search", "needle")
+        self.assertEqual(rc, 0, out + err)
+        size = len(out.encode("utf-8"))
+        self.assertLessEqual(size, 3000, f"default `search` matching 30 claims was {size} bytes")
+
+
+class ShowBodyCap(TmpCase):
+    def test_60_line_body_capped_at_40_then_a_note(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        body = "\n".join(f"line {k}" for k in range(60))
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=body))
+        rc, out, err = run_cli(root, "show", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("\n".join(f"line {k}" for k in range(BODY_LINES)), out)
+        self.assertIn(f"… {60 - BODY_LINES} more lines — read claims/c.md", out)
+        self.assertNotIn("line 40", out)
+
+
+class ShowEvidenceCap(TmpCase):
+    def test_500_char_ref_is_clipped_to_200(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        long_ref = "r" * 500
+        write(root, "claims/c.md",
+              claim_text("c", sources=["src/a.py"], evidence=(("test", long_ref),), body="Holds."))
+        rc, out, err = run_cli(root, "show", "c")
+        self.assertEqual(rc, 0, out + err)
+        expected = long_ref[:EVIDENCE_CHARS - 1] + "…"
+        self.assertEqual(len(expected), EVIDENCE_CHARS)
+        self.assertIn(f"[test] {expected}", out)
+        self.assertNotIn(long_ref, out)
+
+
+class ShowUnchangedPartsWhenNotTruncated(TmpCase):
+    """Spec §3.4: status, state, problems, the source list and `file:` are
+    never truncated."""
+
+    def test_status_state_sources_and_file_line_stay_the_same_shape(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "orig\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="Holds."))
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        write(root, "src/a.py", "changed\n")
+        rc, out, err = run_cli(root, "show", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("c (core) — verified", out)
+        self.assertIn("STALE: ", out)
+        self.assertIn("Sources (a change here makes this claim stale):", out)
+        self.assertIn("a.py — stale (", out)
+        self.assertIn("\nfile: claims/c.md\n", out)
+
+    def test_invalid_problem_lines_unchanged(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "claims/bad.md",
+              "---\nid: bad\narea: core\nstatus: maybe\nevidence: []\nsources: []\n---\nBody.\n")
+        rc, out, err = run_cli(root, "show", "bad")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("INVALID:", out)
+        self.assertIn("status 'maybe'", out)
+
+
+class ShowFullFlagRestoresWholeBodyAndRefs(TmpCase):
+    def test_full_prints_whole_body_and_whole_refs(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        body = "\n".join(f"line {k}" for k in range(60))
+        long_ref = "r" * 500
+        write(root, "claims/c.md",
+              claim_text("c", sources=["src/a.py"], evidence=(("test", long_ref),), body=body))
+        rc, out, err = run_cli(root, "show", "c", "--full")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(body, out)
+        self.assertNotIn("more lines", out)
+        self.assertIn(f"[test] {long_ref}", out)
+        self.assertNotIn("…", out)
+
+
+class ShowBudgetCeiling(TmpCase):
+    """Regression guard (R1), not a design target."""
+
+    def test_60_line_body_and_three_500_char_refs_is_bounded(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        body = "\n".join(f"line {k} of the body." for k in range(60))
+        evidence = tuple(("test", "r" * 500) for _ in range(3))
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], evidence=evidence, body=body))
+        rc, out, err = run_cli(root, "show", "c")
+        self.assertEqual(rc, 0, out + err)
+        size = len(out.encode("utf-8"))
+        self.assertLessEqual(size, 3000,
+                              f"`show` with a 60-line body and three 500-char refs was {size} bytes")
+
+
+class ListHeadlineTruncated(TmpCase):
+    def test_200_char_headline_cut_to_120(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        long_line = "h" * 200
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=long_line))
+        rc, out, err = run_cli(root, "list")
+        self.assertEqual(rc, 0, out + err)
+        expected = long_line[:HEADLINE_CHARS - 1] + "…"
+        self.assertIn(f"    {expected}", out)
+        self.assertNotIn(long_line, out)
+
+    def test_full_prints_headline_whole(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        long_line = "h" * 200
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=long_line))
+        rc, out, err = run_cli(root, "list", "--full")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(f"    {long_line}", out)
+
+
+class ListStatusFlagLineUnchanged(TmpCase):
+    def test_status_and_flag_line_unchanged(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "orig\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="Holds."))
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        write(root, "src/a.py", "changed\n")
+        rc, out, err = run_cli(root, "list")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("✓ c (core) [stale]", out)
 
 
 if __name__ == "__main__":
