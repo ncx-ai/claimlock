@@ -62,7 +62,7 @@ unfindable.
 ### 3.2 Tokenisation and folding — no linguistics
 
 Terms are lowercased and split on runs of non-alphanumerics; `background-job-calls-are-priced`
-becomes six terms. A query term absent from the corpus vocabulary is folded by
+becomes five terms. A query term absent from the corpus vocabulary is folded by
 trying, in order, `-s`, `-es`, `-ed`, `-ing`→`e`, `-ing`, and is rewritten
 **only if the candidate stem is itself a term in this corpus**. So "jobs" →
 "job" because `job` exists here; nothing is stemmed on linguistic faith, and no
@@ -89,22 +89,47 @@ Ties break by claim id, so output is deterministic across clones.
 
 ### 3.4 The relevance floor — the safety property
 
-Ranking always returns *something*. The prototype's one bad result proves the
-risk: "what happens when a payment fails" confidently returned
-`ws-publish-needs-a-declared-channel`, matching only on "when"/"fails", because
-no claim covers payment failure at all. Replacing today's honest zero with a
-confident wrong answer would make this feature a net harm.
+Ranking always returns *something*. Replacing today's honest zero with a
+confident wrong answer would make this feature a net harm, so a query is
+answered only when **the store has vocabulary for it**: drop stop words, and if
+at least half of the remaining content terms are absent from the corpus
+entirely, report no match. Otherwise rank normally.
 
-So a claim qualifies as a hit only if it matches at least one **discriminating**
-query term — one whose document frequency is ≤ 25% of the corpus. If no claim
-matches any discriminating term, `search` reports no match, exactly as today.
+Measured on the real 41-claim store (2026-09-16): **7 of 9** natural-language
+questions at rank 1, **5 of 5** unanswerable queries silent. It costs no
+recall — every answerable query in the set has an absent-fraction of 0.00, so
+the floor never fires on one. It is independent of document frequency, so it
+also works at n=1 (§3.6).
 
-Query terms absent from the corpus entirely are named in the no-match message,
-turning a silent miss into a useful one:
+**Why not document frequency.** Three df-based rules were built and measured
+against that store; all three failed, and the reason is the same each time:
 
-```
-claimlock: nothing matches 'what happens when a payment fails' (no claim mentions: payment)
-```
+| Rule | Result |
+|---|---|
+| Qualify on a term with df ≤ 25% (this spec's first design) | Deletes real answers — `grpc` (39%) and `error` (46%) are "too common", so `grpc-error-details-are-bounded-never-fatal` was dropped from the results entirely while an unrelated claim qualified on `handling` (1 claim). Admits junk on rare-but-generic terms. Returns **nothing at all** for any store of ≤3 claims, where every term exceeds 25% by construction. |
+| IDF-weighted coverage | No threshold separates: at τ ≤ 0.5 it answers 4 of 5 negatives; at τ = 0.6 recall collapses to 5 of 9. |
+| Stop-word term coverage | 2 of 5 negatives still answered — one present generic term (`fails`, `event`) gives coverage 1.0, which no threshold can suppress. |
+
+In 41 claims of terse technical prose, function words are *rare* (`how` in 2%)
+and topic words are *common* (`grpc` in 39%), so frequency ranks the function
+word as the more informative one. **Absence is a better signal than rarity at
+this scale**, which is what the shipped rule uses.
+
+**What it does not solve**, stated plainly rather than papered over:
+
+- A query whose content words all exist in the store, but scattered across
+  unrelated claims, is still answered. The floor sees vocabulary, not topicality.
+- The stop list is a fixed English set of ~60 words; a store in another language
+  gets no benefit from it.
+- The 0.5 threshold is measured on one store of 41 claims. It should be
+  re-measured against a second real store before it is treated as settled.
+
+### 3.6 Small stores
+
+The floor must not depend on corpus size: a store with a single claim must find
+that claim when queried with its own words. The df-based design failed this
+(nothing is findable below 4 claims); the shipped rule has no such threshold,
+and a test pins n=1.
 
 ### 3.5 CLI
 
