@@ -94,7 +94,7 @@ Behaviour: spec §3.5.
   - Ranked order: in a store where one claim's id matches the query and another only mentions it deep in its body, the id match prints first.
   - `--top`: default 10; a store with 15 matches prints 10 then exactly `… and 5 more — claimlock search <query> --top 15`; `--top 0` or a negative value is refused with exit 2 rather than printing nothing silently.
   - `--literal`: restores substring behaviour — `claimlock search --literal 'src/limit.py'` finds the claim citing that path, and a multi-word query that ranks fine returns the old zero hits under `--literal`.
-  - No match: exit 1, and the message names absent query terms (`(no claim mentions: payment)`); with every term present but none discriminating, the message omits that clause.
+  - No match: exit 1, and the message names absent query terms (`(no claim mentions: payment)`); when every content term is present in the store, the message omits that clause.
   - `--body` still prints matching body lines, now under ranked hits.
   - Exit codes unchanged (0 on hit, 1 on no match); the output-budget ceiling for `search` still holds.
 - [ ] **Step 2: Run** them — expect failures.
