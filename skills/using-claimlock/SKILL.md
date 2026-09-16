@@ -148,6 +148,9 @@ records that *you* checked it, now; once committed, `claimlock who` names you.
   `claimlock stale` / `claimlock refs`.
 - **End of turn** (the user sees it, not you): problems new since the last
   check. If relayed to you, answer with `claimlock diff <id>`.
+- **Right after you edit a file** (you see it), naming the claims it backs:
+  re-check them now with `claimlock diff <id>` while the change is fresh —
+  never just re-stamp `claimlock verify` on the strength of this notice alone.
 
 Exact message shapes, field ordering, caps and log detail: `docs/format.md`.
 

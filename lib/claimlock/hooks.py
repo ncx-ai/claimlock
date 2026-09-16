@@ -10,6 +10,7 @@ aliases, scripts, merges, rebases, pulls and MCP tools are all seen. The common
 path is a handful of `stat` calls; git runs only when HEAD's files changed.
 """
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -590,4 +591,162 @@ def post_tool_use(project, payload, data_dir):
     return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg[:LIMIT]}}
 
 
-HANDLERS = {"session-start": session_start, "stop": stop, "post-tool-use": post_tool_use}
+CITED_STATUSES = ("verified", "owed")
+EDIT_CLAIM_CAP = 5
+EDIT_PATH_CAP = 3
+
+
+def _edited_paths(project, payload):
+    """Candidate edited paths from a PostToolUse payload, root-relative,
+    deduped in the order they first appeared. Non-string values are ignored
+    (spec §3.1). A path resolving outside the project root, or inside the
+    claims directory (editing a claim is not source drift), is dropped.
+
+    Collects `tool_input.file_path` (Edit/Write), `tool_input.notebook_path`
+    (NotebookEdit, shape unconfirmed), and any `file_path` inside a list at
+    `tool_input.edits` (MultiEdit, shape unconfirmed) — reading defensively
+    per spec §2: an unrecognised shape yields no candidates, never an error.
+    """
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return []
+    raw = []
+    for key in ("file_path", "notebook_path"):
+        v = tool_input.get(key)
+        if isinstance(v, str):
+            raw.append(v)
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):
+        for e in edits:
+            if isinstance(e, dict) and isinstance(e.get("file_path"), str):
+                raw.append(e["file_path"])
+    root = project.root
+    out, seen = [], set()
+    for r in raw:
+        p = Path(r)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            p = p.resolve()
+        except OSError:
+            continue
+        if not P.is_within(p, root) or P.is_within(p, project.claims_dir):
+            continue
+        try:
+            rel = p.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if rel in seen:
+            continue
+        seen.add(rel)
+        out.append(rel)
+    return out
+
+
+def _claims_signature(project):
+    """Digest of (name, size, mtime_ns) for every `*.md` in the claims
+    directory. Stats each file rather than the directory alone: editing a
+    claim's content in place changes neither the directory's mtime nor its
+    entry count, only the file's own size/mtime_ns (spec §3.2)."""
+    try:
+        names = sorted(os.listdir(project.claims_dir))
+    except OSError:
+        return ""
+    parts = []
+    for name in names:
+        if not name.endswith(".md"):
+            continue
+        try:
+            st = os.stat(project.claims_dir / name)
+        except OSError:
+            continue
+        parts.append(f"{name}\t{st.st_size}\t{st.st_mtime_ns}")
+    data = "\n".join(parts)
+    return hashlib.sha1(data.encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def _cited_index(project, st):
+    """{source path: [claim id, ...]} for verified/owed claims only (spec
+    §3.2) — those are the only statuses carrying a pin an edit can drift.
+    Cached in `st` under "cited", invalidated by "cited_signature"
+    (`_claims_signature`); a hit costs one `os.listdir` plus one `os.stat`
+    per claim file and no claim-file reads. `st["cited_status"]` (claim id ->
+    status) rides along in the same cache entry so callers can label a hit
+    without a second pass over the claims."""
+    sig = _claims_signature(project)
+    cached = st.get("cited")
+    if st.get("cited_signature") == sig and isinstance(cached, dict):
+        return cached
+    index, status_by_id = {}, {}
+    try:
+        claims = C.load_claims(project)
+    except C.StoreMissing:
+        claims = []
+    for claim in claims:
+        if claim.status not in CITED_STATUSES:
+            continue
+        status_by_id[claim.id] = claim.status
+        for s in claim.sources:
+            ids = index.setdefault(s.path, [])
+            if claim.id not in ids:
+                ids.append(claim.id)
+    st["cited"] = index
+    st["cited_signature"] = sig
+    st["cited_status"] = status_by_id
+    return index
+
+
+def _edit_notice(hits, status_by_id):
+    """One `claimlock: <path> backs N claim(s) — id (status), …` message per
+    hit path (spec §3.3): at most EDIT_CLAIM_CAP claims per path, then `…`;
+    at most EDIT_PATH_CAP paths, then `…`. Callers cut the result to LIMIT."""
+    parts = []
+    for path, ids in hits[:EDIT_PATH_CAP]:
+        shown = ids[:EDIT_CLAIM_CAP]
+        names = ", ".join(f"{cid} ({status_by_id.get(cid, 'unverified')})" for cid in shown)
+        if len(ids) > EDIT_CLAIM_CAP:
+            names += ", …"
+        n = len(ids)
+        parts.append(f"{path} backs {n} claim{'' if n == 1 else 's'} — {names}")
+    if len(hits) > EDIT_PATH_CAP:
+        parts.append("…")
+    return (f"claimlock: {'; '.join(parts)}. Your edit may have invalidated them: "
+            "re-check with `claimlock diff <id>` before any `claimlock verify`.")
+
+
+def post_edit(project, payload, data_dir):
+    """Name the verified/owed claims a just-edited file backs — a notice at
+    the moment of the edit rather than after the fact (spec §3). No hashing
+    and no git, ever: the edit just happened, so a hit is presumed drifted,
+    and computing freshness would add cost to answer a question this notice
+    does not ask. Silent (returns None) whenever nothing was edited, nothing
+    resolves to a usable in-root non-claims path, everything resolved was
+    already notified this session, or nothing cited resolves."""
+    paths = _edited_paths(project, payload)
+    if not paths:
+        return None
+    path = _state_path(data_dir, payload)
+    st = _load_state(path, project)
+    if st is None:
+        # Deliberately not `_new_state`: that runs `survey()`, which opens a
+        # git-aware hasher — this event must spawn no git, ever, even on its
+        # very first call in a session. A later session-start/stop/
+        # post-tool-use call still establishes the full baseline normally.
+        st = {"root": str(project.root)}
+    index = _cited_index(project, st)
+    notified = st.get("edited_notified")
+    notified = list(notified) if isinstance(notified, list) else []
+    notified_set = set(notified)
+    hits = [(p, index[p]) for p in paths if p not in notified_set and index.get(p)]
+    if not hits:
+        _save_state(path, st)  # persist any cache rebuild even when silent
+        return None
+    st["edited_notified"] = notified + [p for p, _ in hits]
+    _save_state(path, st)
+    status_by_id = st.get("cited_status") or {}
+    text = _edit_notice(hits, status_by_id)[:LIMIT]
+    return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}
+
+
+HANDLERS = {"session-start": session_start, "stop": stop, "post-tool-use": post_tool_use,
+            "post-edit": post_edit}

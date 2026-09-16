@@ -861,7 +861,7 @@ in a subdirectory of the opened project is not seen.
 
 ## Hook messages
 
-Three hooks ship with the plugin; all exit 0 and never set a blocking
+Four hooks ship with the plugin; all exit 0 and never set a blocking
 decision. Each message is capped at 2,000 characters.
 
 - **Session start** (Claude sees it, as context): first, claims owed to your
@@ -876,6 +876,28 @@ decision. Each message is capped at 2,000 characters.
   which commit; then up to 10 markers naming no claim. `…` after the claims
   means there are more — run `claimlock stale`; `…` after the markers means
   there are more — run `claimlock refs`.
+- **After an Edit, Write, MultiEdit or NotebookEdit call** (Claude sees it, as
+  context): which `verified`/`owed` claims cite the file just edited, e.g.
+  ``claimlock: src/limit.py backs 2 claims — retries-are-capped (verified),
+  timeout-is-clamped (owed). Your edit may have invalidated them: re-check
+  with `claimlock diff <id>` before any `claimlock verify`.`` Up to 3 edited
+  paths are named per message, `…` after that; up to 5 claims per path,
+  likewise. **Silent** (prints nothing) when: there's no usable path in the
+  tool payload (an unrecognised shape, e.g. an unconfirmed MultiEdit/
+  NotebookEdit layout, is read defensively rather than guessed at); the path
+  resolves outside the project root; the path is inside the claims
+  directory; nothing cited it; or every claim that cites it is
+  `unverified`/`refuted`. A region source is named on any edit to its file,
+  since this hook never hashes and so never checks whether the region itself
+  was touched. **No hashing and no git, ever** — the edit just happened, so a
+  hit is presumed drifted, and computing freshness here would add cost to
+  answer a question the notice doesn't ask. A path is named **at most once
+  per session** (recorded per path, not per claim, in the session state);
+  editing it ten times says it once, a different cited path still speaks, and
+  a fresh session sees it again. The cited-claims index is cached in the
+  session state, keyed by a digest of every claim file's `(name, size,
+  mtime_ns)` — a directory mtime alone would miss an in-place content edit to
+  a claim file — and rebuilds whenever that digest changes.
 - **End of turn** (only the user sees it, as a `systemMessage`): problems not
   present at the last check in this clone — a baseline taken at session
   start, then replaced by each end-of-turn check ("since the last check"; a

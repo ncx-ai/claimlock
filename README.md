@@ -358,7 +358,14 @@ repository ignores, or outside git.
 |---|---|---|
 | SessionStart | Claude (as context) | First, the claims owed to your git `user.email`, if any. Then counts of invalid, conflicted, unpinned, unanchored, stale, missing and owed claims and dangling markers, the areas they're in, and a reminder to search before asserting. |
 | PostToolUse (after Bash / MCP tool calls) | Claude (as context) | Only when HEAD moved since the last check. Claims that became owed to you in that range and claim files with merge conflicts ("run `claimlock resolve`") come first; then now-non-fresh claims backed by files changed in the range, each naming the newest commit in the range that changed its source — author email (mailmap-aware) and subject (truncated); then dangling markers. |
+| PostToolUse (after Edit / Write / MultiEdit / NotebookEdit) | Claude (as context) | At the moment of the edit: which `verified`/`owed` claims cite the file just edited, so the check can happen while the change is fresh instead of after the fact. Silent when nothing edited resolves to an in-root, non-claims path, or when nothing cited was found. |
 | Stop | The user (a `systemMessage`) | Problems new *since the last check* in this clone (not pre-existing ones) — claims that became invalid, conflicted, unpinned, unanchored, stale, missing or owed, and dangling markers — separating drift from your uncommitted edits to cited sources from drift that arrived another way (a `git pull`, a tool), plus any HEAD movement. A claim the HEAD-moved report already names in the same state is not listed twice, and anything the message could not show is reported again at the next Stop. |
+
+The edit-time notice never hashes and spawns no git — an edited file's claims
+are presumed drifted the moment it's touched, since computing freshness would
+add cost to answer a question the notice doesn't ask. Each file is named at
+most once per session: editing it ten times says it once, and a fresh session
+sees it again.
 
 With a team, a few details matter. The email for "owed to you" is read when the
 session starts; with no git `user.email` then, owed-to-you notices stay silent for
