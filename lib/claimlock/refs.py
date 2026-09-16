@@ -41,11 +41,12 @@ def _excluded(project, rel):
     return is_within((project.root / rel).resolve(), project.claims_dir)
 
 
-def _files(project, only):
+def files(project, only=None, globs=None):
+    globs = project.marker_globs if globs is None else globs
     if only is not None:
         for rel in sorted(only):
             p = safe_source(project.root, rel)
-            if (p is not None and p.is_file() and _matches(rel, project.marker_globs)
+            if (p is not None and p.is_file() and _matches(rel, globs)
                     and not _excluded(project, rel)):
                 yield p, rel
         return
@@ -57,7 +58,7 @@ def _files(project, only):
         # directory, so ignored trees (target/, build/, vendor/…) cost nothing.
         for rel in listed:
             p = project.root / rel
-            if _matches(rel, project.marker_globs) and not _excluded(project, rel) and p.is_file():
+            if _matches(rel, globs) and not _excluded(project, rel) and p.is_file():
                 yield p, rel
         return
     for dirpath, dirnames, filenames in os.walk(project.root):
@@ -67,14 +68,14 @@ def _files(project, only):
                              and not is_within((d / n).resolve(), project.claims_dir))
         for f in sorted(filenames):
             rel = (d / f).relative_to(project.root).as_posix()
-            if _matches(rel, project.marker_globs):
+            if _matches(rel, globs):
                 yield d / f, rel
 
 
 def scan(project, only=None):
     """(markers, files_scanned). `only` limits the scan to those root-relative paths."""
     markers, scanned = [], 0
-    for p, rel in _files(project, only):
+    for p, rel in files(project, only):
         try:
             text = p.read_bytes().decode("utf-8")
         except (UnicodeDecodeError, OSError):

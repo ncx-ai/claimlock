@@ -69,6 +69,54 @@ class Refs(TmpCase):
         self.assertEqual((files, markers), (0, []))
 
 
+class Orphans(TmpCase):
+    """Claims that no prose cites — the mirror of a dangling marker
+    (docs/specs/2026-09-16-claimlock-orphans-evidence-design.md §3.1)."""
+
+    def test_census_reports_uncited_with_exit_0(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "claims/a.md", claim_text("a"))
+        write(root, "claims/b.md", claim_text("b"))
+        write(root, "README.md", "Holds. Claim: `a`\n")
+        rc, out, _ = run_cli(root, "refs")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("claimlock: 1 markers in 1 files scanned, 0 dangling, 1 uncited", out)
+
+    def test_orphans_flag_lists_the_uncited_claim_only(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "claims/a.md", claim_text("a"))
+        write(root, "claims/b.md", claim_text("b"))
+        write(root, "README.md", "Holds. Claim: `a`\n")
+        rc, out, _ = run_cli(root, "refs", "--orphans")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("UNCITED b", out)
+        self.assertNotIn("UNCITED a", out)
+
+    def test_dangling_marker_still_exits_1_and_census_reports_both(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "claims/a.md", claim_text("a"))
+        write(root, "claims/b.md", claim_text("b"))
+        write(root, "README.md", "Holds. Claim: `a` and Claim: `ghost`\n")
+        rc, out, _ = run_cli(root, "refs")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("DANGLING README.md:1  Claim `ghost` names no claim", out)
+        self.assertIn("claimlock: 2 markers in 1 files scanned, 1 dangling, 1 uncited", out)
+
+    def test_orphans_capped_at_20_and_full_uncaps(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        for i in range(25):
+            write(root, f"claims/c{i:02d}.md", claim_text(f"c{i:02d}"))
+        rc, out, _ = run_cli(root, "refs", "--orphans")
+        self.assertEqual(rc, 0, out)
+        listed = [line for line in out.splitlines() if line.startswith("UNCITED")]
+        self.assertEqual(len(listed), 20)
+        self.assertIn("… and 5 more uncited claims — claimlock refs --orphans --full", out)
+        rc, out, _ = run_cli(root, "refs", "--orphans", "--full")
+        self.assertEqual(rc, 0, out)
+        listed = [line for line in out.splitlines() if line.startswith("UNCITED")]
+        self.assertEqual(len(listed), 25)
+
+
 @unittest.skipIf(shutil.which("git") is None, "git not installed")
 class RefsInGit(TmpCase):
     """I4: inside a git work tree, candidates come from git, so ignored trees

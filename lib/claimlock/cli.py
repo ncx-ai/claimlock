@@ -797,9 +797,15 @@ def cmd_refs(args):
     ids = {c.id for c in C.load_claims(project)}
     markers, scanned = refs.scan(project)
     dangling = [m for m in markers if m.id not in ids]
+    orphans = sorted(ids - {m.id for m in markers})
     for m in dangling:
         print(f"DANGLING {m.path}:{m.line}  Claim `{m.id}` names no claim")
-    print(f"claimlock: {len(markers)} markers in {scanned} files scanned, {len(dangling)} dangling")
+    if args.orphans:
+        _print_capped(orphans, None if args.full else LISTED_CLAIMS,
+                      "… and {n} more uncited claims — claimlock refs --orphans --full",
+                      lambda cid: print(f"UNCITED {cid}"))
+    print(f"claimlock: {len(markers)} markers in {scanned} files scanned, "
+          f"{len(dangling)} dangling, {len(orphans)} uncited")
     return 1 if dangling else 0
 
 
@@ -912,7 +918,9 @@ def build_parser():
     p.add_argument("--full", action="store_true", help="print the whole diff per source, uncapped")
     p = add("who", cmd_who, "who verified each of a claim's pins, from git history")
     p.add_argument("id")
-    add("refs", cmd_refs, "fail on Claim markers that name no claim")
+    p = add("refs", cmd_refs, "fail on Claim markers that name no claim; report claims no prose cites")
+    p.add_argument("--orphans", action="store_true", help="list claims no prose cites (never fails the gate)")
+    p.add_argument("--full", action="store_true", help="with --orphans, print every uncited claim, uncapped")
     p = add("affected", cmd_affected, "claims whose sources include these paths")
     p.add_argument("paths", nargs="+")
     p = add("import", cmd_import, "import claims from the original ground-truth format")

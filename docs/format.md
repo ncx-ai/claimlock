@@ -1034,6 +1034,21 @@ Excluded from every scan, unconditionally:
 A marker naming an id with no matching claim file is **dangling**; `claimlock
 refs` prints each one and exits 1 if any exist, 0 otherwise.
 
+The mirror case is a claim no marker anywhere names — an **orphan**, i.e. a
+claim no prose cites. `refs` always reports the count, in its census line:
+
+```
+claimlock: <markers> markers in <scanned> files scanned, <dangling> dangling, <orphans> uncited
+```
+
+`--orphans` lists them, one id per line as `UNCITED <id>`, capped at
+`LISTED_CLAIMS` (20) with a cut note naming `--full` to see the rest — the
+same shape as every other listing in this tool. **An uncited claim never
+fails the gate**: `refs` still exits 1 only when a dangling marker exists: 23
+of 41 claims uncited on the real store measured 2026-09-16 means a failing
+default would be a migration cliff, and a claim nobody cites is a
+documentation gap, not a false statement.
+
 ## Exit codes
 
 | Code | Meaning |

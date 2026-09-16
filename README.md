@@ -123,7 +123,7 @@ Two **problems** fail `check` whatever the status:
 | `claimlock resolve` | Settle conflicted `sources` pins after a merge: keep a pin only when it equals the merged content, else mark the claim owed by the merger; leave every other conflict for a person. |
 | `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. Each source's unified diff is capped at 200 lines — `--full` prints it whole. |
 | `claimlock who` | Who verified each of a claim's pins, from git history (email, timestamp, commit), tab-separated. |
-| `claimlock refs` | Fail if any `` Claim: `id` `` marker in prose names no claim. |
+| `claimlock refs` | Fail if any `` Claim: `id` `` marker in prose names no claim. Its census line also reports how many claims no prose cites at all (`--orphans` lists them, capped like every other listing, `--full` to see all) — an uncited claim never fails the gate; it's a documentation gap, not a false statement. |
 | `claimlock affected` | List claims whose sources include the given path(s). |
 | `claimlock import` | Import claims from the original (unpinned) ground-truth format. |
 | `claimlock self-test` | Prove the freshness/anchoring/dangling-marker detectors actually fire, on this machine. |
