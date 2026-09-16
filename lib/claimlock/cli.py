@@ -30,6 +30,7 @@ LISTED_CLAIMS = 20   # failing/pre-existing/owed claims listed by `check`
 SOURCE_LINES = 3     # per-source detail lines, and per-problem lines, per claim in `check`
 BODY_LINES = 40      # body lines printed by `show`
 EVIDENCE_CHARS = 200 # each evidence `ref` printed by `show`
+DIFF_LINES = 200     # unified-diff lines (headers included) per source, printed by `diff`
 HEADLINE_CHARS = 120 # headline printed by `search` and `list`
 
 CI_SNIPPET = """\
@@ -523,12 +524,24 @@ def cmd_resolve(args):
     return rc
 
 
+def _print_diff_lines(lines, cap, cid):
+    """Print a source's unified diff (`lines`, headers included), capped at
+    `cap` lines (`None` under `--full`); a cut ends with `… <n> more diff
+    lines — claimlock diff <cid> --full` (spec §3.5). A diff that fits under
+    `cap` prints exactly as it always has."""
+    shown, note = _capped(lines, cap, f"… {{n}} more diff lines — claimlock diff {cid} --full")
+    print("\n".join(shown))
+    if note:
+        print(note)
+
+
 def cmd_diff(args):
     project = _project(args)
     c = _find(project, args.id)
     if c is None:
         print(f"claimlock: no claim {args.id!r}", file=sys.stderr)
         return 1
+    cap = None if args.full else DIFF_LINES
     hasher = C.open_hasher(project)
     renames = C.renames_for(project, c.sources)
     state, per = C.freshness(c, project, hasher, C.anchors_for(project, c.sources),
@@ -596,9 +609,9 @@ def cmd_diff(args):
             old_lines, new_lines = _text_lines(old_region.encode("utf-8")), _text_lines(new_region.encode("utf-8"))
             if old_lines == new_lines:
                 continue
-            print("\n".join(difflib.unified_diff(
+            _print_diff_lines(difflib.unified_diff(
                 old_lines, new_lines, fromfile=f"{key} @ {s.hash[:12]} (verified)",
-                tofile=f"{key} (now)", lineterm="")))
+                tofile=f"{key} (now)", lineterm=""), cap, c.id)
             continue
         try:
             new = (project.root / s.path).read_bytes()
@@ -614,9 +627,9 @@ def cmd_diff(args):
             if old != new:
                 print(f"--- {key}: only line endings differ from the pinned content")
             continue
-        print("\n".join(difflib.unified_diff(
+        _print_diff_lines(difflib.unified_diff(
             old_lines, new_lines, fromfile=f"{key} @ {s.blob[:12]} (verified)",
-            tofile=f"{key} (now)", lineterm="")))
+            tofile=f"{key} (now)", lineterm=""), cap, c.id)
     return 0
 
 
@@ -748,6 +761,7 @@ def build_parser():
     p.add_argument("ids", nargs="*")
     p = add("diff", cmd_diff, "show what changed in a claim's sources since it was verified")
     p.add_argument("id")
+    p.add_argument("--full", action="store_true", help="print the whole diff per source, uncapped")
     p = add("who", cmd_who, "who verified each of a claim's pins, from git history")
     p.add_argument("id")
     add("refs", cmd_refs, "fail on Claim markers that name no claim")

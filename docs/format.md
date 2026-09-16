@@ -488,14 +488,22 @@ Consequences:
   differ, it prints `--- <key>: only line endings differ from the pinned
   content`. Lines break at `\n` only — a form feed or other Unicode line
   separator stays inside its line, as in git. A unified diff's headers are
-  `<key> @ <pin12> (verified)` and `<key> (now)`.
+  `<key> @ <pin12> (verified)` and `<key> (now)`. Each source's unified diff
+  (headers included) is capped at `DIFF_LINES = 200` lines (the constant lives
+  beside `check`'s and `show`'s in `lib/claimlock/cli.py`); when a source's
+  diff holds more, the cut prints `… <n> more diff lines — claimlock diff <id>
+  --full`, `<n>` the lines withheld for that source alone — a second stale
+  source in the same claim is capped independently. `--full` restores every
+  source's diff whole. A diff that fits under the cap prints exactly as
+  before.
 - For a **region** source, `diff` reads the pinned `blob` (the whole file, as
   it was verified) from git and extracts the region from it — if that fails,
   it prints `--- <key>: the region cannot be found in the pinned content
   (<reason>)` — then extracts the region from the current file the same way
   (the source's state is already `missing` when that fails, so this is a
   loud fallback, not the expected path) and diffs the two regions'
-  text — never the whole file's.
+  text — never the whole file's. The same `DIFF_LINES` cap applies to a
+  region's diff.
 - A source reached through a symlink — the source itself, or a directory above
   it — pins the content at the **resolved** path. Git stores a symlink as its
   link text, so that content never appears at the cited path in history;

@@ -1,12 +1,40 @@
 """Task 1: `check` prints a bounded report by default — hints once, capped
 claims and sources — and `check --json` carries only blocking (+ owed) claims
-unless `--full` is given. Spec: docs/specs/2026-09-15-claimlock-output-budget-design.md §3.1/§3.2."""
+unless `--full` is given. Spec: docs/specs/2026-09-15-claimlock-output-budget-design.md §3.1/§3.2.
+
+Task 3 (bottom of this file): `diff` caps unified-diff lines per source.
+Spec §3.5."""
+import difflib
 import json
+import shutil
 import unittest
 
-from helpers import TmpCase, claim_text, make_repo, pinned_text, run_cli, write
-from claimlock.cli import BODY_LINES, EVIDENCE_CHARS, HEADLINE_CHARS, HINT, LISTED_CLAIMS, SOURCE_LINES
+from helpers import TmpCase, claim_text, git, make_repo, pinned_text, run_cli, write
+from claimlock.cli import (BODY_LINES, DIFF_LINES, EVIDENCE_CHARS, HEADLINE_CHARS, HINT,
+                           LISTED_CLAIMS, SOURCE_LINES)
 from claimlock.pins import blob_of_bytes
+
+NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
+
+
+def _region_claim_text(cid, path, region, status="unverified", area="core"):
+    """A claim citing one region source, block-style (matches
+    tests/test_regions.py's helper of the same shape — duplicated locally
+    rather than cross-imported, per this test suite's convention)."""
+    lines = ["---", f"id: {cid}", f"area: {area}", f"status: {status}",
+             "evidence:", "  - kind: test", "    ref: s::c",
+             "sources:", f"  - path: {path}", f"    region: {region}",
+             "---", "Holds.", ""]
+    return "\n".join(lines)
+
+
+def _diff_line_count(old_text, new_text):
+    """How many unified-diff lines (headers included) `difflib.unified_diff`
+    produces for these two texts — independent of the real fromfile/tofile
+    strings `cmd_diff` uses, since those never change the line COUNT."""
+    old_lines = old_text.split("\n")[:-1] if old_text.endswith("\n") else old_text.split("\n")
+    new_lines = new_text.split("\n")[:-1] if new_text.endswith("\n") else new_text.split("\n")
+    return len(list(difflib.unified_diff(old_lines, new_lines, fromfile="x", tofile="y", lineterm="")))
 
 
 class CheckStoreMixin:
@@ -520,6 +548,166 @@ class ListBudgetCeiling(TmpCase):
         full_size = len(out_full.encode("utf-8"))
         self.assertLessEqual(size, full_size / 2,
                               f"default {size} B should be at most half of --full {full_size} B (30 claims)")
+
+
+class RewrittenFileMixin:
+    """A claim pinning one 900-line file, verified and committed, then the
+    whole file rewritten (every line differs) — the worst-case `diff` shape
+    from spec §1 (measured there at ~44,000 B on a 2,400-line file)."""
+
+    OLD_TEXT = "\n".join(f"line {k} of the original file." for k in range(900)) + "\n"
+    NEW_TEXT = "\n".join(f"line {k} REWRITTEN." for k in range(900)) + "\n"
+
+    def rewritten_file_claim(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "big.py", self.OLD_TEXT)
+        write(root, "claims/c.md", claim_text("c", sources=["big.py"], body="Holds."))
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        write(root, "big.py", self.NEW_TEXT)
+        return root
+
+    def pinned_blob(self, root):
+        text = (root / "claims/c.md").read_text()
+        line = next(l for l in text.splitlines() if l.strip().startswith("blob:"))
+        return line.split("blob:", 1)[1].strip()
+
+
+@NEED_GIT
+class DiffCapOnRewrittenFile(RewrittenFileMixin, TmpCase):
+    def setUp(self):
+        super().setUp()
+        self.total = _diff_line_count(self.OLD_TEXT, self.NEW_TEXT)
+        self.assertGreater(self.total, DIFF_LINES, "fixture must exceed the cap to test it")
+
+    def test_default_caps_at_DIFF_LINES_then_a_note_naming_the_withheld_count(self):
+        root = self.rewritten_file_claim()
+        rc, out, err = run_cli(root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        out_lines = out.rstrip("\n").split("\n")
+        self.assertEqual(len(out_lines), DIFF_LINES + 1)
+        left = self.total - DIFF_LINES
+        self.assertEqual(out_lines[-1], f"… {left} more diff lines — claimlock diff c --full")
+
+    def test_capped_lines_are_a_prefix_of_the_full_diff(self):
+        root = self.rewritten_file_claim()
+        blob = self.pinned_blob(root)
+        rc, out, err = run_cli(root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        full = list(difflib.unified_diff(
+            self.OLD_TEXT.split("\n")[:-1], self.NEW_TEXT.split("\n")[:-1],
+            fromfile=f"big.py @ {blob[:12]} (verified)", tofile="big.py (now)", lineterm=""))
+        out_lines = out.rstrip("\n").split("\n")
+        self.assertEqual(out_lines[:DIFF_LINES], full[:DIFF_LINES])
+
+
+@NEED_GIT
+class DiffFullFlagRestoresCompleteDiff(RewrittenFileMixin, TmpCase):
+    def test_full_prints_the_complete_unified_diff_byte_for_byte(self):
+        root = self.rewritten_file_claim()
+        blob = self.pinned_blob(root)
+        rc, out, err = run_cli(root, "diff", "c", "--full")
+        self.assertEqual(rc, 0, out + err)
+        expected = "\n".join(difflib.unified_diff(
+            self.OLD_TEXT.split("\n")[:-1], self.NEW_TEXT.split("\n")[:-1],
+            fromfile=f"big.py @ {blob[:12]} (verified)", tofile="big.py (now)", lineterm="")) + "\n"
+        self.assertEqual(out, expected)
+        self.assertNotIn("more diff lines", out)
+
+
+@NEED_GIT
+class DiffSmallChangeUncapped(TmpCase):
+    def test_one_line_change_prints_exactly_as_full_with_no_cap_note(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        write(root, "a.py", "one\ntwo\nthree\n")
+        write(root, "claims/c.md", claim_text("c", sources=["a.py"], body="Holds."))
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        write(root, "a.py", "one\nTWO\nthree\n")
+        rc, out, err = run_cli(root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("more diff lines", out)
+        self.assertIn("-two", out)
+        self.assertIn("+TWO", out)
+        rc, out_full, err = run_cli(root, "diff", "c", "--full")
+        self.assertEqual(rc, 0, out_full + err)
+        self.assertEqual(out, out_full)
+
+
+@NEED_GIT
+class DiffCapsEachSourceIndependently(TmpCase):
+    def test_a_large_source_is_capped_while_a_small_one_prints_in_full(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        old_big = "\n".join(f"line {k}" for k in range(900)) + "\n"
+        new_big = "\n".join(f"line {k} CHANGED" for k in range(900)) + "\n"
+        write(root, "big.py", old_big)
+        write(root, "small.py", "one\ntwo\nthree\n")
+        write(root, "claims/c.md", claim_text("c", sources=["big.py", "small.py"], body="Holds."))
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        write(root, "big.py", new_big)
+        write(root, "small.py", "one\nTWO\nthree\n")
+        rc, out, err = run_cli(root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        total_big = _diff_line_count(old_big, new_big)
+        self.assertGreater(total_big, DIFF_LINES, "fixture must exceed the cap to test it")
+        left = total_big - DIFF_LINES
+        note = f"… {left} more diff lines — claimlock diff c --full"
+        self.assertEqual(out.count("more diff lines"), 1, "only the large source should be capped")
+        self.assertIn(note, out)
+        self.assertIn("+TWO", out, "the small source's diff still prints in full")
+        self.assertLess(out.index(note), out.index("small.py"),
+                         "the big source's cap note comes before the small source's diff block")
+
+
+@NEED_GIT
+class DiffRegionSourceCap(TmpCase):
+    def test_region_diff_obeys_the_same_cap(self):
+        root = make_repo(self.tmp / "r", use_git=True)
+        write(root, ".gitignore", ".claimlock/\n")
+        region_old = "\n".join(f"r{k}" for k in range(900))
+        region_new = "\n".join(f"r{k} CHANGED" for k in range(900))
+        old_text = f"before\n# claimlock:begin r1\n{region_old}\n# claimlock:end r1\nafter\n"
+        new_text = f"before\n# claimlock:begin r1\n{region_new}\n# claimlock:end r1\nafter\n"
+        write(root, "a.py", old_text)
+        write(root, "claims/c.md", _region_claim_text("c", "a.py", "r1"))
+        rc, out, err = run_cli(root, "verify", "c")
+        self.assertEqual(rc, 0, out + err)
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "c")
+        write(root, "a.py", new_text)
+        rc, out, err = run_cli(root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        total = len(list(difflib.unified_diff(
+            region_old.split("\n"), region_new.split("\n"), fromfile="x", tofile="y", lineterm="")))
+        self.assertGreater(total, DIFF_LINES, "fixture must exceed the cap to test it")
+        left = total - DIFF_LINES
+        out_lines = out.rstrip("\n").split("\n")
+        self.assertEqual(len(out_lines), DIFF_LINES + 1)
+        self.assertEqual(out_lines[-1], f"… {left} more diff lines — claimlock diff c --full")
+
+
+@NEED_GIT
+class DiffBudgetCeiling(RewrittenFileMixin, TmpCase):
+    """Regression guard (R1), not a design target. Spec §1 measured today's
+    unbounded output at ~44,000 B on a 2,400-line rewritten file; the brief's
+    ceiling for this 900-line fixture is 12,000 B."""
+
+    def test_rewritten_900_line_file_default_diff_is_bounded(self):
+        root = self.rewritten_file_claim()
+        rc, out, err = run_cli(root, "diff", "c")
+        self.assertEqual(rc, 0, out + err)
+        size = len(out.encode("utf-8"))
+        self.assertLessEqual(size, 12000, f"default `diff` on a rewritten 900-line file was {size} bytes")
 
 
 if __name__ == "__main__":

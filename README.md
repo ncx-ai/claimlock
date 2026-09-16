@@ -120,7 +120,7 @@ Two **problems** fail `check` whatever the status:
 | `claimlock follow` | Rewrite the path of each renamed source (reported by `check` as `renamed`) to its new path, keeping its pins; the claim then reads fresh if the content is unchanged. |
 | `claimlock owe` | Hand off a claim's re-check to someone (`--to <email>`, default your git `user.email`; `--reason "<one line>"`); status becomes `owed`. |
 | `claimlock resolve` | Settle conflicted `sources` pins after a merge: keep a pin only when it equals the merged content, else mark the claim owed by the merger; leave every other conflict for a person. |
-| `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. |
+| `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. Each source's unified diff is capped at 200 lines — `--full` prints it whole. |
 | `claimlock who` | Who verified each of a claim's pins, from git history (email, timestamp, commit), tab-separated. |
 | `claimlock refs` | Fail if any `` Claim: `id` `` marker in prose names no claim. |
 | `claimlock affected` | List claims whose sources include the given path(s). |
