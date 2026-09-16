@@ -324,9 +324,10 @@ other problems correctly. Reported as `<file>:<line>: <message>`:
 - `unsupported YAML syntax starting with '<char>'; quote the value`
 - `unexpected indentation; list items are '  - ' and map continuations are 4 spaces`
 
-A claims directory that exists but cannot be listed is not a claim problem:
-every command that reads the store exits 2 (`claims directory <dir> cannot be
-read: <reason>`), because reading it as empty would be a false clean.
+A claims directory that exists but cannot be listed is not a claim problem
+(Claim: `check-exits-2-when-store-unreadable`): every command that reads the
+store exits 2 (`claims directory <dir> cannot be read: <reason>`), because
+reading it as empty would be a false clean.
 
 ## Freshness: the six states
 
@@ -783,9 +784,10 @@ nothing to bound under `--literal` (which is uncapped by design) and is not
 validated there either — `--literal --top 0` is not refused, `--top` is
 simply ignored.
 
-The no-match message is `claimlock: nothing matches '<query>'`, exit 1,
-extended under ranking with the query's content terms the store's vocabulary
-has no term for at all — `claimlock: nothing matches '<query>' (no claim
+The no-match message is `claimlock: nothing matches '<query>'`, exit 1
+(Claim: `search-exits-1-only-on-no-match`), extended under ranking with the
+query's content terms the store's vocabulary has no term for at all —
+`claimlock: nothing matches '<query>' (no claim
 mentions: <term>, <term>)` — and, under ranking always, a reminder of the
 most common remedy: `claimlock: nothing matches '<query>' — or try --literal
 for a substring or path` (both clauses combine when there are absent terms to
@@ -1009,7 +1011,7 @@ valid JSON, are recorded in `hook-errors.log` in the plugin data directory.
 
 A **marker** is any regex match of `marker_pattern` in any file matched by
 `marker_globs`, read as UTF-8. The default pattern captures the claim id from
-`` Claim: `some-id` `` written inline in prose.
+`` Claim: `<id>` `` written inline in prose.
 
 Excluded from every scan, unconditionally:
 - Any path component starting with `.` (hidden directories) or named

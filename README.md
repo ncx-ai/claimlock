@@ -123,7 +123,7 @@ Two **problems** fail `check` whatever the status:
 | `claimlock resolve` | Settle conflicted `sources` pins after a merge: keep a pin only when it equals the merged content, else mark the claim owed by the merger; leave every other conflict for a person. |
 | `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. Each source's unified diff is capped at 200 lines — `--full` prints it whole. |
 | `claimlock who` | Who verified each of a claim's pins, from git history (email, timestamp, commit), tab-separated. |
-| `claimlock refs` | Fail if any `` Claim: `id` `` marker in prose names no claim. Its census line also reports how many claims no prose cites at all (`--orphans` lists them, capped like every other listing, `--full` to see all) — an uncited claim never fails the gate; it's a documentation gap, not a false statement. |
+| `claimlock refs` | Fail if any `` Claim: `<id>` `` marker in prose names no claim. Its census line also reports how many claims no prose cites at all (`--orphans` lists them, capped like every other listing, `--full` to see all) — an uncited claim never fails the gate; it's a documentation gap, not a false statement. |
 | `claimlock evidence` | Resolve every `kind: test` evidence ref to a real test — `measurement`, `source` and `run` refs are prose by design and are never checked. A ref whose longest identifier token (≥ 8 chars) appears in no scanned file is `UNRESOLVED` (exit 1); a ref with no such token is `UNLOCATABLE` (reported, exit 0 — that's a citation claimlock can't check, not one that's wrong). Deliberately not part of `check`: it costs a full scan of the tree, `check`'s sub-0.1s baseline is load-bearing, and `evidence_globs` (default `**/*`) narrows it. |
 | `claimlock affected` | List claims whose sources include the given path(s). |
 | `claimlock import` | Import claims from the original (unpinned) ground-truth format. |
@@ -379,11 +379,12 @@ repository ignores, or outside git.
 | PostToolUse (after Edit / Write / MultiEdit / NotebookEdit) | Claude (as context) | At the moment of the edit: which `verified`/`owed` claims cite the file just edited, so the check can happen while the change is fresh instead of after the fact. Silent when nothing edited resolves to an in-root, non-claims path, or when nothing cited was found. |
 | Stop | The user (a `systemMessage`) | Problems new *since the last check* in this clone (not pre-existing ones) — claims that became invalid, conflicted, unpinned, unanchored, stale, missing or owed, and dangling markers — separating drift from your uncommitted edits to cited sources from drift that arrived another way (a `git pull`, a tool), plus any HEAD movement. A claim the HEAD-moved report already names in the same state is not listed twice, and anything the message could not show is reported again at the next Stop. |
 
-The edit-time notice never hashes and spawns no git — an edited file's claims
-are presumed drifted the moment it's touched, since computing freshness would
-add cost to answer a question the notice doesn't ask. Each file is named at
-most once per session: editing it ten times says it once, and a fresh session
-sees it again.
+The edit-time notice never hashes and spawns no git — an edited file's
+claims are presumed drifted the moment it's touched, since computing
+freshness would add cost to answer a question the notice doesn't ask
+(Claim: `post-edit-spawns-no-git`). Each file is named at most once per
+session: editing it ten times says it once, and a fresh session sees it
+again.
 
 With a team, a few details matter. The email for "owed to you" is read when the
 session starts; with no git `user.email` then, owed-to-you notices stay silent for
@@ -392,14 +393,15 @@ not label any drift as your uncommitted edits. A `git pull` that stops on
 conflicts does not move HEAD, so its conflicted claims reach you through Stop
 (``1 claim became conflicted (<id>) — run `claimlock resolve` ``), not PostToolUse.
 
-Hooks **never block**: they always exit 0 — including under a `python3` older
-than 3.11, where they print nothing and log one line to `hook-errors.log` in
-the plugin data directory — never set `decision`, and a Stop
-warning does not continue the turn — it is shown to the user only, after
-Claude has already finished responding. Hooks are active only in a project
-that has a `.claimlock.toml` — in the project directory Claude Code opened, or
-one of its ancestors (a config in a *subdirectory* of the opened project is not
-seen). Anywhere else, including a repository that merely has a `claims/`
+Hooks **never block** (Claim: `hooks-always-exit-0`): they always exit 0 —
+including under a `python3` older than 3.11, where they print nothing and
+log one line to `hook-errors.log` in the plugin data directory — never set
+`decision`, and a Stop warning does not continue the turn — it is shown to
+the user only, after Claude has already finished responding. Hooks are
+active only in a project that has a `.claimlock.toml` — in the project
+directory Claude Code opened, or one of its ancestors (a config in a
+*subdirectory* of the opened project is not seen). Anywhere else, including
+a repository that merely has a `claims/`
 directory, every hook prints nothing at all and runs no git command.
 
 Hooks keep per-session state (`sessions/<session>.json` and a `.lock`) in the
