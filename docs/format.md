@@ -882,7 +882,14 @@ decision. Each message is capped at 2,000 characters.
   timeout-is-clamped (owed). Your edit may have invalidated them: re-check
   with `claimlock diff <id>` before any `claimlock verify`.`` Up to 3 edited
   paths are named per message, `…` after that; up to 5 claims per path,
-  likewise. **Silent** (prints nothing) when: there's no usable path in the
+  likewise. A path is recorded as notified for the session only if the
+  message actually named it — a path cut by either cap, or by the 2,000
+  character budget, is free to speak on a later edit rather than going
+  silent for the rest of the session having never been shown. The 2,000
+  character cut, when it must happen, always falls between whole path
+  blocks (never mid claim id) and never drops the closing call to action; a
+  message shortened this way ends with `…` to say so. **Silent** (prints
+  nothing) when: there's no usable path in the
   tool payload (an unrecognised shape, e.g. an unconfirmed MultiEdit/
   NotebookEdit layout, is read defensively rather than guessed at); the path
   resolves outside the project root; the path is inside the claims
@@ -896,8 +903,10 @@ decision. Each message is capped at 2,000 characters.
   editing it ten times says it once, a different cited path still speaks, and
   a fresh session sees it again. The cited-claims index is cached in the
   session state, keyed by a digest of every claim file's `(name, size,
-  mtime_ns)` — a directory mtime alone would miss an in-place content edit to
-  a claim file — and rebuilds whenever that digest changes.
+  mtime_ns)`, `README.md` excluded (it backs no claim, same as
+  `claimlock check`'s own claim loader) — a directory mtime alone would miss
+  an in-place content edit to a claim file — and rebuilds whenever that
+  digest changes.
 - **End of turn** (only the user sees it, as a `systemMessage`): problems not
   present at the last check in this clone — a baseline taken at session
   start, then replaced by each end-of-turn check ("since the last check"; a

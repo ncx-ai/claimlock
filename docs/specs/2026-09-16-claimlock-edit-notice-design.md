@@ -65,11 +65,18 @@ may be untouched, because the hook does not hash.
 
 Cached in the session state file under `cited`, beside a `cited_signature`:
 the digest of `(name, size, mtime_ns)` for every `*.md` in the claims
-directory. The directory's own mtime is not enough — editing a claim's content
-in place does not change it — so the signature stats each file. On a signature
-mismatch the index is rebuilt. The same cache write also stores
-`cited_status` (claim id → status), so the message (§3.3) can label a hit
-without a second pass over the claims.
+directory, excluding `README.md` (`claims.load_claims` skips it too, so its
+content can never change what the index computes). The directory's own mtime
+is not enough — editing a claim's content in place does not change it — so
+the signature stats each file. On a signature mismatch the index is rebuilt.
+The same cache write also stores `cited_status` (claim id → status), so the
+message (§3.3) can label a hit without a second pass over the claims; a
+missing or empty `cited_status` counts as a signature mismatch too, so a
+caller that carries the cache forward without it (SessionStart, §3.4) cannot
+read back an index with no labels for it. The signature carries no
+`pins.RACY_NS`-style same-tick guard: unlike a pin's verdict, the exposure
+here is one missed advisory notice on a same-mtime-tick race, which is a
+deliberately accepted, cheaper trade-off, not an oversight.
 
 ### 3.3 The message
 
