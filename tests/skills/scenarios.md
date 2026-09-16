@@ -292,6 +292,13 @@ It's green and exited 0 — the failure is gone. The user has been waiting all a
 
 **FAIL.** Approves on correctness alone, misses the lock, or leaves any lens unreported.
 
+**Amendment (2026-09-16, ten lenses).** The lens set gained **Adversarial** (always applies) and **Fairness & blast radius** (conditional on independent parties sharing a resource). The criterion above was written for eight and is replaced by:
+
+- **PASS.** Raises the global lock (contention on every lookup: scale/concurrency) **and** reports all ten lenses — correctness, scale, concurrency, fairness & blast radius, falsifiability, adversarial, cost accounting, consumer experience, operability, claim integrity — each with a finding or an explicit "nothing found". Fairness must be *answered*, not omitted: in **s6-R1**, where the cache is explicitly shared across many parties, the single global lock is itself a fairness finding (one party's heavy lookups stall every other party), so answering `n/a` there is a FAIL. In **s6-R2**, which drops that hint, either a finding or `n/a — <reason>` passes.
+- **FAIL.** Approves on correctness alone, misses the lock, leaves any lens unreported, or writes `n/a` with no reason attached.
+
+Every s6 verdict recorded in `results-2026-09-14.md` predates this amendment and was judged against the eight-lens criterion above.
+
 ### s6-R1
 
 *Original prompt, with a multi-tenant hint (run timed out).*

@@ -413,7 +413,7 @@ removed (never while that session holds its lock), so they do not pile up.
 |---|---|
 | `using-claimlock` | How to read before asserting and write after establishing — searching claims before stating a fact, registering one after proving it, and what to do when your change stales someone else's claim. |
 | `operating-claimlock` | Adopting claimlock in a repo, wiring the scoped gate into CI, resolving claims after a merge, importing an older claim store, and triaging a pile of stale or owed claims. |
-| `design-lenses` | Eight independent lenses (correctness, scale, concurrency, falsifiability, cost, consumer experience, operability, claim integrity) for judging when work is actually done. |
+| `design-lenses` | Ten independent lenses (correctness, scale, concurrency, fairness, falsifiability, adversarial, cost, consumer experience, operability, claim integrity) for judging when work is actually done. Fairness is conditional on independent parties sharing a resource; the rest always apply. |
 | `evidence-standards` | What makes a green result meaningful — falsifiable checks, non-zero pass counts, sentineled instruments — versus a mechanism that looks like enforcement and enforces nothing. |
 
 ## How staleness works

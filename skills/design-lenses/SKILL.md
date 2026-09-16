@@ -17,14 +17,16 @@ Claim integrity is enforced mechanically by `using-claimlock`.
 
 ## The output
 
-End every assessment with this block — all eight lines, in this order, even when
+End every assessment with this block — all ten lines, in this order, even when
 the reply must be short and even when a lens found nothing. A length limit
 shortens the lines, never the list.
 
     Correctness: <what you checked> → <what you found, or "nothing">
     Scale: …
     Concurrency: …
+    Fairness & blast radius: …
     Falsifiability: …
+    Adversarial: …
     Cost accounting: …
     Consumer experience: …
     Operability: …
@@ -32,18 +34,69 @@ shortens the lines, never the list.
 
 A lens missing from the block reads as a lens that was never applied.
 
-## The eight lenses
+**A conditional lens is still a line.** Fairness & blast radius applies only
+where independent parties share a resource; where they do not, write `n/a —
+<why>`, as in `n/a — single-user tool, nothing shared`. That makes "not
+applicable" a claim carrying a reason someone can challenge, rather than an
+omission indistinguishable from having forgotten it.
+
+## The lenses
 
 | Lens | The question | The tell you skipped it |
 |---|---|---|
 | **Correctness** | Does it produce the right answer? | Every test passes and you are ready to ship |
 | **Scale** | What does it cost as data grows, on shared infrastructure? | Your fixtures are small enough that two implementations are indistinguishable — and you are reassured by them |
 | **Concurrency** | What happens when two things happen at once? | The design was reasoned about with one actor in mind |
+| **Fairness & blast radius** *(conditional)* | When one party is heavy or misbehaving, who else suffers? | You reasoned about one party at a time |
 | **Falsifiability** | Could this test, guard, or metric have failed? | A green result you did not try to break |
+| **Adversarial** | What does a hostile or careless actor do with this? | Every input you tested, you wrote yourself |
 | **Cost accounting** | Is the work measured and attributable to whoever caused it? | "It should be counted somewhere downstream" — said, not asserted |
 | **Consumer experience** | Could someone build real things on this without first writing a wrapper? | The API's documentation is teaching the implementation |
 | **Operability** | Can someone diagnose this at 3am without reading the source? | The failure mode is a silence |
 | **Claim integrity** | Can you name the enforcement site for every promise? | The justification sounds reasonable and nobody has re-derived it |
+
+## Adversarial is not falsifiability
+
+They are easy to conflate, and they point in different directions.
+**Falsifiability** is aimed at *your own checks*: could this test, guard or
+metric have failed? **Adversarial** is aimed at the artifact: what does someone
+trying to break this actually do? A suite can be rigorously falsifiable and
+never once feed the system an input its author did not imagine.
+
+Every project consumes input it does not control — a file, a command-line
+argument, a network response, a configuration value, another team's API. Ask
+where the trust boundary is, what crosses it, and what happens when what crosses
+it is malformed, enormous, empty, or deliberately crafted.
+
+**A worked example.** A search command built its "N more results" note by
+interpolating the user's query into a string that was later used as a format
+template. A query containing a brace then raised an exception: the results had
+already been computed, were never printed, and the process exited with the same
+status it uses for "nothing found" — so a working search reported,
+indistinguishably, that the thing being searched for did not exist. Correctness
+passed. The tests were falsifiable. Cost accounting was clean. The input was
+simply one nobody had typed, because every test input had been written by the
+same person who wrote the code.
+
+**Values are data, never templates.** The general form: anywhere a value crosses
+a boundary and is then *interpreted* rather than merely carried — format
+strings, shell commands, queries, paths, markup — is where this lens earns its
+line.
+
+## When fairness applies
+
+Fairness & blast radius is the conditional lens: it applies wherever independent
+parties share a resource, and is `n/a` where they do not. The parties need not
+be customers — they can be jobs on a build runner, requests against a thread
+pool, or players on one server. **Many tenants is the most common trigger, not
+the definition.**
+
+Ask: what does one party's worst case cost everyone else? Is the bound on
+*count* or on *size* — a limit on the number of entries that says nothing about
+how large each may be looks like a safety bound and is a memory-exhaustion
+vector. Can one party be starved indefinitely by another, and would anyone be
+able to tell? Abuse safety lives here — resource exhaustion, quota evasion, the
+noisy neighbour — while hostile *input* belongs to the adversarial lens above.
 
 ## "Cost" is not money
 
@@ -73,7 +126,7 @@ unable to act on it.
 ## Quick reference
 
 - **Uniformly positive assessment** → only one lens was applied. Go find the others.
-- **Weight by domain.** Infrastructure many clients share: scale, concurrency and cost accounting outrank convenience. A library others build on: consumer experience and claim integrity. A tool one person runs locally: consumer experience and operability.
+- **Weight by domain.** Infrastructure many clients share: scale, concurrency, fairness and cost accounting outrank convenience. A library others build on: consumer experience and claim integrity. A tool one person runs locally: consumer experience and operability. Anything that reads input it did not produce: adversarial, whatever else it is.
 - **A lens that finds nothing is still worth the pass** — say you applied it.
 
 ## Why correctness tests cannot see cost
