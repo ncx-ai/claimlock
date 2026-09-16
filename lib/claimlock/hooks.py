@@ -713,7 +713,7 @@ def _cited_index(project, st):
     sig = _claims_signature(project)
     cached = st.get("cited")
     status_cached = st.get("cited_status")
-    if st.get("cited_signature") == sig and isinstance(cached, dict) and status_cached:
+    if st.get("cited_signature") == sig and isinstance(cached, dict) and isinstance(status_cached, dict):
         return cached
     index, status_by_id = {}, {}
     try:

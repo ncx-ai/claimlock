@@ -2,6 +2,8 @@
 
 Spec: docs/specs/2026-09-16-claimlock-edit-notice-design.md §3.
 """
+import contextlib
+import io
 import json
 import os
 import unittest
@@ -380,3 +382,33 @@ class SignatureIgnoresReadme(EditCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CacheHitWithNoPinnedClaims(HookCase):
+    """A store whose claims are all unverified caches an EMPTY label map, and an
+    empty map is still a cache hit — keying the miss on truthiness turned this
+    into a full claim-file parse on every single edit (measured ~8.4 ms per call
+    at 400 claims, for the life of the session)."""
+
+    def test_second_call_does_not_reparse_the_claims(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "a.py", "one\n")
+        for i in range(3):
+            write(root, f"claims/u{i}.md", claim_text(f"u{i}", sources=("a.py",)))
+        payload = json.dumps({"session_id": "s1", "cwd": str(root),
+                              "tool_name": "Edit", "tool_input": {"file_path": str(root / "a.py")}})
+        env = {"CLAUDE_PROJECT_DIR": str(root), "CLAUDE_PLUGIN_DATA": str(self.data)}
+        real, calls = hooks_mod.C.load_claims, []
+
+        def counting(project):
+            calls.append(1)
+            return real(project)
+
+        with mock.patch.object(hooks_mod.C, "load_claims", side_effect=counting):
+            with contextlib.redirect_stdout(io.StringIO()):
+                hooks_mod.main("post-edit", payload, env)
+                first = len(calls)
+                hooks_mod.main("post-edit", payload, env)
+                second = len(calls) - first
+        self.assertGreaterEqual(first, 1, "the first call must build the index")
+        self.assertEqual(second, 0, "a second call with unchanged claims must hit the cache")

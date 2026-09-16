@@ -1,7 +1,7 @@
 # claimlock
 
 A Claude Code plugin that pins written claims about a codebase to the content
-of the files that could falsify them — a small CLI, three non-blocking hooks,
+of the files that could falsify them — a small CLI, four non-blocking hooks,
 and skills that teach an agent when to check and when to write. It prevents
 the specific failure of docs that keep asserting things that stopped being
 true, with nothing to catch it: a claim in `claims/` is tied to the git blob
