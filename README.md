@@ -459,10 +459,12 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
 - **Upgrade everyone together, CI included.** An older claimlock reports
   `unknown field 'pins'` on every claim this version verified, and its
   `verify` leaves a stale `pins:` line that this version reads as invalid.
-- **`check --json`'s `results`** now holds only blocking claims (invalid, or a
-  non-fresh state) plus `owed` claims, not every claim — a new `omitted` gives
-  the count left out. A consumer that parsed every claim from `results` needs
-  `--full`, which restores the old shape (`"omitted": 0`).
+- **`check --json`'s `results`** now holds blocking claims (invalid, or a
+  non-fresh state, in scope), plus failing claims outside the `--changed`
+  scope, plus `owed` claims — not every claim, and a result's `blocking`
+  field can therefore be `false`. A new `omitted` gives the count left out.
+  A consumer that parsed every claim from `results` needs `--full`, which
+  restores the old shape (`"omitted": 0`).
 - **`search`'s default output** is one line per hit (id, area, status,
   headline), not the matching body lines indented under each hit — a consumer
   that parsed those lines needs `--body`, which restores the old shape.

@@ -19,8 +19,8 @@ cheap command. Measured 2026-09-15 against a real 41-claim store (Boogy's
 | `show ledger-conserves-money` | 16,188 B ≈ 4,000 tok | whole body (10,067 B) + evidence (5,693 B) |
 | `check --json` (41 claims) | 26,193 B ≈ 6,500 tok | every claim, passing ones included (63,401 B at 201 claims) |
 | `diff` (large file rewritten) | 44,465 B ≈ 11,100 tok | unbounded; a one-line change is 181 B |
-| `docs/format.md` read | 44,998 B ≈ 11,200 tok | nothing tells an agent not to read it routinely |
-| `README.md` read | 33,938 B ≈ 8,500 tok | same |
+| `docs/format.md` read | 52,821 B ≈ 13,200 tok | nothing tells an agent not to read it routinely |
+| `README.md` read | 35,248 B ≈ 8,800 tok | same |
 | `using-claimlock` + `operating-claimlock` | 21,199 B ≈ 5,300 tok | loaded in full when invoked |
 
 Two structural findings from the same measurements:
@@ -70,9 +70,11 @@ Constants live in `lib/claimlock/cli.py` beside the formatting that uses them.
 
 ### 3.2 `check --json`
 
-- `results` holds only **blocking** claims (those with problems, or a non-fresh
-  state) plus `owed` claims, which a gate reader needs. A new top-level
-  `"omitted"` gives the number of claims left out.
+- `results` holds **blocking** claims (those with problems, or a non-fresh
+  state, in scope), plus **failing claims outside the `--changed` scope**
+  (pre-existing drift a `--changed` reader still needs to see), plus `owed`
+  claims — a result's `blocking` field is therefore `false` for the last two
+  groups. A new top-level `"omitted"` gives the number of claims left out.
 - `--full` restores every claim, and sets `"omitted": 0`.
 - `claims`, `sources_hashed`, `counts` and `scope` are unchanged, so a reader
   that only wants totals sees the same numbers.
@@ -91,7 +93,9 @@ Constants live in `lib/claimlock/cli.py` beside the formatting that uses them.
 
 - The body is capped at `BODY_LINES` lines; the cut prints
   `… <n> more lines — read <claim path>` (the same relative path the trailing
-  `file:` line names).
+  `file:` line names). Deliberate exception to the "and" form below: this cut
+  names a path rather than a flag and reads as a sentence, so it keeps its
+  own wording rather than matching `check`'s and `diff`'s.
 - Each evidence `ref` is truncated to `EVIDENCE_CHARS` with a trailing `…`.
 - Status, state, problems, the source list and the `file:` line are unchanged —
   the parts a reader acts on are never truncated.
@@ -100,7 +104,8 @@ Constants live in `lib/claimlock/cli.py` beside the formatting that uses them.
 ### 3.5 `diff`
 
 - Per source, at most `DIFF_LINES` lines of unified diff, then
-  `… <n> more diff lines — claimlock diff <id> --full`.
+  `… and <n> more diff lines — claimlock diff <id> --full` — the same "and"
+  form `check` uses for its own cap notes (§3.1).
 - The cap counts the lines printed for that source, headers included, and a
   source that fits prints exactly as today.
 - `--full`: no cap.
@@ -125,7 +130,7 @@ to work:
 And two prohibitions:
 
 - **Do not read `docs/format.md` or `README.md` for routine claim work.** They
-  are reference for changing claimlock itself and cost ~11,200 and ~8,500
+  are reference for changing claimlock itself and cost ~13,200 and ~8,800
   tokens. Everything the routine flows need is in the skills.
 - **Do not run `check --json`** unless a machine is parsing it; the text form
   is smaller.
@@ -141,6 +146,11 @@ toward a combined ~14,000 B by moving worked examples and format detail into
 `docs/format.md`, keeping **every rule and every red-flag row**. This lands as
 its own task and its own reviewed change, because the risk is cutting a rule
 that was doing work. A rule that is only in the skills stays in the skills.
+
+**Outcome** (measured 2026-09-15, `wc -c` on both `SKILL.md` files): the trim
+landed at 20,545 B combined (11,034 + 9,511), down from 21,199 B — short of
+the ~14,000 B target because keeping every rule and every red-flag row
+outranked the byte target.
 
 ## 6. Testing
 

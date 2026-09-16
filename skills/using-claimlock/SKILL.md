@@ -24,7 +24,7 @@ The default sequence, every time:
    the headline isn't enough.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
-they are reference for changing claimlock itself (~11,200 and ~8,500 tokens);
+they are reference for changing claimlock itself (~13,200 and ~8,800 tokens);
 this skill carries what these flows need. **Do not run `check --json`**
 unless a machine is parsing it — the text form is smaller.
 
@@ -173,5 +173,5 @@ Exact message shapes, field ordering, caps and log detail: `docs/format.md`.
 | "The file was only moved; I'll just edit the path" | Run `claimlock follow`: it keeps the pins honestly and updates the digest. |
 | "One claim for the whole subsystem" | It can't go stale for one part. Split it. |
 | "It's false now, delete it" | Refute it and say what replaced it. |
-| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~11k tokens. |
+| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~13k tokens. |
 | "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` before committing. |

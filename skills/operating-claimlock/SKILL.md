@@ -31,7 +31,7 @@ The default sequence for routine claim work, every time:
    the headline isn't enough.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
-they are reference for changing claimlock itself (~11,200 and ~8,500 tokens);
+they are reference for changing claimlock itself (~13,200 and ~8,800 tokens);
 these skills carry what these flows need. **Do not run `check --json`**
 unless a machine is parsing it — the text form is smaller.
 
@@ -171,5 +171,5 @@ nothing. Full message shapes, field ordering, caps, and session/log detail:
 | "Take either side of the pin conflict" | Run `claimlock resolve`; it keeps pins only when the merged content is exactly what one side verified. |
 | "0 claims, check passed" | Check `claims_dir`. Seeing nothing is not finding nothing. |
 | "Disable the hook, it's noisy" | Noise means sources are too broad. Narrow them. |
-| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~11k tokens. |
+| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~13k tokens. |
 | "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` before committing. |

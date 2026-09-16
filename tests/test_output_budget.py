@@ -127,6 +127,31 @@ class SourceAndProblemCaps(CheckStoreMixin, TmpCase):
         self.assertIn("claimlock check --full", out)
 
 
+class InvalidClaimSortsBeforeStaleClaims(CheckStoreMixin, TmpCase):
+    """Fix-wave ruling (item D): the failing-claims list sorts claims with
+    problems (INVALID) before merely non-fresh ones, preserving order within
+    each group, so an invalid claim past LISTED_CLAIMS is never hidden behind
+    a run of stale claims. `invalid` has no `HINT` entry (`_hints_block`
+    skips it), so before this fix the census `1 invalid` line was the only
+    place such a claim showed at all."""
+
+    def test_invalid_claim_past_the_stale_run_still_appears(self):
+        root, ids = self.store(22)
+        write(root, "src/zzz-invalid.py", "content\n")
+        write(root, "claims/zzz-invalid.md",
+              "---\nid: zzz-invalid\narea: core\nstatus: unverified\n"
+              "evidence:\n  - kind: test\n    ref: s::c\n"
+              "sources:\n  - path: src/zzz-invalid.py\n    blob: not-a-valid-blob\n"
+              "---\nBody.\n")
+        rc, out, err = run_cli(root, "check")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("INVALID  zzz-invalid", out)
+        # Sorted first: the invalid claim occupies one of the LISTED_CLAIMS
+        # slots, so only LISTED_CLAIMS - 1 of the 22 stale claims are printed.
+        self.assertEqual(out.count("STALE    claim-"), LISTED_CLAIMS - 1)
+        self.assertIn("… and 3 more failing claims — claimlock check --full", out)
+
+
 class ExactCapBoundary(CheckStoreMixin, TmpCase):
     def test_exactly_LISTED_CLAIMS_prints_no_note(self):
         root, ids = self.store(LISTED_CLAIMS)
@@ -267,9 +292,9 @@ class MixedStoreJsonBudget(TmpCase):
 
 
 class BudgetCeilings(CheckStoreMixin, TmpCase):
-    """Regression guards, not design targets (R1): if a measured default
-    output exceeds these while the shape matches the spec, the ceiling is
-    raised to the measured value rounded up rather than the format shrunk."""
+    """Regression guards, not design targets: if a measured default output
+    exceeds these while the shape matches the spec, the ceiling is raised to
+    the measured value rounded up rather than the format shrunk."""
 
     def test_default_check_output_is_bounded(self):
         root, ids = self.store(30)
@@ -342,6 +367,20 @@ class SearchDefaultShape(TmpCase):
         self.assertEqual(rc, 0, out + err)
 
 
+class SearchEmptyBodyNoTrailingSpace(TmpCase):
+    """Item F (fix wave): a claim with no headline (empty body) matched by id
+    must not leave the two-space header/headline separator dangling at the
+    end of the line."""
+
+    def test_no_headline_leaves_no_trailing_whitespace(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/nobody.md", claim_text("nobody", sources=["src/a.py"], body=""))
+        rc, out, err = run_cli(root, "search", "nobody")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out, "nobody (core, unverified)\n")
+
+
 class SearchBodyFlagRestoresOldOutput(TmpCase):
     def test_body_flag_restores_indented_matching_lines(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -354,20 +393,39 @@ class SearchBodyFlagRestoresOldOutput(TmpCase):
 
 
 class SearchBudgetCeiling(TmpCase):
-    """Regression guard (R1), not a design target."""
+    """Regression guard, not a design target: this class's job is to fail if
+    the --body suppression regresses, not to hold the format to an exact
+    byte count. A single matching line per claim can't show that — deleting
+    the whole default/--body distinction would still pass an absolute-only
+    ceiling measured against the pre-feature output — so the house form (also
+    used by `MixedStoreJsonBudget` and `ListBudgetCeiling`) is a *relational*
+    assertion (`default <= full/2`) that the feature must exist to satisfy,
+    plus the absolute ceiling as a secondary regression check. Each claim
+    here gets several matching body lines so `--body`'s output is actually
+    fat enough for the cap to bind."""
 
     def test_search_matching_30_claims_is_bounded(self):
         root = make_repo(self.tmp / "r", use_git=False)
         for i in range(30):
             cid = f"claim-{i:03d}"
             write(root, f"src/{cid}.py", "x\n")
-            write(root, f"claims/{cid}.md",
-                  claim_text(cid, sources=[f"src/{cid}.py"],
-                             body="needle appears here for every claim in this fixture."))
+            body = "\n".join(
+                f"needle appears on line {k} of claim {cid}, with some more words to pad it out further."
+                for k in range(8))
+            write(root, f"claims/{cid}.md", claim_text(cid, sources=[f"src/{cid}.py"], body=body))
         rc, out, err = run_cli(root, "search", "needle")
         self.assertEqual(rc, 0, out + err)
         size = len(out.encode("utf-8"))
-        self.assertLessEqual(size, 3000, f"default `search` matching 30 claims was {size} bytes")
+
+        rc, out_body, err = run_cli(root, "search", "needle", "--body")
+        self.assertEqual(rc, 0, out_body + err)
+        body_size = len(out_body.encode("utf-8"))
+
+        # Measured 2026-09-15: default 3,570 B, --body 23,220 B.
+        self.assertLessEqual(size, body_size / 2,
+                              f"default {size} B should be at most half of --body {body_size} B "
+                              f"(30 claims, 8 matching body lines each)")
+        self.assertLessEqual(size, 4000, f"default `search` matching 30 claims was {size} bytes")
 
 
 class ShowBodyCap(TmpCase):
@@ -461,19 +519,36 @@ class ShowFullFlagRestoresWholeBodyAndRefs(TmpCase):
 
 
 class ShowBudgetCeiling(TmpCase):
-    """Regression guard (R1), not a design target."""
+    """Regression guard, not a design target: a 60-line body and three
+    500-char refs is barely over BODY_LINES/EVIDENCE_CHARS, so an absolute
+    ceiling measured against that fixture passed against the pre-branch
+    (uncapped) output too and guarded nothing. The house form (also used by
+    `MixedStoreJsonBudget`, `ListBudgetCeiling` and `SearchBudgetCeiling`) is
+    a *relational* assertion (`default <= full/2`) the feature must exist to
+    satisfy, plus the absolute ceiling as a secondary check — so the fixture
+    here is fattened well past both caps until the relation actually binds."""
 
-    def test_60_line_body_and_three_500_char_refs_is_bounded(self):
+    def test_long_body_and_refs_is_bounded(self):
         root = make_repo(self.tmp / "r", use_git=False)
         write(root, "src/a.py", "x\n")
-        body = "\n".join(f"line {k} of the body." for k in range(60))
-        evidence = tuple(("test", "r" * 500) for _ in range(3))
+        body = "\n".join(
+            f"line {k} of the body, with some more words to pad it out further." for k in range(300))
+        evidence = tuple(("test", "r" * 2000) for _ in range(3))
         write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], evidence=evidence, body=body))
         rc, out, err = run_cli(root, "show", "c")
         self.assertEqual(rc, 0, out + err)
         size = len(out.encode("utf-8"))
-        self.assertLessEqual(size, 3000,
-                              f"`show` with a 60-line body and three 500-char refs was {size} bytes")
+
+        rc, out_full, err = run_cli(root, "show", "c", "--full")
+        self.assertEqual(rc, 0, out_full + err)
+        full_size = len(out_full.encode("utf-8"))
+
+        # Measured 2026-09-15: default 3,397 B, --full 25,851 B.
+        self.assertLessEqual(size, full_size / 2,
+                              f"default {size} B should be at most half of --full {full_size} B "
+                              f"(300-line body, three 2000-char refs)")
+        self.assertLessEqual(size, 4000,
+                              f"`show` with a 300-line body and three 2000-char refs was {size} bytes")
 
 
 class ListHeadlineTruncated(TmpCase):
@@ -517,7 +592,8 @@ class ListStatusFlagLineUnchanged(TmpCase):
 
 
 class ListBudgetCeiling(TmpCase):
-    """Regression guard (R1), not a design target. Spec §6 asks for a
+    """Regression guard, not a design target (ceilings track measured
+    output, not a byte budget the format is held to). Spec §6 asks for a
     per-command output-budget test; `list`'s only got exercised for exact
     shape above, not size, until now.
 
@@ -590,7 +666,7 @@ class DiffCapOnRewrittenFile(RewrittenFileMixin, TmpCase):
         out_lines = out.rstrip("\n").split("\n")
         self.assertEqual(len(out_lines), DIFF_LINES + 1)
         left = self.total - DIFF_LINES
-        self.assertEqual(out_lines[-1], f"… {left} more diff lines — claimlock diff c --full")
+        self.assertEqual(out_lines[-1], f"… and {left} more diff lines — claimlock diff c --full")
 
     def test_capped_lines_are_a_prefix_of_the_full_diff(self):
         root = self.rewritten_file_claim()
@@ -661,7 +737,7 @@ class DiffCapsEachSourceIndependently(TmpCase):
         total_big = _diff_line_count(old_big, new_big)
         self.assertGreater(total_big, DIFF_LINES, "fixture must exceed the cap to test it")
         left = total_big - DIFF_LINES
-        note = f"… {left} more diff lines — claimlock diff c --full"
+        note = f"… and {left} more diff lines — claimlock diff c --full"
         self.assertEqual(out.count("more diff lines"), 1, "only the large source should be capped")
         self.assertIn(note, out)
         self.assertIn("+TWO", out, "the small source's diff still prints in full")
@@ -693,14 +769,16 @@ class DiffRegionSourceCap(TmpCase):
         left = total - DIFF_LINES
         out_lines = out.rstrip("\n").split("\n")
         self.assertEqual(len(out_lines), DIFF_LINES + 1)
-        self.assertEqual(out_lines[-1], f"… {left} more diff lines — claimlock diff c --full")
+        self.assertEqual(out_lines[-1], f"… and {left} more diff lines — claimlock diff c --full")
 
 
 @NEED_GIT
 class DiffBudgetCeiling(RewrittenFileMixin, TmpCase):
-    """Regression guard (R1), not a design target. Spec §1 measured today's
-    unbounded output at ~44,000 B on a 2,400-line rewritten file; the brief's
-    ceiling for this 900-line fixture is 12,000 B."""
+    """Regression guard, not a design target — the DIFF_LINES cap itself is
+    the design target; this only checks the cap keeps a large diff bounded.
+    Spec §1 measured today's unbounded output at ~44,000 B on a 2,400-line
+    rewritten file; the brief's ceiling for this 900-line fixture is
+    12,000 B."""
 
     def test_rewritten_900_line_file_default_diff_is_bounded(self):
         root = self.rewritten_file_claim()

@@ -245,6 +245,11 @@ def cmd_check(args):
         return scope is None or r.claim.id in scope
 
     blocking = [r for r in results if _failing(r) and in_scope(r)]
+    # Invalid claims sort before merely non-fresh ones (stable: order within
+    # each group is unchanged) — `invalid` has no `HINT` entry, so an invalid
+    # claim past LISTED_CLAIMS would otherwise never be named anywhere but
+    # the census (item D, 2026-09-15 fix wave).
+    blocking.sort(key=lambda r: 0 if r.problems else 1)
     elsewhere = [r for r in results if _failing(r) and not in_scope(r)]
     owed = [r for r in results if r.claim.status == "owed" and not r.problems]
     blocking_ids = {r.claim.id for r in blocking}
@@ -283,10 +288,10 @@ def cmd_check(args):
                       lambda r: print(_owed_line(project, r, owed_states.get(r.claim.id), behind)))
         first_id = {}
         for r in blocking:
-            if r.problems:
-                first_id.setdefault("invalid", r.claim.id)
             if r.state in C.NON_FRESH:
                 first_id.setdefault(r.state, r.claim.id)
+        # "invalid" has no `HINT` entry (`_hints_block` skips it via
+        # `state in HINT`), so no `first_id["invalid"]` is needed here.
         hints = _hints_block(("invalid", *C.NON_FRESH), first_id)
         if hints:
             print("hints:")
@@ -368,7 +373,9 @@ def cmd_search(args):
                     print(f"    {line.strip()}")
             print()
         else:
-            print(f"{c.id} ({c.area}, {c.status}){flag}  {_clip(c.headline(), HEADLINE_CHARS)}")
+            # rstrip: an empty headline (blank body) would otherwise leave the
+            # two-space header/headline separator dangling at line end.
+            print(f"{c.id} ({c.area}, {c.status}){flag}  {_clip(c.headline(), HEADLINE_CHARS)}".rstrip())
     if not hits:
         print(f"claimlock: nothing matches {args.query!r}")
         return 1
@@ -526,10 +533,10 @@ def cmd_resolve(args):
 
 def _print_diff_lines(lines, cap, cid):
     """Print a source's unified diff (`lines`, headers included), capped at
-    `cap` lines (`None` under `--full`); a cut ends with `… <n> more diff
+    `cap` lines (`None` under `--full`); a cut ends with `… and <n> more diff
     lines — claimlock diff <cid> --full` (spec §3.5). A diff that fits under
     `cap` prints exactly as it always has."""
-    shown, note = _capped(lines, cap, f"… {{n}} more diff lines — claimlock diff {cid} --full")
+    shown, note = _capped(lines, cap, f"… and {{n}} more diff lines — claimlock diff {cid} --full")
     print("\n".join(shown))
     if note:
         print(note)

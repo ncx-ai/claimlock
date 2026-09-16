@@ -491,8 +491,9 @@ Consequences:
   `<key> @ <pin12> (verified)` and `<key> (now)`. Each source's unified diff
   (headers included) is capped at `DIFF_LINES = 200` lines (the constant lives
   beside `check`'s and `show`'s in `lib/claimlock/cli.py`); when a source's
-  diff holds more, the cut prints `… <n> more diff lines — claimlock diff <id>
-  --full`, `<n>` the lines withheld for that source alone — a second stale
+  diff holds more, the cut prints `… and <n> more diff lines — claimlock diff
+  <id> --full` (the same "and" form `check`'s cap notes use), `<n>` the lines
+  withheld for that source alone — a second stale
   source in the same claim is capped independently. `--full` restores every
   source's diff whole. A diff that fits under the cap prints exactly as
   before.
@@ -675,15 +676,18 @@ blocking counts: `invalid`, `unpinned`, `unanchored`, `stale`, `missing`,
 `renamed_to: "<new-path>"`), `in_scope`, `blocking` and `owed_by`.
 `--area <a>` limits every output to that area.
 
-By default `results` holds only **blocking** claims (those with `problems`, or
-a non-fresh `state`) plus `owed` claims — a gate reader needs both, and a
-fresh, non-owed claim carries nothing actionable. `omitted` is
-`claims - len(results)`, the count of fresh claims left out. `--full` restores
-every claim in `results` and sets `"omitted": 0`. `claims`, `sources_hashed`,
-`counts` and `scope` are always the full totals, `--full` or not — only
-`results` is filtered. This is a breaking change for a consumer that parsed
-every claim from `results` before this existed; pass `--full` to get that
-shape back.
+By default `results` holds **blocking** claims (those with `problems`, or a
+non-fresh `state`, in scope), plus **failing claims outside the `--changed`
+scope** (pre-existing drift a `--changed` reader still needs to see), plus
+`owed` claims — a gate reader needs all three, and a fresh, non-owed,
+in-scope claim carries nothing actionable. A result's `blocking` field is
+therefore `false` for the pre-existing-drift and owed groups. `omitted` is
+`claims - len(results)`, the count of claims that neither block nor are
+owed. `--full` restores every claim in `results` and sets `"omitted": 0`.
+`claims`, `sources_hashed`, `counts` and `scope` are always the full totals,
+`--full` or not — only `results` is filtered. This is a breaking change for
+a consumer that parsed every claim from `results` before this existed; pass
+`--full` to get that shape back.
 
 ## `claimlock search`, `claimlock show` and `claimlock list` output
 
@@ -724,7 +728,9 @@ the status line, any `INVALID`/state line, the `Evidence:` kind labels, the
 
 - The **body** is capped at `BODY_LINES` lines; when it holds more, the cut
   prints `… <n> more lines — read <claim path>` — the same relative path the
-  trailing `file:` line names.
+  trailing `file:` line names. This keeps its own wording rather than
+  `check`'s and `diff`'s "and" form (deliberate exception: it names a path
+  rather than a flag, and reads as a sentence).
 - Each evidence **`ref`** is clipped to `EVIDENCE_CHARS` characters (its first
   `EVIDENCE_CHARS - 1` plus a trailing `…` when longer) — the `[<kind>]` label
   before it is never clipped.
