@@ -45,10 +45,35 @@ A lens missing from the block reads as a lens that was never applied.
 | **Operability** | Can someone diagnose this at 3am without reading the source? | The failure mode is a silence |
 | **Claim integrity** | Can you name the enforcement site for every promise? | The justification sounds reasonable and nobody has re-derived it |
 
+## "Cost" is not money
+
+Cost accounting is the lens most often waved off as someone else's problem,
+because its name suggests invoices. **The scarce thing is whatever is scarce
+here** — money, wall-clock time, memory, bandwidth, a rate-limit quota, a
+context window, a human's attention. The lens asks whether consumed work leaves
+a record, and whether that record names who caused it. Three checks, each able
+to fail on its own:
+
+1. **Emission** — does this path record anything at all?
+2. **Attribution** — does the record identify who or what caused the work?
+3. **Assertion** — does a test prove both, and could that test have failed?
+
+Accounting is a cross-cutting side effect, never what the feature is "about", so
+a new code path inherits the feature's logic and not its measurement. That is
+why the usual finding is not a wrong number but a **missing one** on the path
+nobody had in mind.
+
+Two properties make the gap durable. Under-measuring is silent and
+self-punishing, so nothing complains until someone deliberately measures —
+unlike over-measuring, which someone notices immediately. And an unrecorded unit
+of work is indistinguishable downstream from a genuinely free one: **absence
+reads as zero**. Without attribution you can watch a total move and still be
+unable to act on it.
+
 ## Quick reference
 
 - **Uniformly positive assessment** → only one lens was applied. Go find the others.
-- **Weight by domain.** Shared/multi-tenant infrastructure: scale, concurrency and cost accounting outrank convenience. A local CLI: consumer experience and operability do.
+- **Weight by domain.** Infrastructure many clients share: scale, concurrency and cost accounting outrank convenience. A library others build on: consumer experience and claim integrity. A tool one person runs locally: consumer experience and operability.
 - **A lens that finds nothing is still worth the pass** — say you applied it.
 
 ## Why correctness tests cannot see cost
@@ -84,19 +109,21 @@ The **subject** was.
 
 The strongest bias is not attachment to your own design — it is the
 **availability of a remedy**. In the case above, a rewrite was already planned
-that happened to make the symptom disappear, so a platform limit quietly became
-"a thing applications should be written to avoid" rather than a defect.
+that happened to make the symptom disappear, so a limit imposed by one component
+quietly became "a thing its callers should be written around" rather than a
+defect.
 
-**The tell: you are explaining how an application should be written to avoid a
-platform limit the developer cannot see.** That is never a design. Contention and
-physical layout belong to the platform, so a remedy that exists only in
-application code is evidence the problem has been put on the wrong side of the
-line.
+**The tell: you are explaining how a caller should be written to avoid a
+constraint it cannot see.** That is never a design. When a component owns a
+constraint — a limit, a contention point, an internal layout its callers can
+neither observe nor change — a remedy that exists only in calling code is
+evidence the problem has been put on the wrong side of the boundary.
 
-Ask it explicitly: *if a competent developer hit this without knowing the
+Ask it explicitly: *if a competent engineer hit this without knowing the
 internals, what would they experience, and what could they do about it?* If the
-honest answer is "nothing, because they cannot see it", it is a platform defect
-— however convenient the application-side workaround happens to be.
+honest answer is "nothing, because they cannot see it", the defect belongs to
+the component that owns the constraint — however convenient the caller-side
+workaround happens to be.
 
 ### Both were supplied by a person, not by the process
 
