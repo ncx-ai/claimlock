@@ -101,6 +101,25 @@ class NamesTheClaims(EditCase):
         for needle in ("a.py", "c1", "c2", "verified", "owed", "claimlock diff", "claimlock verify"):
             self.assertIn(needle, text, text)
 
+    def test_singular_claim_uses_it(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c1.md", claim_text("c1", status="verified", sources=("a.py",)))
+        out = self.hook(root, "post-edit", stdin=self.payload(root, "s1", file_path=str(root / "a.py")))
+        text = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("invalidated it", text, text)
+        self.assertNotIn("invalidated them", text, text)
+
+    def test_plural_claims_uses_them(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c1.md", claim_text("c1", status="verified", sources=("a.py",)))
+        write(root, "claims/c2.md", owed_claim_text("c2", ("a.py",)))
+        out = self.hook(root, "post-edit", stdin=self.payload(root, "s1", file_path=str(root / "a.py")))
+        text = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("invalidated them", text, text)
+        self.assertNotIn("invalidated it", text, text)
+
     def test_region_source_is_named_without_hashing(self):
         # The hook does not hash, so a region source is named on any edit to
         # its file, whether or not the region itself was touched.
@@ -206,6 +225,21 @@ class Bounds(EditCase):
         self.assertEqual(text.count("(verified)"), 5)
         self.assertIn("…", text)
 
+    def test_more_than_three_paths_names_at_most_three(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        for i in range(5):
+            write(root, f"p{i}.py", "x\n")
+            write(root, f"claims/c{i}.md", claim_text(f"claim-{i}", status="verified", sources=(f"p{i}.py",)))
+        edits = [{"file_path": str(root / f"p{i}.py")} for i in range(5)]
+        stdin = json.dumps({"session_id": "s1", "cwd": str(root), "tool_input": {"edits": edits}})
+        out = self.hook(root, "post-edit", stdin=stdin)
+        text = out["hookSpecificOutput"]["additionalContext"]
+        for i in range(3):
+            self.assertIn(f"p{i}.py", text, text)
+        for i in range(3, 5):
+            self.assertNotIn(f"p{i}.py", text, text)
+        self.assertIn("…", text)
+
     def test_many_long_ids_stay_within_the_limit(self):
         root = make_repo(self.tmp / "r", use_git=False)
         write(root, "a.py", "one\n")
@@ -215,6 +249,21 @@ class Bounds(EditCase):
         out = self.hook(root, "post-edit", stdin=self.payload(root, "s1", file_path=str(root / "a.py")))
         text = out["hookSpecificOutput"]["additionalContext"]
         self.assertLessEqual(len(text), 2000)
+
+
+class SessionStartCarriesSuppressionForward(EditCase):
+    def test_session_start_does_not_reset_edited_notified(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "a.py", "one\n")
+        write(root, "claims/c1.md", claim_text("c1", status="verified", sources=("a.py",)))
+        first = self.hook(root, "post-edit", stdin=self.payload(root, "s1", file_path=str(root / "a.py")))
+        self.assertIsNotNone(first)
+        self.hook(root, "session-start", session="s1")
+        second = self.hook(root, "post-edit", stdin=self.payload(root, "s1", file_path=str(root / "a.py")))
+        self.assertIsNone(second, "a compaction/clear mid-session must not re-arm already-notified paths")
+        # A different session is unaffected either way.
+        other = self.hook(root, "post-edit", stdin=self.payload(root, "s2", file_path=str(root / "a.py")))
+        self.assertIsNotNone(other)
 
 
 @NEED_GIT

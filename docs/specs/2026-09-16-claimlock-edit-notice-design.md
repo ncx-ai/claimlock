@@ -67,7 +67,9 @@ Cached in the session state file under `cited`, beside a `cited_signature`:
 the digest of `(name, size, mtime_ns)` for every `*.md` in the claims
 directory. The directory's own mtime is not enough — editing a claim's content
 in place does not change it — so the signature stats each file. On a signature
-mismatch the index is rebuilt.
+mismatch the index is rebuilt. The same cache write also stores
+`cited_status` (claim id → status), so the message (§3.3) can label a hit
+without a second pass over the claims.
 
 ### 3.3 The message
 

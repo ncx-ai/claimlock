@@ -473,10 +473,21 @@ def _head_report(old, new, hit, dangling, owed_new=(), conflicted=()):
 
 
 def session_start(project, payload, data_dir):
+    path = _state_path(data_dir, payload)
+    prev = _load_state(path, project)  # None unless the same root's state survived (e.g. a `compact`)
     s, results = survey(project)
     st = {"root": str(project.root), "baseline": s}
+    if prev is not None:
+        # Carry the post-edit notice's own state forward across a mid-session
+        # SessionStart (its matcher includes "compact"): otherwise every
+        # already-announced file gets announced again after a compaction.
+        # Nothing else survives — baseline and the HEAD marks are always
+        # re-established fresh, as before.
+        for k in ("edited_notified", "cited", "cited_signature"):
+            if k in prev:
+                st[k] = prev[k]
     _init_head(project, st)
-    _save_state(_state_path(data_dir, payload), st)
+    _save_state(path, st)
     me = C.normalize_email(st.get("email"))
     mine = sorted(r.claim.id for r in results
                   if me and r.claim.status == "owed" and C.normalize_email(r.claim.owed_by) == me)
@@ -699,7 +710,11 @@ def _cited_index(project, st):
 def _edit_notice(hits, status_by_id):
     """One `claimlock: <path> backs N claim(s) — id (status), …` message per
     hit path (spec §3.3): at most EDIT_CLAIM_CAP claims per path, then `…`;
-    at most EDIT_PATH_CAP paths, then `…`. Callers cut the result to LIMIT."""
+    at most EDIT_PATH_CAP paths, then `…`. Callers cut the result to LIMIT.
+    The closing pronoun agrees with the TOTAL claim count across every hit
+    (not just the ones actually named under the caps) — "it" only when
+    exactly one claim, anywhere, is at stake; "them" otherwise."""
+    total = sum(len(ids) for _, ids in hits)
     parts = []
     for path, ids in hits[:EDIT_PATH_CAP]:
         shown = ids[:EDIT_CLAIM_CAP]
@@ -710,7 +725,8 @@ def _edit_notice(hits, status_by_id):
         parts.append(f"{path} backs {n} claim{'' if n == 1 else 's'} — {names}")
     if len(hits) > EDIT_PATH_CAP:
         parts.append("…")
-    return (f"claimlock: {'; '.join(parts)}. Your edit may have invalidated them: "
+    pronoun = "it" if total == 1 else "them"
+    return (f"claimlock: {'; '.join(parts)}. Your edit may have invalidated {pronoun}: "
             "re-check with `claimlock diff <id>` before any `claimlock verify`.")
 
 
