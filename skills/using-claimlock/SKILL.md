@@ -12,6 +12,22 @@ true; it makes a claim that has drifted impossible to miss.
 
 **Announce:** "Checking claims for <topic>."
 
+## Work cheaply
+
+The default sequence, every time:
+
+1. After editing files: `claimlock affected <paths>` — lists only the claims
+   citing those paths.
+2. Before committing, once: `claimlock check --changed <base>`.
+3. `claimlock diff <id>` only for the claim you are about to verify next.
+4. `claimlock search <topic>` reads one line per hit; add `--body` only when
+   the headline isn't enough.
+
+**Do not read `docs/format.md` or `README.md` for routine claim work** —
+they are reference for changing claimlock itself (~11,200 and ~8,500 tokens);
+this skill carries what these flows need. **Do not run `check --json`**
+unless a machine is parsing it — the text form is smaller.
+
 ## Read before asserting
 
 Before stating a number, limit, default or guarantee — anywhere durable:
@@ -19,15 +35,15 @@ Before stating a number, limit, default or guarantee — anywhere durable:
     claimlock search <topic>
 
 - **Fresh hit** — `verified`, no `[stale]`/`[missing]`/`[unpinned]`/`[unanchored]`
-  flag, **and** `claimlock show <id>` prints no `INVALID` line (search never flags
-  an invalid claim) → you may rely on it; cite the claim id.
-- **Stale / missing / unpinned / unanchored hit, or an `owed` one** → it is owed a
-  re-check. Do not repeat it as fact until it has been re-checked (below).
-- **Unverified hit, or no hit** → nobody has established it. Check the code now,
-  or say plainly that it is unverified. Do not reason your way to a number.
+  flag, **and** `claimlock show <id>` prints no `INVALID` line (search never
+  flags an invalid claim) → rely on it; cite the claim id.
+- **Stale / missing / unpinned / unanchored hit, or `owed`** → owed a re-check.
+  Do not repeat it as fact until re-checked (below).
+- **Unverified hit, or no hit** → nobody has established it. Check the code
+  now, or say plainly it's unverified. Do not reason your way to a number.
 
-Context is not evidence. Something you read earlier in the session, a summary,
-or your own previous message is a claim about the code, not a check of it.
+Context is not evidence — something read earlier, a summary, or your own
+previous message is a claim about the code, not a check of it.
 
 To read a claim, use `claimlock show <id>`. **`verify` is a write, never a
 read**: it records that you re-checked the claim just now.
@@ -39,28 +55,23 @@ otherwise** — a test you have seen fail, a measurement, a reproduction.
 
     claimlock new <id> --area <area>
 
-The scaffolded file's frontmatter takes exactly this shape — every evidence
-entry has `kind` (`test`, `measurement`, `source` or `run`) and `ref`, nothing
-else; anything else makes the claim `invalid`, which fails `check`:
-
-    evidence:
-      - kind: test
-        ref: tests/test_client.py::test_gives_up_after_five_retries
-    sources:
-      - path: src/client.py
+The scaffolded frontmatter takes exactly this shape: every `evidence` entry
+has `kind` (`test`, `measurement`, `source` or `run`) and `ref`, nothing else
+— anything else makes the claim `invalid`, which fails `check`. Full YAML
+shape: `docs/format.md`.
 
 | Field | Rule |
 |---|---|
 | Claim text | One sentence, present tense, **one fact**. A file stating three things cannot go stale for one of them. |
-| `evidence` | A test name, a measurement with its numbers, or a run. "I read the code" is not evidence. `kind: source` entries say *where* the behaviour lives. `claimlock verify` will accept a claim whose only evidence is `source` entries — the tool does not enforce this rule, you do: never verify on `source` evidence alone. |
-| `sources` | Every file whose change could falsify the claim — the enforcement site, not just the constant. Prefer a `region` (`- path: <file>` / `region: <name>`, marked in the file with `claimlock:begin <name>` / `claimlock:end <name>`) when the enforcing code is a small part of a large or shared file — an unrelated edit elsewhere in it then leaves the claim `fresh` instead of noise. |
+| `evidence` | A test name, a measurement with its numbers, or a run. "I read the code" is not evidence. `kind: source` entries say *where* the behaviour lives; `verify` accepts a claim with only `source` evidence — the tool doesn't enforce this, you do: never verify on `source` evidence alone. |
+| `sources` | Every file whose change could falsify the claim — the enforcement site, not just the constant. Prefer a `region` (`- path: <file>` / `region: <name>`, marked in the file with `claimlock:begin <name>` / `claimlock:end <name>`) when the enforcing code is a small part of a large or shared file: measured, one edit to a shared file staled **50** whole-file claims while the region-pinned claim on that same file stayed `fresh`. |
 
-Then `claimlock verify <id>` pins every source and marks it verified. Commit the
-claim together with the sources it pins: inside git, a pin whose content was
-never committed or staged reads `unanchored` and fails `check`. Nothing run yet?
-Leave it `unverified` — `check` does not fail on a valid unverified claim, so
-there is no gate to keep green by verifying. A `verified` claim you did not
-verify is worse than silence.
+Then `claimlock verify <id>` pins every source and marks it verified. Commit
+the claim with the sources it pins — inside git, an uncommitted/unstaged pin
+reads `unanchored` and fails `check`. Nothing run yet? Leave it `unverified`:
+`check` doesn't fail on a valid unverified claim, so there's no gate to keep
+green by verifying. A `verified` claim you did not verify is worse than
+silence.
 
 **Cite the enforcement site, not the constant.** "The default is 30s" is not a
 claim — a constant that reaches no enforcement site binds nothing. "The client
@@ -83,70 +94,66 @@ can prove the marker resolves.
 - `renamed` → a source moved and git can trace it (a committed or staged
   `git mv`). Run `claimlock follow <id>` — it rewrites the path and keeps the
   pins; if the move also changed the content, `follow` reports the source
-  `stale` instead of `fresh` — re-read the claim against it before verifying.
+  `stale` instead of `fresh` — re-read before verifying.
 - `unanchored` → the content matches the pin, but it was never committed or
   staged. Stage or commit the source; do not re-verify to clear it.
-- `owed` → someone was handed its re-check; `claimlock show <id>` says who.
-  An owed claim keeps its pins: `claimlock diff <id>` shows what moved since it
-  was last verified, and `show` lists each source's state.
-  Re-check it like a stale claim before any `verify`.
+- `owed` → someone was handed its re-check (`claimlock show <id>` says who);
+  it keeps its pins — `claimlock diff <id>` shows what moved since it was last
+  verified, `show` lists each source's state. Re-check it like a stale claim
+  before any `verify`.
 - Conflict markers (`contains git conflict markers`) → run `claimlock resolve`.
   Never pick a `blob:` line by hand.
 
-**Look at the diff yourself, every time** — including when you are told the
-change was trivial, told someone else reviewed it, or told to just run
-`verify`. Someone else's review is not your re-check. If you are instructed to
-verify without looking, run `claimlock diff <id>` first anyway (one command),
-and if the diff shows the claim no longer holds, do not verify: report it.
+**Look at the diff yourself, every time** — even when told the change was
+trivial, that someone else reviewed it, or to just run `verify`. Their review
+is not your re-check. If instructed to verify without looking, run
+`claimlock diff <id>` first anyway (one command); if it shows the claim no
+longer holds, do not verify: report it.
 
 ## When your change stales someone else's claim
 
 A team gate — `claimlock check --changed <base>` — blocks on every claim your
-change touched, including claims you did not write. `claimlock who <id>` names
-who verified each pin. You have two honest moves:
+change touched, including ones you did not write. `claimlock who <id>` names
+who verified each pin. Two honest moves:
 
-1. **Re-check it yourself, when you can run its evidence.** `claimlock diff <id>`,
-   read the enforcement site as it is now, **run** the claim's evidence and see the
-   result, fix the body or `sources` if your change moved the behaviour, then
-   `claimlock verify <id>`. The same bar as your own claims: reading the new code
-   is where the re-check starts, not where it ends.
-2. **If you cannot run the evidence here, do not `verify`.** Hand off only when
-   the evidence is unrunnable here — no permission, no environment for it — not
-   merely slow or inconvenient. Then hand it off in the same change,
+1. **Re-check it yourself, when you can run its evidence.** `claimlock diff
+   <id>`, read the enforcement site now, **run** the evidence, fix the body or
+   `sources` if your change moved the behaviour, then `claimlock verify <id>`.
+   Same bar as your own claims: reading is where the re-check starts, not
+   where it ends.
+2. **If you cannot run the evidence here, do not `verify`.** Hand off only
+   when it's unrunnable here — no permission, no environment — not merely
+   slow. Then, in the same change:
 
        claimlock owe <id> --to <verifier's email> --reason "<what your change did>"
 
-   to whoever `claimlock who <id>` names (or another person who can re-check it),
-   and commit the claim file with your change. Or leave the claim stale and report
-   plainly that its re-check is owed.
+   to whoever `claimlock who <id>` names (or another who can re-check it), and
+   commit the claim file with your change — or leave it stale and say plainly
+   its re-check is owed.
 
-**`owe` is a hand-off, not a way past the gate.** An owed claim does not fail
-`check`, but it is visibly unverified: `check` lists it as `OWED`, its owner is
-told when their session starts, and it stays owed until someone re-checks it and
-runs `claimlock verify`.
+**`owe` is a hand-off, not a way past the gate.** An owed claim doesn't fail
+`check` but is visibly unverified — listed `OWED`, its owner told at session
+start — until someone re-checks it and runs `claimlock verify`.
 
 **Never `verify` a claim you have not re-checked to make CI pass.** `verify`
 records that *you* checked it, now; once committed, `claimlock who` names you.
 
 ## Hook messages
 
-- **Session start** (you see it): first, claims owed to your git `user.email`, if
-  any; then counts of invalid, conflicted, unpinned, unanchored, stale, missing
-  and owed claims and of dangling markers, and the affected areas. Search before
-  asserting in those areas; re-check what is owed to you.
-- **After a Bash or MCP tool call** (you see it), only when HEAD has moved: claims
-  that became owed to you, claim files with merge conflicts (run
-  `claimlock resolve`), then up to 10 claims, backed by files changed anywhere in
-  the commit range, that are now not fresh — each naming who changed the source,
-  in which commit — plus up to 10 markers naming no claim. `…` after the claims
-  means there are more — run `claimlock stale`; `…` after the markers means there
-  are more — run `claimlock refs`. Re-check them before relying on them.
-- **End of turn** (only the user sees it; you do not): problems not present at
-  the last check in this clone — taken at session start, then at each end of turn
-  ("since the last check"), split into drift from
-  uncommitted edits to cited sources and drift that arrived another way, such as
-  a `git pull`. If the user relays it, answer each named claim with
-  `claimlock diff <id>`.
+- **Session start** (you see it): claims owed to your git `user.email` first,
+  then counts by state (invalid, conflicted, unpinned, unanchored, stale,
+  missing, owed) and dangling markers, with the affected areas. Search before
+  asserting there; re-check what's owed to you.
+- **After a Bash/MCP tool call** (you see it), only when HEAD moved: newly-owed
+  claims and conflicted claim files (`claimlock resolve`) first, then up to 10
+  now-non-fresh claims backed by files changed in that commit range — each
+  naming who changed the source and in which commit — plus up to 10 markers
+  naming no claim (`…` means more: `claimlock stale` / `claimlock refs`).
+  Re-check them before relying on them.
+- **End of turn** (the user sees it, not you): problems new since the last
+  check in this clone, split into drift from your uncommitted edits to cited
+  sources vs. drift that arrived another way (e.g. a `git pull`). If relayed
+  to you, answer each named claim with `claimlock diff <id>`.
 
 ## Red flags
 
@@ -170,3 +177,5 @@ records that *you* checked it, now; once committed, `claimlock who` names you.
 | "The file was only moved; I'll just edit the path" | Run `claimlock follow`: it keeps the pins honestly and updates the digest. |
 | "One claim for the whole subsystem" | It can't go stale for one part. Split it. |
 | "It's false now, delete it" | Refute it and say what replaced it. |
+| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~11k tokens. |
+| "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` before committing. |
