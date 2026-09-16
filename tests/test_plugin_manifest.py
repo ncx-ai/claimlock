@@ -34,10 +34,15 @@ class Manifest(unittest.TestCase):
         hooks = json.loads((REPO / "hooks/hooks.json").read_text())["hooks"]
         self.assertEqual(set(hooks), {"SessionStart", "Stop", "PostToolUse"})
         commands = [h["command"] for groups in hooks.values() for g in groups for h in g["hooks"]]
-        for event in ("session-start", "stop", "post-tool-use"):
+        for event in ("session-start", "stop", "post-tool-use", "post-edit"):
             self.assertTrue(any(c.endswith(f"hook {event}") for c in commands), event)
         self.assertTrue(all("${CLAUDE_PLUGIN_ROOT}/bin/claimlock" in c for c in commands))
+        # Two PostToolUse entries, disjoint matchers, neither shadowing the
+        # other — pinned so a bad merge silently dropping the post-edit entry
+        # (mutation-proven: deleting it left the whole suite green) is caught.
+        self.assertEqual(len(hooks["PostToolUse"]), 2)
         self.assertEqual(hooks["PostToolUse"][0]["matcher"], "Bash|mcp__.*")
+        self.assertEqual(hooks["PostToolUse"][1]["matcher"], "Edit|Write|MultiEdit|NotebookEdit")
         self.assertEqual(hooks["SessionStart"][0]["matcher"], "startup|resume|clear|compact|fork")
 
     def test_launcher_is_executable(self):

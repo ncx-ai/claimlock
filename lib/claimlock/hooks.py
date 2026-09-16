@@ -488,7 +488,7 @@ def session_start(project, payload, data_dir):
         # already-announced file gets announced again after a compaction.
         # Nothing else survives — baseline and the HEAD marks are always
         # re-established fresh, as before.
-        for k in ("edited_notified", "cited", "cited_signature"):
+        for k in ("edited_notified", "cited", "cited_signature", "cited_status"):
             if k in prev:
                 st[k] = prev[k]
     _init_head(project, st)
@@ -661,16 +661,29 @@ def _edited_paths(project, payload):
 
 def _claims_signature(project):
     """Digest of (name, size, mtime_ns) for every `*.md` in the claims
-    directory. Stats each file rather than the directory alone: editing a
-    claim's content in place changes neither the directory's mtime nor its
-    entry count, only the file's own size/mtime_ns (spec §3.2)."""
+    directory, EXCLUDING `README.md` — the same skip `claims.load_claims`
+    applies (spec §3.2). Without this exclusion the signature tracks a file
+    whose content can never change what the index computes, forcing a
+    needless rebuild on every README edit.
+
+    Stats each file rather than the directory alone: editing a claim's
+    content in place changes neither the directory's mtime nor its entry
+    count, only the file's own size/mtime_ns.
+
+    No `pins.RACY_NS` guard: `pins.py` widens a same-second race with a 2s
+    floor because a wrong pin verdict there is a wrong CLI exit code. Here
+    the exposure is symmetric but far smaller — at most one missed advisory
+    notice for an edit that lands in the same filesystem-mtime tick as a
+    claim-file write (measured ~3.3ms granularity on this filesystem), never
+    a wrong verdict — so the cheaper, guard-less scheme is an accepted
+    trade-off rather than an oversight. See spec §3.2."""
     try:
         names = sorted(os.listdir(project.claims_dir))
     except OSError:
         return ""
     parts = []
     for name in names:
-        if not name.endswith(".md"):
+        if not name.endswith(".md") or name == "README.md":
             continue
         try:
             st = os.stat(project.claims_dir / name)
@@ -688,10 +701,19 @@ def _cited_index(project, st):
     (`_claims_signature`); a hit costs one `os.listdir` plus one `os.stat`
     per claim file and no claim-file reads. `st["cited_status"]` (claim id ->
     status) rides along in the same cache entry so callers can label a hit
-    without a second pass over the claims."""
+    without a second pass over the claims.
+
+    The index and its labels are cached and invalidated TOGETHER on purpose:
+    a caller (SessionStart's mid-session carry-forward) can legitimately
+    carry "cited"/"cited_signature" forward without "cited_status" — that
+    used to be read back as a signature hit with an empty label map, so
+    every claim in the message fell back to a status the hook never serves.
+    A missing or empty "cited_status" is therefore itself a cache miss, not
+    just a signature mismatch, so the two can never desync again."""
     sig = _claims_signature(project)
     cached = st.get("cited")
-    if st.get("cited_signature") == sig and isinstance(cached, dict):
+    status_cached = st.get("cited_status")
+    if st.get("cited_signature") == sig and isinstance(cached, dict) and status_cached:
         return cached
     index, status_by_id = {}, {}
     try:
@@ -712,27 +734,86 @@ def _cited_index(project, st):
     return index
 
 
+def _render_capped(prefix, pieces, closer, limit=LIMIT):
+    """Concatenate `prefix` + as many `pieces` (`(text, key)` pairs, each
+    atomic — included whole or not at all, never split) as fit, then
+    `closer`, staying within `limit` characters. Unlike `_head_report`/
+    `stop`'s own copy of "build pieces, cut to LIMIT" (not migrated onto
+    this helper this wave), `closer` is reserved space: it is ALWAYS present
+    and intact, and a piece is never cut mid-token — the cut always falls on
+    a piece boundary. When one or more pieces had to be dropped to make
+    room, the whole message ends with a trailing `…` so the drop is visible
+    even though the closer already reads fine on its own.
+
+    Returns `(text, keys)`: `keys` is the set of non-None keys among the
+    pieces that actually made it in — a caller that must record only what
+    the reader could see (e.g. `_edit_notice`, for the per-path
+    `edited_notified` cache) uses this instead of assuming every piece it
+    offered was shown."""
+    budget = limit - len(prefix) - len(closer) - 1  # -1: room for a trailing "…" if we must cut
+    included, keys, used, truncated = [], set(), 0, False
+    for text, key in pieces:
+        if used + len(text) > budget:
+            truncated = True
+            break
+        included.append(text)
+        used += len(text)
+        if key is not None:
+            keys.add(key)
+    out = prefix + "".join(included) + closer
+    if truncated:
+        out += "…"
+    return out, keys
+
+
+def _claim_label(cid, status_by_id):
+    """`cid`, with its status in parens when known. Never invents one: a
+    claim whose status this hook does not have on hand (the cache/label
+    desync bug this guards against) is named bare rather than mislabelled
+    `(unverified)` — the one status CITED_STATUSES excludes as having
+    nothing to drift, so asserting it here would be actively wrong, not
+    merely uninformative."""
+    status = status_by_id.get(cid)
+    return f"{cid} ({status})" if status else cid
+
+
 def _edit_notice(hits, status_by_id):
-    """One `claimlock: <path> backs N claim(s) — id (status), …` message per
-    hit path (spec §3.3): at most EDIT_CLAIM_CAP claims per path, then `…`;
-    at most EDIT_PATH_CAP paths, then `…`. Callers cut the result to LIMIT.
+    """`(text, rendered_paths)` for the just-edited `hits` (spec §3.3): one
+    `<path> backs N claim(s) — id (status), …` block per hit path, at most
+    EDIT_CLAIM_CAP claims per path then `…`, at most EDIT_PATH_CAP paths.
+    Built as capped, atomic per-path pieces via `_render_capped`, so the
+    LIMIT cut (when the count caps alone still leave the message too long —
+    e.g. very long claim ids) always falls between whole path-blocks, never
+    mid-claim-id, and the closing call to action is never the part that
+    gets dropped.
+
+    `rendered_paths` is exactly the set of paths whose block made it into
+    the message — NOT every path that had a hit. A path cut by either cap
+    must remain free to speak again later (spec §3.4 suppresses a path once
+    it has been NAMED, not once it was merely a candidate); recording every
+    hit unconditionally silenced paths the reader was never told about.
+
     The closing pronoun agrees with the TOTAL claim count across every hit
-    (not just the ones actually named under the caps) — "it" only when
-    exactly one claim, anywhere, is at stake; "them" otherwise."""
+    (not just the ones actually rendered) — "it" only when exactly one
+    claim, anywhere, is at stake; "them" otherwise."""
     total = sum(len(ids) for _, ids in hits)
-    parts = []
-    for path, ids in hits[:EDIT_PATH_CAP]:
+    pronoun = "it" if total == 1 else "them"
+    closer = (f". Your edit may have invalidated {pronoun}: "
+              "re-check with `claimlock diff <id>` before any `claimlock verify`.")
+    shown_paths = hits[:EDIT_PATH_CAP]
+    pieces = []
+    for i, (path, ids) in enumerate(shown_paths):
         shown = ids[:EDIT_CLAIM_CAP]
-        names = ", ".join(f"{cid} ({status_by_id.get(cid, 'unverified')})" for cid in shown)
+        names = ", ".join(_claim_label(cid, status_by_id) for cid in shown)
         if len(ids) > EDIT_CLAIM_CAP:
             names += ", …"
         n = len(ids)
-        parts.append(f"{path} backs {n} claim{'' if n == 1 else 's'} — {names}")
+        sep = "; " if i else ""
+        text = f"{sep}{path} backs {n} claim{'' if n == 1 else 's'} — {names}"
+        pieces.append((text, path))
     if len(hits) > EDIT_PATH_CAP:
-        parts.append("…")
-    pronoun = "it" if total == 1 else "them"
-    return (f"claimlock: {'; '.join(parts)}. Your edit may have invalidated {pronoun}: "
-            "re-check with `claimlock diff <id>` before any `claimlock verify`.")
+        pieces.append((("; " if shown_paths else "") + "…", None))
+    return _render_capped("claimlock: ", pieces, closer)
 
 
 def post_edit(project, payload, data_dir):
@@ -754,18 +835,20 @@ def post_edit(project, payload, data_dir):
         # very first call in a session. A later session-start/stop/
         # post-tool-use call still establishes the full baseline normally.
         st = {"root": str(project.root)}
+    before = json.dumps(st, sort_keys=True)
     index = _cited_index(project, st)
     notified = st.get("edited_notified")
     notified = list(notified) if isinstance(notified, list) else []
     notified_set = set(notified)
     hits = [(p, index[p]) for p in paths if p not in notified_set and index.get(p)]
     if not hits:
-        _save_state(path, st)  # persist any cache rebuild even when silent
+        if json.dumps(st, sort_keys=True) != before:
+            _save_state(path, st)  # persist a cache rebuild, but only when one happened
         return None
-    st["edited_notified"] = notified + [p for p, _ in hits]
-    _save_state(path, st)
     status_by_id = st.get("cited_status") or {}
-    text = _edit_notice(hits, status_by_id)[:LIMIT]
+    text, rendered = _edit_notice(hits, status_by_id)
+    st["edited_notified"] = notified + [p for p, _ in hits if p in rendered]
+    _save_state(path, st)
     return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}
 
 
