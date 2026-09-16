@@ -4,7 +4,7 @@
 
 **Goal:** `claimlock search` answers the questions an agent actually asks — ranked by relevance, and honestly silent when no claim covers the topic.
 
-**Architecture:** A new pure module `lib/claimlock/rank.py` (tokenisation, corpus-aware folding, per-field BM25, a discriminating-term floor) with no I/O, built fresh on every invocation — no persisted index, therefore no new staleness surface. `cmd_search` consumes it and gains `--top` and `--literal`. Everything else in claimlock is untouched.
+**Architecture:** A new pure module `lib/claimlock/rank.py` (tokenisation, corpus-aware folding, per-field BM25, an absence-based relevance floor) with no I/O, built fresh on every invocation — no persisted index, therefore no new staleness surface. `cmd_search` consumes it and gains `--top` and `--literal`. Everything else in claimlock is untouched.
 
 **Tech Stack:** Python ≥ 3.11 standard library, `unittest`.
 
@@ -44,7 +44,8 @@ def tokens(text: str) -> list[str]
 def fold(terms: list[str], vocab: set[str]) -> list[str]
 FIELDS = ("id", "head", "area", "src", "body", "ev")
 WEIGHTS = {"id": 3.0, "head": 2.0, "area": 1.5, "src": 1.0, "body": 1.0, "ev": 0.5}
-K1, B, DISCRIMINATING = 1.2, 0.75, 0.25
+K1, B, ABSENCE_FLOOR = 1.2, 0.75, 0.5
+STOP_WORDS: frozenset[str]              # ~60 English function words (spec §3.4)
 
 class Index:
     def __init__(self, docs: list[tuple[str, dict[str, str]]]): ...   # [(claim id, {field: text})]
@@ -65,10 +66,10 @@ def search(index: Index, query: str, limit: int | None = None) -> list[tuple[flo
 Behaviour: spec §3.1–§3.4 and §4.
 
 - [ ] **Step 1: Write the failing unit tests** in `tests/test_rank.py`:
-  - `tokens`: `"background-job-calls-are-priced"` → six terms; punctuation, mixed case and `src/limit.py` all split on non-alphanumerics; an empty string → `[]`.
+  - `tokens`: `"background-job-calls-are-priced"` → five terms; punctuation, mixed case and `src/limit.py` all split on non-alphanumerics; an empty string → `[]`.
   - `fold`: `"jobs"` → `"job"` when `job` is in the vocabulary, and stays `"jobs"` when it is not; `-es`, `-ed`, `-ing`→`e`, `-ing` each fold only when the candidate stem is in the vocabulary; a term already in the vocabulary is never folded.
   - `Index`/`search`: a term appearing in every document contributes ~nothing (IDF), so a query of only ubiquitous terms yields no hit; a rarer term outranks a common one; a match in `id` outranks the same match in `body` (weights); equal scores order by claim id (build two claims scoring identically and assert the order twice).
-  - The floor (§3.4): with a corpus where `when` and `fails` appear in most claims and `payment` appears nowhere, `"what happens when a payment fails"` returns **no** hits; `index.unknown(...)` returns `["payment"]`.
+  - The floor (§3.4): a query at least half of whose content terms are absent from the corpus returns **no** hits — e.g. with `payment` absent, `"what happens when a payment fails"` is silent even though `fails` is present; `index.unknown(...)` returns `["payment"]`.
   - `limit` bounds the result; `None` means everything.
 - [ ] **Step 2: Run** `cd tests && python3 -m unittest test_rank -v` — expect failures naming the missing module.
 - [ ] **Step 3: Implement** `rank.py` per spec §3.1–§3.4. Keep it pure and free of I/O so it is testable without a store. BM25 exactly as §3.3 writes it.
