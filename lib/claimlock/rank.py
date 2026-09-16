@@ -11,7 +11,32 @@ import re
 
 FIELDS = ("id", "head", "area", "src", "body", "ev")
 WEIGHTS = {"id": 3.0, "head": 2.0, "area": 1.5, "src": 1.0, "body": 1.0, "ev": 0.5}
-K1, B, DISCRIMINATING = 1.2, 0.75, 0.25
+K1, B = 1.2, 0.75
+
+# The relevance floor (§3.4, amended 2026-09-16) drops these before deciding
+# whether a query has vocabulary in the store. A document-frequency-based
+# floor (a term "discriminating" below some doc-frequency ceiling) was tried
+# first and failed at real-corpus scale in three separate ways — see the
+# spec's §3.4 table and the fix-round report in
+# .superpowers/sdd/2026-09-16-claimlock-search-ranking/task-1-report.md:
+# document frequency ranks a rare-but-generic word (e.g. "handling", 1
+# claim) as more informative than a common-but-real topic word (e.g. "grpc",
+# 39% of claims), deletes real answers, admits junk, and — since every term
+# in a corpus of N<=3 trivially exceeds any fixed percentage ceiling —
+# returns nothing at all for any query against a small store. Absence from
+# the vocabulary, not rarity within it, is the signal this list supports.
+STOP_WORDS = frozenset("""
+    a an the is are was were be been being do does did done how what when where why
+    which who whom this that these those it its of for to in on at by with from as and or but if then
+    than so such can could should would may might will shall i you we they he she use used using get
+    got make made support supports happens happen
+""".split())
+
+# "At least half absent" (spec §3.4): a query's content terms (post-fold,
+# stop words dropped) with an absent-from-vocabulary fraction at or above
+# this silences the query rather than answering off whatever content term
+# happens to be present.
+ABSENT_FRACTION_FLOOR = 0.5
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -45,9 +70,11 @@ def fold(terms: list[str], vocab: set) -> list[str]:
     """Corpus-aware suffix folding (spec §3.2). A term already in `vocab` is
     never touched; otherwise the first candidate stem (in the fixed order
     above) that is itself in `vocab` replaces it, else the term is left as
-    written. No stop-word list: BM25's IDF already drives ubiquitous terms
-    toward zero, and the relevance floor (§3.4) keeps them from ever being
-    the sole basis of a hit."""
+    written. Folding itself has no notion of stop words — STOP_WORDS is
+    applied afterward, only when computing the relevance floor (§3.4), so a
+    stop word still folds like any other term (not that it usually matters:
+    the fixed stop list is already inflected forms of themselves or close
+    to it)."""
     out = []
     for t in terms:
         if t in vocab:
@@ -64,11 +91,11 @@ def fold(terms: list[str], vocab: set) -> list[str]:
 
 class Index:
     """Built once from `docs = [(claim_id, {field: text})]`, one entry per
-    claim, `field` one of FIELDS. Holds per-field postings, doc frequencies
-    and average field lengths, plus a whole-corpus term vocabulary for
-    `fold`. Immutable after construction; there is nothing here that a
-    second call could invalidate, which is the point of rebuilding it fresh
-    every time (spec §2)."""
+    claim, `field` one of FIELDS. Holds per-field postings and average field
+    lengths, plus a whole-corpus term vocabulary for `fold` and the
+    relevance floor. Immutable after construction; there is nothing here
+    that a second call could invalidate, which is the point of rebuilding
+    it fresh every time (spec §2)."""
 
     def __init__(self, docs: list):
         self.ids = [doc_id for doc_id, _ in docs]
@@ -78,13 +105,8 @@ class Index:
         self.field_len = {f: {} for f in FIELDS}
         # field -> term -> {doc_id: tf}
         self.field_freq = {f: {} for f in FIELDS}
-        # term -> number of docs containing it in ANY field — the corpus-wide
-        # document frequency the relevance floor (§3.4) gates on, distinct
-        # from the per-field n_f(t) the BM25 IDF below uses.
-        self._doc_freq = {}
 
         for doc_id, doc_fields in docs:
-            doc_terms = set()
             for f in FIELDS:
                 text = (doc_fields or {}).get(f) or ""
                 toks = tokens(text)
@@ -93,54 +115,59 @@ class Index:
                 for tok in toks:
                     counts[tok] = counts.get(tok, 0) + 1
                     self.vocab.add(tok)
-                    doc_terms.add(tok)
                 postings = self.field_freq[f]
                 for tok, tf in counts.items():
                     postings.setdefault(tok, {})[doc_id] = tf
-            for tok in doc_terms:
-                self._doc_freq[tok] = self._doc_freq.get(tok, 0) + 1
 
         self.avg_len = {
             f: (sum(self.field_len[f].values()) / self.n if self.n else 0.0)
             for f in FIELDS
         }
 
-    def doc_freq(self, term: str) -> int:
-        """Number of claims mentioning `term` in any field."""
-        return self._doc_freq.get(term, 0)
-
-    def is_discriminating(self, term: str) -> bool:
-        """spec §3.4: a term is discriminating when its document frequency is
-        at most 25% of the corpus. A term absent from the corpus entirely
-        (doc_freq 0) is trivially discriminating, but that never matters —
-        it has no postings, so it can never make a claim qualify."""
-        if self.n == 0:
-            return False
-        return self.doc_freq(term) / self.n <= DISCRIMINATING
-
     def unknown(self, terms) -> list:
-        """Query terms (post-fold) absent from the corpus vocabulary
-        entirely, in the order given — named in the CLI's no-match message
-        so a silent miss becomes a useful one."""
+        """Terms (post-fold) absent from the corpus vocabulary entirely, in
+        the order given — named in the CLI's no-match message so a silent
+        miss becomes a useful one. The caller decides which terms to pass:
+        the relevance floor below calls this with content terms only (stop
+        words dropped), which is also the natural set for a no-match
+        message to name."""
         return [t for t in terms if t not in self.vocab]
 
 
 def search(index: Index, query: str, limit=None) -> list:
-    """(score, claim id) pairs, best first, ties broken by claim id, for
-    claims that match at least one discriminating query term (spec §3.4).
-    `limit` bounds the result; None returns every qualifying hit."""
+    """(score, claim id) pairs, best first, ties broken by claim id.
+
+    The relevance floor (spec §3.4, amended): fold the query, drop stop
+    words, and if at least half of the remaining content terms are absent
+    from the corpus vocabulary entirely, return no hits — an honest "the
+    store has no vocabulary for this" rather than a confident answer built
+    from whatever term happens to be present. A query with no content terms
+    at all (every term a stop word) has nothing to gate on and nothing
+    meaningful to rank, so it is silenced the same way.
+
+    Otherwise every term (stop words included — §3.3's scoring is
+    unchanged) contributes to BM25 as usual, and every claim the score
+    ends up nonzero for is returned: there is no per-document floor any
+    more, only the query-level one above. `limit` bounds the result; None
+    returns every hit.
+    """
     raw_terms = tokens(query)
     if not raw_terms:
         return []
     terms = fold(raw_terms, index.vocab)
 
+    content_terms = [t for t in terms if t not in STOP_WORDS]
+    if not content_terms:
+        return []
+    absent = len(index.unknown(content_terms))
+    if absent / len(content_terms) >= ABSENT_FRACTION_FLOOR:
+        return []
+
     scores = {doc_id: 0.0 for doc_id in index.ids}
-    qualifies = set()
 
     # Σ_{t∈q} in spec §3.3 is over the query as written, not its distinct
     # terms — a repeated query term contributes its match more than once.
     for term in terms:
-        discriminating = index.is_discriminating(term)
         for f in FIELDS:
             postings = index.field_freq[f].get(term)
             if not postings:
@@ -154,10 +181,8 @@ def search(index: Index, query: str, limit=None) -> list:
                 norm = (1 - B + B * (dl / avgdl)) if avgdl else 1.0
                 denom = tf + K1 * norm
                 scores[doc_id] += w * idf * (tf * (K1 + 1)) / denom
-                if discriminating:
-                    qualifies.add(doc_id)
 
-    hits = [(scores[doc_id], doc_id) for doc_id in index.ids if doc_id in qualifies]
+    hits = [(score, doc_id) for doc_id, score in scores.items() if score > 0]
     hits.sort(key=lambda pair: (-pair[0], pair[1]))
     if limit is not None:
         hits = hits[:limit]
