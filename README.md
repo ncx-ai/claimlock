@@ -23,6 +23,7 @@ with the same `claims/` history converge to the same freshness state;
 - [Thirty-second tour](#thirty-second-tour)
 - [Statuses and states](#statuses-and-states)
 - [Commands](#commands)
+- [Output size](#output-size)
 - [Regions](#regions)
 - [Using claimlock as a team](#using-claimlock-as-a-team)
   - [Claims are committed; `.claimlock/` is a per-clone cache](#claims-are-committed-claimlock-is-a-per-clone-cache)
@@ -133,6 +134,35 @@ Every command accepts `-C <dir>` to run as though started in `<dir>` — but
 come **before** the subcommand name: `claimlock -C <dir> check` works,
 `claimlock check -C <dir>` errors (`unrecognized arguments: -C <dir>`). Full
 field-level and format detail: [`docs/format.md`](docs/format.md).
+
+## Output size
+
+Every command prints a bounded report; `--full` (and `search --body`) restores
+the complete output. Measured at `228f748` against two stores — **A**: 41 real
+claims, every one failing; **B**: 201 claims, 54 stale. Tokens are bytes/4.
+
+| Command | ~tokens | with `--full` |
+|---|---:|---:|
+| `check` | 1,055 (A) / 295 (B) | 2,496 (A) |
+| `check --json` | 6,552 (A) / 4,270 (B) | 15,841 (B) |
+| `search <common term>` | 1,414 (A) / 4,380 (B) | 2,825 (A, `--body`) |
+| `show <id>` (largest real claim) | 2,024 | 4,047 |
+| `diff <id>` (large file rewritten) | 669 | 11,116 |
+| `list` | 1,491 (A) | — |
+| `stale` | 1,912 (A) | — |
+| `affected <path>` | 345 (B) | — |
+| `refs` | 13 | — |
+| SessionStart hook | 110 | capped at 2,000 characters |
+
+Loaded or read, not printed: the two claimlock skills ~5,136 tokens when
+invoked; `README.md` ~8,812 and `docs/format.md` ~13,205 **if read** — they are
+reference for changing claimlock itself, not for routine claim work.
+
+The cheap sequence, in the order you work: `claimlock affected <paths>` while
+editing, one `claimlock check --changed <base>` before committing, and
+`claimlock diff <id>` only for the claim you are about to verify. Add `--full`
+when a bounded report cut something you actually need; the cut always names
+what it withheld.
 
 ## Regions
 
