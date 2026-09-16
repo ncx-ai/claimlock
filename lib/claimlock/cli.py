@@ -24,6 +24,11 @@ HINT = {
 }
 MARK = {"verified": "✓", "unverified": "?", "refuted": "✗", "owed": "⇢"}
 
+# Output budgets (docs/specs/2026-09-15-claimlock-output-budget-design.md §3).
+# `--full` (or `--body` for search) always restores the uncapped output.
+LISTED_CLAIMS = 20   # failing/pre-existing/owed claims listed by `check`
+SOURCE_LINES = 3     # per-source detail lines, and per-problem lines, per claim in `check`
+
 CI_SNIPPET = """\
 Gate a change in CI on the claims it touched (pre-existing drift is listed, not blocking):
 
@@ -98,14 +103,38 @@ def _failing(r):
     return bool(r.problems) or r.state in C.NON_FRESH
 
 
-def _print_failing(r):
+def _capped(items, cap, more):
+    """(kept, note | None): items[:cap], and `more.format(n=<left over>)` when
+    cut. `cap=None` means unlimited (never cuts)."""
+    items = list(items)
+    if cap is None or len(items) <= cap:
+        return items, None
+    return items[:cap], more.format(n=len(items) - cap)
+
+
+def _hints_block(states_in_order, first_id):
+    """The `hints:` lines: one per state present (that has a hint — `invalid`
+    does not), `  <state>: <HINT[state] with {id} replaced by first_id[state]>`.
+    [] when no such state is present."""
+    return [f"  {state}: {HINT[state].format(id=first_id[state])}"
+            for state in states_in_order if state in HINT and state in first_id]
+
+
+def _print_failing(r, cap):
+    """`cap`: max problem/source detail lines per claim (SOURCE_LINES, or None
+    for --full). The per-state hint is printed once for the whole run by
+    `cmd_check`, never here."""
     if r.problems:
         print(f"{_paint('31', 'INVALID ')} {r.claim.id}")
-        for x in r.problems:
+        shown, note = _capped(r.problems, cap, "… and {n} more problems")
+        for x in shown:
             print(f"         {x}")
+        if note:
+            print(f"         {note}")
     if r.state in C.NON_FRESH:
         print(f"{_paint('33', r.state.upper().ljust(8))} {r.claim.id}")
         by_key = {s.key: s for s in r.claim.sources}
+        lines = []
         for key, st in r.per_source:
             if st == "fresh":
                 continue
@@ -114,10 +143,14 @@ def _print_failing(r):
                 info = r.renames.get(s.path) if s else None
                 if info:
                     new, sha = info
-                    print(f"         {key}: renamed → {new} ({sha})")
+                    lines.append(f"{key}: renamed → {new} ({sha})")
                     continue
-            print(f"         {key}: {st}")
-        print(f"         {HINT[r.state].format(id=r.claim.id)}")
+            lines.append(f"{key}: {st}")
+        shown, note = _capped(lines, cap, "… and {n} more sources")
+        for line in shown:
+            print(f"         {line}")
+        if note:
+            print(f"         {note}")
 
 
 def _owed_line(project, r, state=None, behind_cache=None):
@@ -195,31 +228,57 @@ def cmd_check(args):
     blocking_ids = {r.claim.id for r in blocking}
     counts = {"invalid": sum(1 for r in blocking if r.problems)}
     counts.update({s: sum(1 for r in blocking if r.state == s) for s in C.NON_FRESH})
+    full = args.full
+    cap = None if full else LISTED_CLAIMS
     if args.json:
+        kept_ids = {r.claim.id for r in blocking} | {r.claim.id for r in elsewhere} | {r.claim.id for r in owed}
+        listed = results if full else [r for r in results if r.claim.id in kept_ids]
         print(json.dumps({
             "claims": len(results),
             "sources_hashed": hasher.hashed,
             "counts": counts,
             "scope": sorted(scope) if scope is not None else None,
+            "omitted": len(results) - len(listed),
             "results": [{
                 "id": r.claim.id, "area": r.claim.area, "status": r.claim.status,
                 "problems": r.problems, "state": r.state,
                 "sources": _source_entries(r),
                 "in_scope": in_scope(r), "blocking": r.claim.id in blocking_ids,
                 "owed_by": r.claim.owed_by,
-            } for r in results],
+            } for r in listed],
         }, indent=2))
     else:
         owed_states = _owed_states(project, hasher, owed)
-        for r in blocking:
-            _print_failing(r)
+        src_cap = None if full else SOURCE_LINES
+        shown, note = _capped(blocking, cap, "… and {n} more failing claims — claimlock check --full")
+        for r in shown:
+            _print_failing(r, src_cap)
+        if note:
+            print(note)
         if elsewhere:
             print("pre-existing (not changed here):")
-            for r in elsewhere:
+            shown, note = _capped(elsewhere, cap, "  … and {n} more pre-existing claims — claimlock check --full")
+            for r in shown:
                 print(f"  {r.claim.id}: {'invalid' if r.problems else r.state}")
+            if note:
+                print(note)
         behind = {}
-        for r in owed:
+        shown, note = _capped(owed, cap, "… and {n} more owed claims — claimlock check --full")
+        for r in shown:
             print(_owed_line(project, r, owed_states.get(r.claim.id), behind))
+        if note:
+            print(note)
+        first_id = {}
+        for r in blocking:
+            if r.problems:
+                first_id.setdefault("invalid", r.claim.id)
+            if r.state in C.NON_FRESH:
+                first_id.setdefault(r.state, r.claim.id)
+        hints = _hints_block(("invalid", *C.NON_FRESH), first_id)
+        if hints:
+            print("hints:")
+            for h in hints:
+                print(h)
         summary = ", ".join(f"{v} {k}" for k, v in counts.items())
         if owed:
             summary += f", {len(owed)} owed"
@@ -625,6 +684,8 @@ def build_parser():
     p.add_argument("--area", default="unfiled")
     p = add("check", cmd_check, "the gate: fail on invalid or non-fresh claims")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--full", action="store_true",
+                   help="list every claim and source line, uncapped (text and --json both)")
     p.add_argument("--area")
     p.add_argument("--changed", metavar="BASE",
                    help="block only on claims whose sources or files changed since the merge base with BASE "

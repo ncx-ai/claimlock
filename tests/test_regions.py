@@ -227,7 +227,8 @@ class PlainDirectoryVerifyAndCheck(TmpCase):
         write(self.root, "a.py", "before, now longer\n# claimlock:begin r1\nx\ny\n# claimlock:end r1\nafter\n")
         rc, out, _ = run_cli(self.root, "check")
         self.assertEqual(rc, 0, out)
-        rc, out, _ = run_cli(self.root, "check", "--json")
+        # --full: a fresh result is otherwise omitted by default (spec §3.2).
+        rc, out, _ = run_cli(self.root, "check", "--json", "--full")
         data = json.loads(out)
         self.assertEqual(data["results"][0]["state"], "fresh")
 
@@ -312,7 +313,8 @@ class AnchoringFallback(TmpCase):
         git(self.root, "commit", "-qm", "initial")
 
     def _state(self):
-        rc, out, err = run_cli(self.root, "check", "--json")
+        # --full: a fresh result would otherwise be omitted by default (spec §3.2).
+        rc, out, err = run_cli(self.root, "check", "--json", "--full")
         self.assertEqual(rc if rc in (0, 1) else 2, rc, out + err)
         return json.loads(out)["results"][0]["state"]
 

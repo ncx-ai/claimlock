@@ -111,7 +111,7 @@ Two **problems** fail `check` whatever the status:
 |---|---|
 | `claimlock init` | Create `.claimlock.toml` and `claims/`, add `.claimlock/` to `.gitignore`, and add `claims/*.md text eol=lf` to `.gitattributes`. |
 | `claimlock new` | Scaffold an unverified claim (`claimlock new <id> --area <area>`). |
-| `claimlock check` | The gate: exit 1 if any claim is invalid (including conflicted), or verified and `stale`, `missing`, `renamed`, `unpinned` or `unanchored`. `owed` claims are listed and never fail it. `--changed <base>` blocks only on claims whose sources or claim file changed in committed history since the merge base with `<base>` — see [Using claimlock as a team](#using-claimlock-as-a-team). |
+| `claimlock check` | The gate: exit 1 if any claim is invalid (including conflicted), or verified and `stale`, `missing`, `renamed`, `unpinned` or `unanchored`. `owed` claims are listed and never fail it. `--changed <base>` blocks only on claims whose sources or claim file changed in committed history since the merge base with `<base>` — see [Using claimlock as a team](#using-claimlock-as-a-team). Prints a bounded report — `--full` for every claim and source. |
 | `claimlock stale` | List non-fresh verified claims (exit 1 if any) and `owed` claims, tab-separated. `--owed-by <email>` / `--mine` list only claims owed by that person. |
 | `claimlock list` | List every claim with its status and flags. `--status <s>`, `--owed-by <email>`, `--mine` filter it. |
 | `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs. |
@@ -213,9 +213,10 @@ it touched:
 ```
 STALE    retries-are-capped
          src/limit.py: stale
-         re-check it (claimlock diff retries-are-capped), then: claimlock verify retries-are-capped
 pre-existing (not changed here):
   old-claim: stale
+hints:
+  stale: re-check it (claimlock diff retries-are-capped), then: claimlock verify retries-are-capped
 claimlock: 2 claims (1 in scope), 3 sources hashed — 0 invalid, 0 unpinned, 0 unanchored, 1 stale, 0 missing
 ```
 
@@ -458,6 +459,10 @@ It also exits 2 if git fails while listing the changes; exit 2 is never a pass.
 - **Upgrade everyone together, CI included.** An older claimlock reports
   `unknown field 'pins'` on every claim this version verified, and its
   `verify` leaves a stale `pins:` line that this version reads as invalid.
+- **`check --json`'s `results`** now holds only blocking claims (invalid, or a
+  non-fresh state) plus `owed` claims, not every claim — a new `omitted` gives
+  the count left out. A consumer that parsed every claim from `results` needs
+  `--full`, which restores the old shape (`"omitted": 0`).
 
 ## Limits
 

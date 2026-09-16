@@ -557,35 +557,64 @@ written before that rule.
 
 ## `claimlock check` output
 
-Plain `check` prints each failing claim, then the owed claims, then a census
-line, and exits 1 if any claim failed:
+Plain `check` prints a **bounded** report by default: each failing claim, then
+the owed claims, then a `hints:` block, then a census line, and exits 1 if any
+claim failed. `--full` (text or `--json`) restores the complete output; every
+cut names what it withheld and that flag. Budget constants live in
+`lib/claimlock/cli.py`: `LISTED_CLAIMS = 20` (failing/pre-existing/owed claims
+listed), `SOURCE_LINES = 3` (per-source and per-problem detail lines per
+claim).
 
 ```
 INVALID  <id>
          <problem>
+         <problem>
+         <problem>
+         … and <n> more problems
 STALE    <id>
          <key>: stale
-         re-check it (claimlock diff <id>), then: claimlock verify <id>
+         <key>: stale
+         <key>: stale
+         … and <n> more sources
 RENAMED  <id>
          <key>: renamed → <new> (<sha7 | uncommitted>)
-         a source was renamed — run: claimlock follow <id>
+… and <n> more failing claims — claimlock check --full
+pre-existing (not changed here):
+  <id>: stale
 OWED     <id> → <owed_by> since <owed_since>, N commits ago
+hints:
+  stale: re-check it (claimlock diff <id>), then: claimlock verify <id>
+  renamed: a source was renamed — run: claimlock follow <id>
 claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D stale, E missing, R renamed, F owed
 ```
 
 - The state label is the state in capitals, padded to 8 characters
-  (`UNANCHORED` is longer and is not truncated). Each non-fresh source is
-  listed, then one hint for the claim's overall state:
+  (`UNANCHORED` is longer and is not truncated).
+- **Hints print once, not per claim.** After every failing claim is listed
+  (capped or not), a `hints:` block lists one line per state actually seen —
+  in `invalid, unpinned, unanchored, stale, missing, renamed` order — as
+  `  <state>: <hint text>`, with `<id>` in the hint text filled in from the
+  *first* claim found in that state (not necessarily one of the claims
+  printed, if the list was capped). `invalid` carries no hint (the printed
+  `<problem>` lines are the detail); the hints are:
   - `unpinned`: `never pinned — re-check it, then: claimlock verify <id>`
   - `unanchored`: `the pinned content was never committed or staged — commit the source so every clone can see it (if it changed since, re-check, then: claimlock verify <id>)`
   - `stale`: `re-check it (claimlock diff <id>), then: claimlock verify <id>`
   - `missing`: `a source does not exist or cannot be read — fix its sources (or the file's permissions), re-check, then: claimlock verify <id>`
   - `renamed`: `a source was renamed — run: claimlock follow <id>`
+  This applies with and without `--full` — it is pure duplication either way.
 - A source's per-source line is `<key>: <state>` for every state except
   `renamed`, which instead prints
   `<key>: renamed → <new> (<sha7 | uncommitted>)` — the new path and, in
   parentheses, the 7-character commit that renamed it, or the literal
-  `uncommitted` for a staged-but-uncommitted `git mv`.
+  `uncommitted` for a staged-but-uncommitted `git mv`. At most `SOURCE_LINES`
+  of these per claim, then `         … and <n> more sources`; likewise at most
+  `SOURCE_LINES` `<problem>` lines, then `         … and <n> more problems`.
+  `--full` prints every source line and every problem.
+- At most `LISTED_CLAIMS` failing claims are listed, then
+  `… and <n> more failing claims — claimlock check --full`. The
+  `pre-existing (not changed here):` list and the `OWED` lines are each capped
+  the same way. `--full` lists every claim.
 - An `OWED` line is printed for every owed claim without problems. `, N
   commits ago` (commits from `owed_since` to HEAD) is omitted when
   `owed_since` is `none` or cannot be counted; it is counted once per distinct
@@ -596,7 +625,8 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
   `state: null`.
 - `, F owed` is appended to the census only when F > 0. The other counts,
   `renamed` included, are always present, in that order, and count only the
-  claims that block.
+  claims that block. The census always reports the full totals, uncapped,
+  whether or not `--full` was given.
 - "sources hashed" counts the source files looked at this run, including those
   answered from the stat cache.
 
@@ -629,11 +659,21 @@ claimlock: N claims, M sources hashed — A invalid, B unpinned, C unanchored, D
 `check --json` prints one object: `claims`, `sources_hashed`, `counts` (six
 blocking counts: `invalid`, `unpinned`, `unanchored`, `stale`, `missing`,
 `renamed`), `scope` (sorted in-scope ids, or
-`null` without `--changed`), and `results`, one per claim, with `id`, `area`,
+`null` without `--changed`), `omitted`, and `results`, with `id`, `area`,
 `status`, `problems`, `state`, `sources` (`path` — the source's **key**,
 `path` or `path#region` — and `state`; a `renamed` entry gains
 `renamed_to: "<new-path>"`), `in_scope`, `blocking` and `owed_by`.
 `--area <a>` limits every output to that area.
+
+By default `results` holds only **blocking** claims (those with `problems`, or
+a non-fresh `state`) plus `owed` claims — a gate reader needs both, and a
+fresh, non-owed claim carries nothing actionable. `omitted` is
+`claims - len(results)`, the count of fresh claims left out. `--full` restores
+every claim in `results` and sets `"omitted": 0`. `claims`, `sources_hashed`,
+`counts` and `scope` are always the full totals, `--full` or not — only
+`results` is filtered. This is a breaking change for a consumer that parsed
+every claim from `results` before this existed; pass `--full` to get that
+shape back.
 
 ## `claimlock owe`
 

@@ -13,7 +13,9 @@ NEED_GIT = unittest.skipIf(shutil.which("git") is None, "git not installed")
 
 
 def state_of(root, cid="c"):
-    rc, out, err = run_cli(root, "check", "--json")
+    # --full: a fresh claim (the common case this helper reads) is omitted
+    # from --json's default, blocking-only `results` (spec §3.2).
+    rc, out, err = run_cli(root, "check", "--json", "--full")
     data = json.loads(out)
     return {r["id"]: r["state"] for r in data["results"]}[cid]
 

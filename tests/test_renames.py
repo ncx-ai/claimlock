@@ -146,7 +146,9 @@ class CheckDiffStaleRenamed(TmpCase):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("RENAMED  c", out)
         self.assertIn(f"         a.py: renamed → lib/a.py ({self.sha})", out)
-        self.assertIn("         a source was renamed — run: claimlock follow c", out)
+        # The hint prints once, in the hints: block, not per-claim (spec §3.1).
+        self.assertIn("hints:", out)
+        self.assertIn("  renamed: a source was renamed — run: claimlock follow c", out)
         self.assertIn(", 0 missing, 1 renamed", out)
 
     def test_check_json(self):
