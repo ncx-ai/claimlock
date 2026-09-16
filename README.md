@@ -115,7 +115,7 @@ Two **problems** fail `check` whatever the status:
 | `claimlock check` | The gate: exit 1 if any claim is invalid (including conflicted), or verified and `stale`, `missing`, `renamed`, `unpinned` or `unanchored`. `owed` claims are listed and never fail it. `--changed <base>` blocks only on claims whose sources or claim file changed in committed history since the merge base with `<base>` — see [Using claimlock as a team](#using-claimlock-as-a-team). Prints a bounded report — `--full` for every claim and source. |
 | `claimlock stale` | List non-fresh verified claims (exit 1 if any) and `owed` claims, tab-separated. `--owed-by <email>` / `--mine` list only claims owed by that person. |
 | `claimlock list` | List every claim with its status, flags and headline. `--status <s>`, `--owed-by <email>`, `--mine` filter it. A long headline is cut to 120 characters — `--full` prints it whole. |
-| `claimlock search` | Case-insensitive substring search over id, area, body, sources and evidence refs; one line per hit by default (id, area, status, headline) — `--body` restores the matching body lines indented under each hit. |
+| `claimlock search` | Ranked search — ask it a question in your own words. Scores every claim's id, headline, area, source paths, body and evidence refs (BM25) and prints the best matches first, one line per hit (id, area, status, headline); `--top N` bounds the list (default 10, naming the command to see the rest); `--body` restores the matching body lines indented under each hit; an empty result means no claim covers this, not that the search failed — see [docs/format.md](docs/format.md) for the relevance floor. `--literal` restores the old case-insensitive substring match, for an exact path or string. |
 | `claimlock show` | One claim in full: status (and owner, if owed), freshness per source, who verified each pin, evidence, body. The body is capped at 40 lines and each evidence `ref` at 200 characters — `--full` prints both whole. |
 | `claimlock verify` | Re-hash every source (cache bypassed), pin it, write the `pins:` digest of the whole pin set, and mark the claim verified — clearing `owed_by`/`owed_since`. Refuses a conflicted, refuted or incomplete claim. |
 | `claimlock follow` | Rewrite the path of each renamed source (reported by `check` as `renamed`) to its new path, keeping its pins; the claim then reads fresh if the content is unchanged. |
@@ -137,15 +137,19 @@ field-level and format detail: [`docs/format.md`](docs/format.md).
 
 ## Output size
 
-Every command prints a bounded report; `--full` (and `search --body`) restores
-the complete output. Measured at `228f748` against two stores — **A**: 41 real
-claims, every one failing; **B**: 201 claims, 54 stale. Tokens are bytes/4.
+Every command prints a bounded report; `--full` restores the complete output.
+`search` is bounded a different way — ranked and capped at `--top` (default
+10) regardless of store size; `--body` still shows matching body lines under
+each hit but stays capped at `--top`, and `--literal` is what restores its old
+uncapped substring behaviour. Measured at `228f748` against two stores —
+**A**: 41 real claims, every one failing; **B**: 201 claims, 54 stale (`search`'s
+own figures are separate — see note 1 below). Tokens are bytes/4.
 
 | Command | ~tokens | with `--full` |
 |---|---:|---:|
 | `check` | 1,055 (A) / 295 (B) | 2,496 (A) |
 | `check --json` | 6,552 (A) / 4,270 (B) | 15,841 (B) |
-| `search <common term>` | 1,414 (A) / 4,380 (B) | 2,825 (A, `--body`) |
+| `search <question>` (ranked, `--top` default 10) | 264¹ | 829¹ (`--body`) |
 | `show <id>` (largest real claim) | 2,024 | 4,047 |
 | `diff <id>` (large file rewritten) | 669 | 11,116 |
 | `list` | 1,491 (A) | — |
@@ -153,6 +157,13 @@ claims, every one failing; **B**: 201 claims, 54 stale. Tokens are bytes/4.
 | `affected <path>` | 345 (B) | — |
 | `refs` | 13 | — |
 | SessionStart hook | 110 | capped at 2,000 characters |
+
+¹ `search` is now ranked and capped at `--top` (default 10), so its default
+size no longer scales with store size the way A/B did for the other rows —
+measured 2026-09-16 on a fresh 30-claim fixture where every claim matches the
+query (`stream`), not stores A/B. `--literal` restores the old uncapped
+substring match: 750 tokens by default, 2,445 with `--body`, on the same
+30-claim fixture (every claim matched, so this is close to a worst case).
 
 Loaded or read, not printed: the two claimlock skills ~5,136 tokens when
 invoked; `README.md` ~8,812 and `docs/format.md` ~13,205 **if read** — they are

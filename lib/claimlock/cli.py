@@ -10,7 +10,7 @@ from . import VERSION
 from . import claims as C
 from . import gitio
 from . import hooks
-from . import importer, merge, ops, refs, regions, selftest
+from . import importer, merge, ops, rank, refs, regions, selftest
 from . import project as P
 
 HINT = {
@@ -32,6 +32,7 @@ BODY_LINES = 40      # body lines printed by `show`
 EVIDENCE_CHARS = 200 # each evidence `ref` printed by `show`
 DIFF_LINES = 200     # unified-diff lines (headers included) per source, printed by `diff`
 HEADLINE_CHARS = 120 # headline printed by `search` and `list`
+SEARCH_TOP = 10      # default `search --top`: ranked hits printed before the cut note
 
 CI_SNIPPET = """\
 Gate a change in CI on the claims it touched (pre-existing drift is listed, not blocking):
@@ -366,8 +367,29 @@ def cmd_list(args):
     return 0
 
 
-def cmd_search(args):
-    _, _, results = _evaluate(args)
+def _print_search_hit(r, query, body_flag):
+    """One hit in either search mode: the header line, or (under `--body`)
+    the header plus every body line containing `query` (case-insensitive),
+    indented, followed by a blank line — unchanged shape from before ranking."""
+    c = r.claim
+    flag = f" [{r.state}]" if r.state in C.NON_FRESH else ""
+    if body_flag:
+        print(f"{c.id} ({c.area}, {c.status}){flag}")
+        q = query.lower()
+        for line in c.body.splitlines():
+            if q in line.lower():
+                print(f"    {line.strip()}")
+        print()
+    else:
+        # rstrip: an empty headline (blank body) would otherwise leave the
+        # two-space header/headline separator dangling at line end.
+        print(f"{c.id} ({c.area}, {c.status}){flag}  {_clip(c.headline(), HEADLINE_CHARS)}".rstrip())
+
+
+def _search_literal(args, results):
+    """Today's pre-ranking behaviour, restored by `--literal`: a
+    case-insensitive substring match against id/area/body/sources/evidence,
+    uncapped, in store order."""
     q = args.query.lower()
     hits = 0
     for r in results:
@@ -377,21 +399,75 @@ def cmd_search(args):
         if q not in hay:
             continue
         hits += 1
-        flag = f" [{r.state}]" if r.state in C.NON_FRESH else ""
-        if args.body:
-            print(f"{c.id} ({c.area}, {c.status}){flag}")
-            for line in c.body.splitlines():
-                if q in line.lower():
-                    print(f"    {line.strip()}")
-            print()
-        else:
-            # rstrip: an empty headline (blank body) would otherwise leave the
-            # two-space header/headline separator dangling at line end.
-            print(f"{c.id} ({c.area}, {c.status}){flag}  {_clip(c.headline(), HEADLINE_CHARS)}".rstrip())
+        _print_search_hit(r, args.query, args.body)
     if not hits:
         print(f"claimlock: nothing matches {args.query!r}")
         return 1
     return 0
+
+
+def _search_index_docs(results):
+    """[(claim_id, {field: text})] for every result's claim — the shape
+    `rank.Index` expects (rank.py's FIELDS: id, head, area, src, body, ev).
+    Built from the same claims `cmd_search` already loaded; no second load."""
+    docs = []
+    for r in results:
+        c = r.claim
+        refs = " ".join(str(e.get("ref", "")) for e in c.evidence if isinstance(e, dict))
+        docs.append((c.id, {
+            "id": c.id,
+            "head": c.headline(),
+            "area": c.area,
+            "src": " ".join(s.path for s in c.sources),
+            "body": c.body,
+            "ev": refs,
+        }))
+    return docs
+
+
+def _absent_terms_note(index, query):
+    """The ' (no claim mentions: <term>, ...)' clause named in the no-match
+    message, for the query's content terms absent from the corpus vocabulary
+    entirely (spec §3.4/§3.5) — or the empty string when there is nothing to
+    report (every content term present, or the query was entirely stop words
+    to begin with, in which case there was no content term to check)."""
+    terms = rank.fold(rank.tokens(query), index.vocab)
+    content = [t for t in terms if t not in rank.STOP_WORDS]
+    if not content:
+        return ""
+    unknown = index.unknown(content)
+    if not unknown:
+        return ""
+    return f" (no claim mentions: {', '.join(unknown)})"
+
+
+def _search_ranked(args, results):
+    """Ranked search (spec §3.5): build the index fresh from the already-
+    loaded claims, rank, cap at `--top`, and name the exact command to see
+    the rest when the cap cuts something."""
+    by_id = {r.claim.id: r for r in results}
+    index = rank.Index(_search_index_docs(results))
+    hits = rank.search(index, args.query)
+    if not hits:
+        print(f"claimlock: nothing matches {args.query!r}{_absent_terms_note(index, args.query)}")
+        return 1
+    more = f"… and {{n}} more — claimlock search {args.query!r} --top {len(hits)}"
+    shown, note = _capped(hits, args.top, more)
+    for _, cid in shown:
+        _print_search_hit(by_id[cid], args.query, args.body)
+    if note:
+        print(note)
+    return 0
+
+
+def cmd_search(args):
+    if args.top <= 0:
+        print(f"claimlock: --top must be a positive integer (got {args.top})", file=sys.stderr)
+        return 2
+    _, _, results = _evaluate(args)
+    if args.literal:
+        return _search_literal(args, results)
+    return _search_ranked(args, results)
 
 
 def cmd_show(args):
@@ -762,10 +838,16 @@ def build_parser():
     g = p.add_mutually_exclusive_group()
     g.add_argument("--owed-by", metavar="EMAIL", help="only claims owed by this email")
     g.add_argument("--mine", action="store_true", help="only claims owed by your git config user.email")
-    p = add("search", cmd_search, "case-insensitive substring search")
+    p = add("search", cmd_search, "ranked search — ask a question, or use --literal for a substring")
     p.add_argument("query")
     p.add_argument("--body", action="store_true",
-                   help="print matching body lines indented under each hit, uncapped")
+                   help="print matching body lines indented under each hit "
+                        "(capped at --top, uncapped under --literal)")
+    p.add_argument("--top", type=int, default=SEARCH_TOP,
+                   help=f"max ranked hits to print (default {SEARCH_TOP}); "
+                        f"the cut names the command to see the rest")
+    p.add_argument("--literal", action="store_true",
+                   help="case-insensitive substring match (today's pre-ranking behaviour), uncapped")
     p = add("show", cmd_show, "one claim with evidence and per-source state")
     p.add_argument("id")
     p.add_argument("--full", action="store_true", help="print the whole body and whole evidence refs, uncapped")

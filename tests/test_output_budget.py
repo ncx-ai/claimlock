@@ -384,7 +384,13 @@ class SearchDefaultShape(TmpCase):
         write(root, "src/a.py", "x\n")
         long_line = "n" * 200
         write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body=long_line))
-        rc, out, err = run_cli(root, "search", "n")
+        # Task 2: an unbroken run of 200 "n"s tokenises as ONE 200-char term
+        # (rank.tokens splits on non-alphanumerics only), so the single
+        # character "n" is no longer itself a term this store's vocabulary
+        # contains once search is ranked -- this test is about the headline
+        # clip, not tokenisation, so --literal (today's substring match)
+        # keeps testing that.
+        rc, out, err = run_cli(root, "search", "--literal", "n")
         self.assertEqual(rc, 0, out + err)
         expected_headline = long_line[:119] + "…"
         self.assertEqual(len(expected_headline), 120)
@@ -396,7 +402,10 @@ class SearchDefaultShape(TmpCase):
         write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="something"))
         rc, out, err = run_cli(root, "search", "not-there")
         self.assertEqual(rc, 1, out + err)
-        self.assertEqual(out, "claimlock: nothing matches 'not-there'\n")
+        # Task 2: neither "not" nor "there" appears anywhere in this one-claim
+        # store's vocabulary, so the relevance floor fires and the message
+        # names both absent content terms.
+        self.assertEqual(out, "claimlock: nothing matches 'not-there' (no claim mentions: not, there)\n")
 
     def test_a_hit_exits_zero(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -460,11 +469,143 @@ class SearchBudgetCeiling(TmpCase):
         self.assertEqual(rc, 0, out_body + err)
         body_size = len(out_body.encode("utf-8"))
 
-        # Measured 2026-09-15: default 3,570 B, --body 23,220 B.
+        # Measured 2026-09-15: default 3,570 B, --body 23,220 B. Now capped
+        # further by --top's default of 10 (Task 2), so both numbers are
+        # smaller still; the relational assertion below is what matters.
         self.assertLessEqual(size, body_size / 2,
                               f"default {size} B should be at most half of --body {body_size} B "
                               f"(30 claims, 8 matching body lines each)")
         self.assertLessEqual(size, 4000, f"default `search` matching 30 claims was {size} bytes")
+
+
+class SearchRankedOrder(TmpCase):
+    """Task 2, spec §3.5: ranked order — an id match outranks a deep-body
+    match. Query terms otherwise absent from spec §3.4's stop list keep this
+    from ever hitting the relevance floor (both claims share the query term)."""
+
+    def test_id_match_outranks_deep_body_match(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "src/b.py", "y\n")
+        write(root, "claims/pricing.md", claim_text(
+            "pricing", sources=["src/a.py"], body="How the system charges for usage."))
+        write(root, "claims/other.md", claim_text(
+            "other", sources=["src/b.py"],
+            body="Padding text that goes on for a while before, eventually, mentioning pricing once."))
+        rc, out, err = run_cli(root, "search", "pricing")
+        self.assertEqual(rc, 0, out + err)
+        ids = [line.split(" ", 1)[0] for line in out.splitlines() if line and not line.startswith("…")]
+        self.assertEqual(ids, ["pricing", "other"])
+
+
+class SearchTopFlag(TmpCase):
+    """Task 2, spec §3.5: `--top N`, default 10; a cut names the exact
+    command to see the rest. Every claim here shares an identical body
+    (only in the `body` field, never the id), so ranking ties are broken
+    deterministically by claim id (rank.py) and the printed order is
+    exactly sorted-by-id."""
+
+    def _store_of(self, n):
+        root = make_repo(self.tmp / "r", use_git=False)
+        for i in range(n):
+            cid = f"item-{i:02d}"
+            write(root, f"src/{cid}.py", "x\n")
+            write(root, f"claims/{cid}.md", claim_text(cid, sources=[f"src/{cid}.py"], body="widget appears here"))
+        return root
+
+    def test_default_caps_at_10_with_exact_cut_note(self):
+        root = self._store_of(15)
+        rc, out, err = run_cli(root, "search", "widget")
+        self.assertEqual(rc, 0, out + err)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 11, out)
+        self.assertEqual(lines[-1], "… and 5 more — claimlock search 'widget' --top 15")
+        ids = [line.split(" ", 1)[0] for line in lines[:-1]]
+        self.assertEqual(ids, [f"item-{i:02d}" for i in range(10)])
+
+    def test_explicit_top_widens_the_cap(self):
+        root = self._store_of(15)
+        rc, out, err = run_cli(root, "search", "widget", "--top", "15")
+        self.assertEqual(rc, 0, out + err)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 15, out)
+
+    def test_top_zero_is_refused_with_exit_2(self):
+        root = self._store_of(1)
+        rc, out, err = run_cli(root, "search", "widget", "--top", "0")
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("--top", err)
+
+    def test_top_negative_is_refused_with_exit_2(self):
+        root = self._store_of(1)
+        rc, out, err = run_cli(root, "search", "widget", "--top=-3")
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("--top", err)
+
+
+class SearchLiteralFlag(TmpCase):
+    """Task 2, spec §3.5: `--literal` restores today's exact-substring
+    matching, for paths and exact strings."""
+
+    def test_literal_finds_a_path_that_ranking_never_needs(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/limit.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/limit.py"], body="Some claim body."))
+        rc, out, err = run_cli(root, "search", "--literal", "src/limit.py")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("c (core, unverified)", out)
+
+    def test_literal_returns_the_old_zero_hits_for_a_query_ranking_answers(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/background-job-calls-are-priced.md", claim_text(
+            "background-job-calls-are-priced", sources=["src/a.py"],
+            body="A background job is billed once when it is first attempted."))
+        query = "how are background jobs priced"
+        rc, out, err = run_cli(root, "search", query)
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = run_cli(root, "search", "--literal", query)
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("nothing matches", out)
+
+
+class SearchNoMatchNamesAbsentTerms(TmpCase):
+    """Task 2, spec §3.4/§3.5: the no-match message names the query's
+    content terms absent from the store's vocabulary."""
+
+    def test_message_names_absent_terms(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="Refunds happen automatically."))
+        rc, out, err = run_cli(root, "search", "what happens when a payment fails")
+        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(out, "claimlock: nothing matches 'what happens when a payment fails' "
+                              "(no claim mentions: payment, fails)\n")
+
+    def test_stop_word_only_query_omits_the_clause(self):
+        # Every term here is a stop word, so there are no content terms to
+        # report as absent -- the clause is omitted rather than printed empty.
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/c.md", claim_text("c", sources=["src/a.py"], body="Something unrelated."))
+        rc, out, err = run_cli(root, "search", "how do you use this")
+        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(out, "claimlock: nothing matches 'how do you use this'\n")
+
+
+class SearchBodyUnderRanking(TmpCase):
+    """Task 2: `--body` still prints matching body lines, now under ranked
+    hits rather than substring-matched ones."""
+
+    def test_body_flag_prints_matching_lines_under_the_ranked_hit(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "src/a.py", "x\n")
+        write(root, "claims/pricing.md", claim_text(
+            "pricing", sources=["src/a.py"],
+            body="pricing line one\nunrelated line\npricing line two"))
+        rc, out, err = run_cli(root, "search", "pricing", "--body")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out, "pricing (core, unverified)\n    pricing line one\n    pricing line two\n\n")
 
 
 class ShowBodyCap(TmpCase):

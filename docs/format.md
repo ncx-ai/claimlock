@@ -694,11 +694,40 @@ a consumer that parsed every claim from `results` before this existed; pass
 Budget constants live beside `check`'s in `lib/claimlock/cli.py`: `BODY_LINES
 = 40` (body lines printed by `show`), `EVIDENCE_CHARS = 200` (each evidence
 `ref` printed by `show`), `HEADLINE_CHARS = 120` (headline printed by
-`search` and `list`). Every claim's **headline** is the first non-blank line
-of its body, stripped (`Claim.headline()`).
+`search` and `list`), `SEARCH_TOP = 10` (default `search --top`). Every
+claim's **headline** is the first non-blank line of its body, stripped
+(`Claim.headline()`).
 
-`search <query>` prints one line per hit by default, no body lines and no
-blank separator:
+### `search` — ranked by default
+
+`search <query>` no longer does a literal substring match by default: it
+ranks every claim by a per-field BM25 score (`lib/claimlock/rank.py`) over
+its id, headline, area, source paths, body and evidence refs — the same
+fields the old substring search covered, so nothing that was findable before
+becomes unfindable — and prints the best matches first. This is what lets a
+query be an actual question (`claimlock search "does a ledger reservation
+ever expire"`) rather than a guessed substring. The index is built fresh from
+the claims already loaded for this invocation; nothing is persisted or
+cached, and nothing about `check`, the hooks, exit codes or any verdict
+changes — `search` still exits 0 on a hit and 1 on no match.
+
+**The relevance floor.** Ranking always returns *something* for a query with
+any matching term, which would turn an honest "nothing" into a confident
+wrong answer for a query the store has no real vocabulary for. So before
+ranking, the query is folded and stripped of ~60 English stop words
+(`rank.STOP_WORDS`); if at least half of the remaining content terms are
+absent from the store's vocabulary *entirely* (not merely rare — document
+frequency was tried and measured to fail, see the design spec §3.4), `search`
+reports no match rather than answering off whatever term happens to be
+present. This is deliberately not perfect: a query whose words all exist in
+the store, just scattered across unrelated claims, is still answered (the
+floor sees vocabulary, not topicality), and the stop list is fixed English
+only. An **empty result is itself informative** — it means no claim in this
+store covers the topic, which is a fact worth reporting, not a search that
+failed. Full rationale: [the design spec](specs/2026-09-16-claimlock-search-ranking-design.md) §3.4.
+
+`search <query>` prints one line per hit, best first, up to `--top` (default
+`SEARCH_TOP` = 10):
 
 ```
 <id> (<area>, <status>)[ [<state>]]  <headline, clipped to HEADLINE_CHARS>
@@ -707,9 +736,17 @@ blank separator:
 `[<state>]` appears only when the claim's state is non-fresh (e.g. ` [stale]`),
 immediately before the two spaces that separate the header from the headline.
 A headline over `HEADLINE_CHARS` is cut to its first `HEADLINE_CHARS - 1`
-characters plus a trailing `…` (`HEADLINE_CHARS` total). `--body` restores the
-matching lines, indented four spaces under each hit, followed by a blank
-line — today's uncapped shape:
+characters plus a trailing `…` (`HEADLINE_CHARS` total). When there are more
+than `--top` hits, the cut names the exact command to see the rest:
+
+```
+… and <n> more — claimlock search <query> --top <total hits>
+```
+
+`--top 0` or a negative value is refused with exit 2 (not silently printing
+nothing) — `claimlock: --top must be a positive integer (got <N>)`. `--body`
+restores the matching lines, indented four spaces under each hit, followed by
+a blank line — still capped at `--top`:
 
 ```
 <id> (<area>, <status>)[ [<state>]]
@@ -718,8 +755,23 @@ line — today's uncapped shape:
 
 ```
 
-The no-match message (`claimlock: nothing matches '<query>'`, exit 1) and a
-hit's exit 0 are unchanged either way.
+`--literal` restores the pre-ranking behaviour exactly: a case-insensitive
+substring match against the same fields, uncapped, in store order — for a
+path or an exact string where a literal match is what you actually want
+(`claimlock search --literal 'src/limit.py'`). A multi-word natural-language
+query that ranking answers can (and typically does) return nothing under
+`--literal`, since it was never a literal substring of anything.
+
+The no-match message is `claimlock: nothing matches '<query>'`, exit 1,
+extended under ranking with the query's content terms the store's vocabulary
+has no term for at all: `claimlock: nothing matches '<query>' (no claim
+mentions: <term>, <term>)`. Under ranking, no-match always means the floor
+fired — any content term present in the store's vocabulary guarantees at
+least one nonzero-scoring hit — so the clause names something whenever there
+was a content term to check; it is omitted only when the query was entirely
+stop words to begin with (nothing to check the vocabulary for).
+`--literal`'s no-match message never carries this clause — it has no notion
+of "vocabulary", only a substring that either occurs or does not.
 
 `show <id>` is unchanged except for two caps, both restored whole by `--full`:
 the status line, any `INVALID`/state line, the `Evidence:` kind labels, the
