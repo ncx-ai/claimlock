@@ -140,20 +140,16 @@ records that *you* checked it, now; once committed, `claimlock who` names you.
 
 ## Hook messages
 
-- **Session start** (you see it): claims owed to your git `user.email` first,
-  then counts by state (invalid, conflicted, unpinned, unanchored, stale,
-  missing, owed) and dangling markers, with the affected areas. Search before
-  asserting there; re-check what's owed to you.
+- **Session start** (you see it): claims owed to you first, then drift counts.
+  Search before asserting in the areas named; re-check what's owed to you.
 - **After a Bash/MCP tool call** (you see it), only when HEAD moved: newly-owed
-  claims and conflicted claim files (`claimlock resolve`) first, then up to 10
-  now-non-fresh claims backed by files changed in that commit range — each
-  naming who changed the source and in which commit — plus up to 10 markers
-  naming no claim (`…` means more: `claimlock stale` / `claimlock refs`).
-  Re-check them before relying on them.
+  claims and conflicted claim files (`claimlock resolve`) first, then claims
+  your change staled. Re-check them before relying on them — `…` means more:
+  `claimlock stale` / `claimlock refs`.
 - **End of turn** (the user sees it, not you): problems new since the last
-  check in this clone, split into drift from your uncommitted edits to cited
-  sources vs. drift that arrived another way (e.g. a `git pull`). If relayed
-  to you, answer each named claim with `claimlock diff <id>`.
+  check. If relayed to you, answer with `claimlock diff <id>`.
+
+Exact message shapes, field ordering, caps and log detail: `docs/format.md`.
 
 ## Red flags
 

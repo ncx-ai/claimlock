@@ -111,7 +111,8 @@ claim against its enforcement site; verify only the ones you re-checked. For
 one you cannot re-check, route it to the person `who` names, or record the
 hand-off with `claimlock owe <id> --to <email> --reason "…"`. A large shared
 file stales every claim citing it — prefer the narrowest file (or a `region`
-inside it) that actually enforces the behaviour when writing `sources`. A
+inside it — regions: see the `using-claimlock` skill) that actually enforces
+the behaviour when writing `sources`. A
 `RENAMED` claim isn't drift to route to anyone: run `claimlock follow <id>` to
 rewrite its path and keep its pins.
 
@@ -147,26 +148,16 @@ bytes, so a line-ending change stales the claim.
 
 ## Hooks (installed with the plugin)
 
-| Hook | Who sees it | When |
+| Hook | Means | Do |
 |---|---|---|
-| Session start | Claude | Claims owed to your git `user.email` first (nothing if no email set); then counts by state (invalid, conflicted, unpinned, unanchored, stale, missing, owed) and dangling markers, with the affected areas |
-| After Bash/MCP tool calls | Claude | Only when HEAD moved: newly-owed claims and conflicted claim files first; then now-non-fresh claims backed by files changed in that commit range, each naming the author/commit that changed its source; then markers naming no claim |
-| End of turn | The user | Problems new since the last check in this clone ("since the last check"), separating drift from your uncommitted edits from drift that arrived another way (a pull), plus a HEAD-moved report no tool call delivered; nothing already named is repeated |
+| Session start | Claims owed to Claude first, then drift counts by state, with affected areas | Search before asserting there; re-check what's owed |
+| After a tool call (HEAD moved) | Newly-owed claims and conflicted files first, then claims the change staled | `claimlock resolve` the conflicts; re-check the rest before relying on them (`claimlock stale`/`refs` for the full list) |
+| End of turn (user sees it) | Problems new since the last check, split from uncommitted-edit drift vs. other drift (e.g. a pull) | If the user relays it, answer with `claimlock diff <id>` |
 
-During an in-progress merge, rebase or cherry-pick, end of turn never calls
-drift "your uncommitted edits". A `git pull` that stops on conflicts doesn't
-move HEAD, so its conflicts arrive at end of turn, not after the tool call.
-
-Hooks exit 0 always and never block. Each message is capped at 2,000
-characters — at most 10 claims (HEAD-moved) or 5 per category (end of turn),
-`…` meaning more (run `claimlock check` for the full list); what a report
-couldn't show is reported again next time. Runs in one session are
-serialised; one that can't take the session lock within 5 s is skipped
-without output. Hooks are active only when `.claimlock.toml` exists in the
-opened project directory or an ancestor — a bare `claims/` directory doesn't
-activate them, and a config in a subdirectory isn't seen. Elsewhere they
-print nothing. Internal errors and invalid hook input are logged to
-`hook-errors.log` in the plugin data directory.
+Hooks exit 0 always and never block; active only when `.claimlock.toml`
+exists in the opened project directory or an ancestor — elsewhere they print
+nothing. Full message shapes, field ordering, caps, and session/log detail:
+`docs/format.md`.
 
 ## Red flags
 

@@ -853,6 +853,43 @@ The hooks are stricter than the CLI: they are active only when
 ancestors. A `claims_dir` directory alone does not activate them, and a config
 in a subdirectory of the opened project is not seen.
 
+## Hook messages
+
+Three hooks ship with the plugin; all exit 0 and never set a blocking
+decision. Each message is capped at 2,000 characters.
+
+- **Session start** (Claude sees it, as context): first, claims owed to your
+  git `user.email`, if any (nothing shown if no email is set); then counts of
+  invalid, conflicted, unpinned, unanchored, stale, missing and owed claims
+  and of dangling markers, in that order, with the affected areas.
+- **After a Bash or MCP tool call** (Claude sees it, as context), only when
+  HEAD has moved (commit, merge, rebase, pull, checkout): claims that became
+  owed to you and claim files with merge conflicts (`claimlock resolve`)
+  first; then up to 10 claims, backed by files changed anywhere in the commit
+  range, that are now not fresh — each naming who changed the source and in
+  which commit; then up to 10 markers naming no claim. `…` after the claims
+  means there are more — run `claimlock stale`; `…` after the markers means
+  there are more — run `claimlock refs`.
+- **End of turn** (only the user sees it, as a `systemMessage`): problems not
+  present at the last check in this clone — a baseline taken at session
+  start, then replaced by each end-of-turn check ("since the last check"; a
+  problem already reported is not repeated), separating drift from
+  uncommitted edits to cited sources from drift that arrived another way
+  (e.g. a `git pull`), plus a HEAD-moved report no tool call delivered; a
+  claim the HEAD-moved report already named in the same state is not listed
+  twice. During an in-progress merge, rebase or cherry-pick, end of turn does
+  not label any drift "your uncommitted edits". A `git pull` that stops on
+  conflicts does not move HEAD, so its conflicted claims reach end of turn
+  ("became conflicted … run `claimlock resolve`"), not the after-tool-call
+  hook.
+
+Caps: the HEAD-moved report names at most 10 claims and at most 10 markers;
+the end-of-turn report lists at most 5 per category. What a report could not
+show (past its cap) is reported again at the next occurrence. Hook runs in
+one session are serialised; a run that cannot take the session lock within
+5 s is skipped without output. Internal errors, and hook input that was not
+valid JSON, are recorded in `hook-errors.log` in the plugin data directory.
+
 ## Marker scanning (`claimlock refs`)
 
 A **marker** is any regex match of `marker_pattern` in any file matched by
