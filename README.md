@@ -180,8 +180,8 @@ of them in prose — measured 2026-09-16, so `evidence` reports 41 unresolved
 and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
 by default and uncapped with `--full`.
 
-Loaded or read, not printed: the two claimlock skills ~5,405 tokens when
-invoked; `README.md` ~10,038 and `docs/format.md` ~16,359 **if read**
+Loaded or read, not printed: the two claimlock skills ~5,463 tokens when
+invoked; `README.md` ~10,078 and `docs/format.md` ~16,359 **if read**
 (`len(path.read_bytes())/4`, measured 2026-09-16 after this table's own
 edits — both files grow again with edits like this one, so treat these as
 approximate) — they are reference for changing claimlock itself, not for
