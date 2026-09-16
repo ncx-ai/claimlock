@@ -65,9 +65,12 @@ Terms are lowercased and split on runs of non-alphanumerics; `background-job-cal
 becomes five terms. A query term absent from the corpus vocabulary is folded by
 trying, in order, `-s`, `-es`, `-ed`, `-ing`→`e`, `-ing`, and is rewritten
 **only if the candidate stem is itself a term in this corpus**. So "jobs" →
-"job" because `job` exists here; nothing is stemmed on linguistic faith, and no
-stop-word list is needed — BM25's IDF already drives "how", "are" and "the"
-toward zero because they appear nearly everywhere.
+"job" because `job` exists here; nothing is stemmed on linguistic faith.
+
+An earlier draft of this spec argued no stop-word list was needed, because
+IDF would drive "how", "are" and "the" toward zero. Measurement refuted that
+at this corpus size: `how` appears in 2% of the real store's claims, so IDF
+treats it as highly informative. §3.4 therefore uses a small fixed stop list.
 
 ### 3.3 Scoring
 
@@ -124,13 +127,6 @@ this scale**, which is what the shipped rule uses.
 - The 0.5 threshold is measured on one store of 41 claims. It should be
   re-measured against a second real store before it is treated as settled.
 
-### 3.6 Small stores
-
-The floor must not depend on corpus size: a store with a single claim must find
-that claim when queried with its own words. The df-based design failed this
-(nothing is findable below 4 claims); the shipped rule has no such threshold,
-and a test pins n=1.
-
 ### 3.5 CLI
 
 - Results are ordered by score, best first, one line per hit (unchanged shape
@@ -142,6 +138,13 @@ and a test pins n=1.
   strings (`claimlock search --literal 'src/limit.py'`).
 - `--body` is unchanged.
 - Exit codes are unchanged: 0 on a hit, 1 on no match.
+
+### 3.6 Small stores
+
+The floor must not depend on corpus size: a store with a single claim must find
+that claim when queried with its own words. The df-based design failed this
+(nothing is findable below 4 claims); the shipped rule has no such threshold,
+and a test pins n=1.
 
 ## 4. The benchmark, and its negative half
 
