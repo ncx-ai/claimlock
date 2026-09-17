@@ -802,7 +802,7 @@ def _pins_status(claim):
 def cmd_refs(args):
     project = _project(args)
     ids = {c.id for c in C.load_claims(project)}
-    markers, scanned = refs.scan(project)
+    markers, scanned, skipped = refs.scan(project)
     dangling = [m for m in markers if m.id not in ids]
     orphans = sorted(ids - {m.id for m in markers})
     for m in dangling:
@@ -812,7 +812,7 @@ def cmd_refs(args):
                       "… and {n} more uncited claims — claimlock refs --orphans --full",
                       lambda cid: print(f"UNCITED {cid}"))
     print(f"claimlock: {len(markers)} markers in {scanned} files scanned, "
-          f"{len(dangling)} dangling, {len(orphans)} uncited")
+          f"{skipped} skipped in code blocks, {len(dangling)} dangling, {len(orphans)} uncited")
     return 1 if dangling else 0
 
 

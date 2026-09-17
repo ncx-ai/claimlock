@@ -7,8 +7,8 @@ evidence:
     ref: tests/test_edit_notice.py::NoGit::test_post_edit_invokes_no_git_cited_or_not
 sources:
   - path: lib/claimlock/hooks.py
-    blob: aff056e8207d1693234db2007d3cc6cb45ea6a1c
-pins: 748ac5aec0d83a16305b3b827416bcc041aac98f
+    blob: 5280687f2a833a2b81e5816e187aaf9e6c4fb427
+pins: 6b88aad851d14320d5b502ee79c8478fd1a73859
 ---
 The `post-edit` hook path (`PostToolUse` after Edit/Write/MultiEdit/
 NotebookEdit) never spawns a git subprocess, whether or not the edited file

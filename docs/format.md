@@ -1046,16 +1046,32 @@ Excluded from every scan, unconditionally:
   (permissions, a race with deletion), is skipped and **not** counted in the
   scanned-files total — `scan`'s per-file `scanned += 1` only runs after a
   successful read, so such a file contributes neither markers nor a count.
+- A marker written inside a **fenced code block** (three or more `` ` `` or
+  `~` characters, optionally indented up to 3 spaces, with an optional info
+  string; the closing fence is the same character, at least as long, and
+  followed only by whitespace — an unclosed fence runs to end of file, same
+  as CommonMark) documents the marker syntax rather than citing a claim, so
+  it is not counted as a marker at all — it contributes to neither dangling
+  nor orphan counts, only to the census's separate skip count (below). A line
+  that merely looks like a closing fence but carries other content after the
+  fence characters does not close it (CommonMark), so a marker on such a line
+  stays inside the block. **Not recognised: 4-space-indented code blocks** —
+  unmeasured, and deliberately left alone rather than risking a real dangling
+  marker going unreported.
 
 A marker naming an id with no matching claim file is **dangling**; `claimlock
 refs` prints each one and exits 1 if any exist, 0 otherwise.
 
 The mirror case is a claim no marker anywhere names — an **orphan**, i.e. a
-claim no prose cites. `refs` always reports the count, in its census line:
+claim no prose cites. `refs` always reports the counts, in its census line:
 
 ```
-claimlock: <markers> markers in <scanned> files scanned, <dangling> dangling, <orphans> uncited
+claimlock: <markers> markers in <scanned> files scanned, <skipped> skipped in code blocks, <dangling> dangling, <orphans> uncited
 ```
+
+`<skipped>` is always printed, even at `0` — one census shape is easier to
+reason about than two, and it is the only thing that tells apart "nothing
+was cited in a fence" from "the scanner dropped every marker on the floor".
 
 `--orphans` lists them, one id per line as `UNCITED <id>`, capped at
 `LISTED_CLAIMS` (20) with a cut note naming `--full` to see the rest — the

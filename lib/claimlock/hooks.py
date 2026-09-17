@@ -305,7 +305,7 @@ def survey(project):
     results = C.evaluate(project, hasher)
     hasher.save()
     ids = {r.claim.id for r in results}
-    markers, _ = refs.scan(project)
+    markers, _, _ = refs.scan(project)
     s = {"invalid": sorted(r.claim.id for r in results if r.problems and not r.claim.conflicted),
          "conflicted": sorted(r.claim.id for r in results if r.claim.conflicted)}
     for k in C.NON_FRESH:
@@ -405,7 +405,7 @@ def head_check(project, st):
                       and _claim_rel(project, r.claim) in changed)
     conflicted = sorted(r.claim.id for r in results if r.claim.conflicted)
     ids = {r.claim.id for r in results}
-    markers, _ = refs.scan(project, only=changed)
+    markers, _, _ = refs.scan(project, only=changed)
     dangling = sorted({f"{m.path}:{m.id}" for m in markers if m.id not in ids})
     if not (hit or dangling or owed_new or conflicted):
         return None

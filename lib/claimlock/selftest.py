@@ -116,7 +116,7 @@ def run(out=print) -> int:
             (root / "src.txt").unlink()
             expect(f"[{label}] deleted source", state("probe"), "missing")
             (root / "doc.md").write_text("Claim: `no-such-claim`\nClaim: `probe`\n")
-            markers, _ = refs.scan(project)
+            markers, _, _ = refs.scan(project)
             ids = {c.id for c in C.load_claims(project)}
             expect(f"[{label}] dangling markers", sorted(m.id for m in markers if m.id not in ids),
                    ["no-such-claim"])

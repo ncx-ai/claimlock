@@ -12,7 +12,7 @@ class RefLineNumbers(TmpCase):
     def test_a_form_feed_does_not_shift_marker_line_numbers(self):
         root = make_repo(self.tmp / "r", use_git=False)
         write(root, "docs/ff.md", "page one\x0cstill line one\nClaim: `a`\n")
-        markers, _ = refs.scan(load(root))
+        markers, _, _ = refs.scan(load(root))
         self.assertEqual([(m.path, m.line, m.id) for m in markers], [("docs/ff.md", 2, "a")])
 
 
@@ -28,45 +28,110 @@ class Refs(TmpCase):
         write(self.root, "notes.txt", "Claim: `ghost4`\n")
 
     def test_scan_scope_and_census(self):
-        markers, files = refs.scan(load(self.root))
-        self.assertEqual(files, 2)
+        markers, files, skipped = refs.scan(load(self.root))
+        self.assertEqual((files, skipped), (2, 0))
         self.assertEqual([(m.path, m.line, m.id) for m in markers],
                          [("README.md", 1, "a"), ("docs/x.md", 2, "ghost"), ("docs/x.md", 2, "a")])
 
     def test_only_limits_to_given_paths(self):
-        markers, files = refs.scan(load(self.root), only={"docs/x.md", "notes.txt", "missing.md"})
-        self.assertEqual((files, [m.id for m in markers]), (1, ["ghost", "a"]))
+        markers, files, skipped = refs.scan(load(self.root), only={"docs/x.md", "notes.txt", "missing.md"})
+        self.assertEqual((files, skipped, [m.id for m in markers]), (1, 0, ["ghost", "a"]))
 
     def test_cli_reports_dangling(self):
         rc, out, _ = run_cli(self.root, "refs")
         self.assertEqual(rc, 1)
         self.assertIn("DANGLING docs/x.md:2  Claim `ghost` names no claim", out)
-        self.assertIn("claimlock: 3 markers in 2 files scanned, 1 dangling", out)
+        self.assertIn("claimlock: 3 markers in 2 files scanned, 0 skipped in code blocks, 1 dangling", out)
         (self.root / "docs/x.md").write_text("Claim: `a`\n")
         rc, out, _ = run_cli(self.root, "refs")
         self.assertEqual(rc, 0)
-        self.assertIn("2 markers in 2 files scanned, 0 dangling", out)
+        self.assertIn("2 markers in 2 files scanned, 0 skipped in code blocks, 0 dangling", out)
 
     def test_custom_globs_and_pattern(self):
         root = make_repo(self.tmp / "c", use_git=False,
                          config='marker_globs = ["*.txt"]\nmarker_pattern = "see claim ([a-z-]+)"\n')
         write(root, "n.txt", "see claim nope\n")
         write(root, "n.md", "see claim nope\n")
-        markers, files = refs.scan(load(root))
-        self.assertEqual((files, [m.id for m in markers]), (1, ["nope"]))
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual((files, skipped, [m.id for m in markers]), (1, 0, ["nope"]))
 
     def test_only_rejects_paths_outside_the_root(self):
         outside = write(self.tmp, "outside/secret.md", "Claim: `zzz`\n")
         self.assertTrue(outside.is_file())
-        markers, files = refs.scan(load(self.root), only={str(outside)})
-        self.assertEqual((files, markers), (0, []))
+        markers, files, skipped = refs.scan(load(self.root), only={str(outside)})
+        self.assertEqual((files, skipped, markers), (0, 0, []))
 
     def test_only_rejects_dotdot_escape(self):
         # self.root is <tmp>/r; "a/../../x.md" resolves to <tmp>/x.md, outside root.
         escape_target = write(self.tmp, "x.md", "Claim: `zzz`\n")
         self.assertTrue(escape_target.is_file())
-        markers, files = refs.scan(load(self.root), only={"a/../../x.md"})
-        self.assertEqual((files, markers), (0, []))
+        markers, files, skipped = refs.scan(load(self.root), only={"a/../../x.md"})
+        self.assertEqual((files, skipped, markers), (0, 0, []))
+
+
+class FencedMarkers(TmpCase):
+    """A marker quoted inside a fenced code block documents the marker syntax,
+    it does not cite a claim — `scan` must not count it as a citation."""
+
+    def test_marker_inside_a_backtick_fence_is_not_counted(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md", "before\n```\nClaim: `ghost`\n```\nafter\n")
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([m.id for m in markers], skipped), ([], 1))
+
+    def test_the_same_marker_outside_a_fence_is_counted(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md", "```\ncode\n```\nClaim: `a`\n")
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([m.id for m in markers], skipped), (["a"], 0))
+
+    def test_tilde_fence_skips_its_marker(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md", "~~~\nClaim: `ghost`\n~~~\n")
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([m.id for m in markers], skipped), ([], 1))
+
+    def test_four_backtick_fence_contains_a_three_backtick_line(self):
+        # The inner ``` does not close the outer ```` fence (shorter run, same
+        # char) -- the marker on it stays skipped; the marker after the real
+        # close is counted normally.
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md", "````\n```\nClaim: `ghost`\n````\nClaim: `a`\n")
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([m.id for m in markers], skipped), (["a"], 1))
+
+    def test_unclosed_fence_runs_to_end_of_file(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md", "```\nClaim: `ghost`\nstill inside\nClaim: `ghost2`\n")
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([m.id for m in markers], skipped), ([], 2))
+
+    def test_fence_indented_two_spaces_is_recognised(self):
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md", "  ```\n  Claim: `ghost`\n  ```\n")
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([m.id for m in markers], skipped), ([], 1))
+
+    def test_marker_on_a_line_that_looks_like_it_closes_a_fence_stays_inside(self):
+        # A closing fence line may be followed only by whitespace (CommonMark);
+        # trailing content means the line does NOT close, so it -- and the
+        # marker on it -- are still inside the block.
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md",
+              "```\n``` Claim: `ghost`\nstill inside Claim: `ghost2`\n```\nClaim: `a`\n")
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([m.id for m in markers], skipped), (["a"], 2))
+
+    def test_falsifier_only_marker_in_a_fence_reports_zero_dangling_and_nonzero_skipped(self):
+        # Without this, a scanner that dropped every marker on the floor
+        # would also pass with 0 dangling -- the skipped count must be the
+        # thing that tells the two apart.
+        root = make_repo(self.tmp / "r", use_git=False)
+        write(root, "docs/x.md", "```\nClaim: `ghost`\n```\n")
+        rc, out, _ = run_cli(root, "refs")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("0 dangling", out)
+        self.assertIn("1 skipped in code blocks", out)
 
 
 class Orphans(TmpCase):
@@ -80,7 +145,7 @@ class Orphans(TmpCase):
         write(root, "README.md", "Holds. Claim: `a`\n")
         rc, out, _ = run_cli(root, "refs")
         self.assertEqual(rc, 0, out)
-        self.assertIn("claimlock: 1 markers in 1 files scanned, 0 dangling, 1 uncited", out)
+        self.assertIn("claimlock: 1 markers in 1 files scanned, 0 skipped in code blocks, 0 dangling, 1 uncited", out)
 
     def test_orphans_flag_lists_the_uncited_claim_only(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -100,7 +165,7 @@ class Orphans(TmpCase):
         rc, out, _ = run_cli(root, "refs")
         self.assertEqual(rc, 1, out)
         self.assertIn("DANGLING README.md:1  Claim `ghost` names no claim", out)
-        self.assertIn("claimlock: 2 markers in 1 files scanned, 1 dangling, 1 uncited", out)
+        self.assertIn("claimlock: 2 markers in 1 files scanned, 0 skipped in code blocks, 1 dangling, 1 uncited", out)
 
     def test_orphans_capped_at_20_and_full_uncaps(self):
         root = make_repo(self.tmp / "r", use_git=False)
@@ -136,12 +201,12 @@ class RefsInGit(TmpCase):
         (root / "docs/deleted.md").unlink()  # tracked, gone from the work tree
         write(root, "untracked.md", "Claim: `ghost-untracked`\n")
         write(root, "target/doc/ignored.md", "Claim: `ghost-ignored`\n")
-        markers, files = refs.scan(load(root))
+        markers, files, skipped = refs.scan(load(root))
         self.assertEqual(sorted(m.id for m in markers), ["ghost-tracked", "ghost-untracked"])
-        self.assertEqual(files, 2)
+        self.assertEqual((files, skipped), (2, 0))
         rc, out, _ = run_cli(root, "refs")
         self.assertNotIn("ghost-ignored", out)
-        self.assertIn("2 markers in 2 files scanned, 2 dangling", out)
+        self.assertIn("2 markers in 2 files scanned, 0 skipped in code blocks, 2 dangling", out)
 
     def test_store_in_a_subdirectory_of_the_repository(self):
         from helpers import git
@@ -151,15 +216,15 @@ class RefsInGit(TmpCase):
         write(top, "outside.md", "Claim: `ghost-outside`\n")
         root = make_repo(top / "sub", use_git=False)
         write(root, "in.md", "Claim: `ghost-in`\n")
-        markers, files = refs.scan(load(root))
-        self.assertEqual(([(m.path, m.id) for m in markers], files), ([("in.md", "ghost-in")], 1))
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual(([(m.path, m.id) for m in markers], files, skipped), ([("in.md", "ghost-in")], 1, 0))
 
     def test_falls_back_to_walking_when_git_fails(self):
         root = make_repo(self.tmp / "f", use_git=True)
         write(root, ".gitignore", "target/\n")
         write(root, "target/ignored.md", "Claim: `ghost-ignored`\n")
         with mock.patch("claimlock.gitio.ls_files", return_value=None, create=True):
-            markers, files = refs.scan(load(root))
+            markers, files, skipped = refs.scan(load(root))
         self.assertEqual([m.id for m in markers], ["ghost-ignored"])
 
 
@@ -176,8 +241,8 @@ class IgnoredRoot(TmpCase):
         outer = self.outer("scratch/\n")
         root = make_repo(outer / "scratch" / "proj", use_git=False)
         write(root, "docs/x.md", "Claim: `ghost`\n")
-        markers, files = refs.scan(load(root))
-        self.assertEqual((files, [m.id for m in markers]), (1, ["ghost"]))
+        markers, files, skipped = refs.scan(load(root))
+        self.assertEqual((files, skipped, [m.id for m in markers]), (1, 0, ["ghost"]))
         rc, out, _ = run_cli(root, "refs")
         self.assertEqual(rc, 1, out)
         self.assertIn("1 dangling", out)
@@ -187,7 +252,7 @@ class IgnoredRoot(TmpCase):
         root = make_repo(outer / "proj", use_git=False)
         write(root, "target/t.md", "Claim: `in-ignored-tree`\n")
         write(root, "docs/ok.md", "Claim: `in-open-tree`\n")
-        markers, _ = refs.scan(load(root))
+        markers, _, _ = refs.scan(load(root))
         self.assertEqual([m.id for m in markers], ["in-open-tree"])
 
 
