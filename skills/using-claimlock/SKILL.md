@@ -31,7 +31,7 @@ The default sequence, every time:
    worth reporting, not something to work around by guessing at the code.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
-they are reference for changing claimlock itself (~16,359 and ~10,246 tokens);
+they are reference for changing claimlock itself (~16,600 and ~10,307 tokens);
 this skill carries what these flows need. **Do not run `check --json`**
 unless a machine is parsing it — the text form is smaller.
 

@@ -17,6 +17,7 @@ class Init(TmpCase):
         self.assertEqual(rc, 0, err)
         self.assertTrue((d / ".claimlock.toml").is_file())
         self.assertTrue((d / "claims").is_dir())
+        self.assertTrue((d / "claims" / "README.md").is_file())
         self.assertEqual((d / ".gitignore").read_text(), "node_modules/\n.claimlock/\n")
         ga = (d / ".gitattributes").read_text()
         self.assertEqual(ga, "*.png binary\nclaims/*.md text eol=lf\n")
@@ -26,6 +27,30 @@ class Init(TmpCase):
         self.assertIn("already exists", err)
         self.assertEqual((d / ".gitignore").read_text().count(".claimlock/"), 1)
         self.assertEqual((d / ".gitattributes").read_text().count("claims/*.md text eol=lf"), 1)
+
+    def test_store_readme_is_written_and_never_read_as_a_claim(self):
+        from claimlock import ops
+        d = self.tmp / "r"
+        d.mkdir()
+        rc, out, err = run_cli(d, "init")
+        self.assertEqual(rc, 0, err)
+        readme = d / "claims" / "README.md"
+        # Byte-identical to the template, so what a user gets is what we ship.
+        self.assertEqual(readme.read_text(), ops.STORE_README.format(source=ops.PLUGIN_SOURCE))
+        # Its whole point: usable without the tool, and it says where to get it.
+        self.assertIn(ops.PLUGIN_SOURCE, readme.read_text())
+        self.assertIn("Never hand-write", readme.read_text())
+        # init tells the operator to point other agents at it.
+        self.assertIn("claims/README.md", out)
+        # A README inside the store must never parse as a claim. If it did,
+        # `check` would report it INVALID (no frontmatter) and exit 1.
+        rc, out, err = run_cli(d, "check")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("0 claims", out)
+        # An edited README survives a re-init, like the .gitignore line.
+        readme.write_text("mine\n")
+        run_cli(d, "init")
+        self.assertEqual(readme.read_text(), "mine\n")
 
     def test_init_into_missing_directory_is_exit_2(self):
         nope = self.tmp / "nope"

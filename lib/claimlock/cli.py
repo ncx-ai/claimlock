@@ -46,6 +46,13 @@ Check the whole store locally:
 Then: claimlock new <id> --area <area>   (write the claim, cite evidence and sources)
       claimlock verify <id>              (pins every source; only after checking it)
       claimlock owe <id> --to <email>    (hand the re-check to someone, instead)
+
+claims/README.md explains the store to anyone who finds it without this tool.
+Point agents at it from the file they already read — one line in CLAUDE.md or
+AGENTS.md:
+
+    Claims in claims/ are machine-checked and pinned to the files that could
+    falsify them; read claims/README.md before editing a cited file.
 """
 
 

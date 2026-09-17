@@ -32,6 +32,19 @@ the text). A lone `\r` that is not part of a `\r\n` pair is still a parse error.
 twice) so claim files stay LF in every clone; the rule names the default claims
 directory, so a store configured with another `claims_dir` needs its own rule.
 
+**The store README.** `init` also writes `claims/README.md` (`ops.STORE_README`),
+and leaves it alone if one is already there — the same rule the `.gitignore` and
+`.gitattributes` lines follow, so an edited one survives. It exists because a
+store is found by people and agents who have never heard of claimlock: the claim
+files carry pins that look hand-editable and `` Claim: `<id>` `` markers that
+resolve to nothing they recognise. It states what `sources[].blob` is, that a
+changed cited file may mean the claim is now false, that `blob`/`pins`/`status`
+are tool-written and a hand-stamped pin is detected by the `pins` digest rather
+than believed, and where to install the plugin (`ops.PLUGIN_SOURCE`) — including
+that the CLI runs straight from a clone on stdlib Python alone. `README.md` is
+the one name `load_claims` skips inside the claims directory, so it can never be
+parsed as a claim; `refs` and `evidence` exclude the whole directory anyway.
+
 Every value is one of:
 
 **A scalar**, on the same line as its key:

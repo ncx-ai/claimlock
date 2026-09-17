@@ -110,7 +110,7 @@ Two **problems** fail `check` whatever the status:
 
 | Command | Does |
 |---|---|
-| `claimlock init` | Create `.claimlock.toml` and `claims/`, add `.claimlock/` to `.gitignore`, and add `claims/*.md text eol=lf` to `.gitattributes`. |
+| `claimlock init` | Create `.claimlock.toml`, `claims/` and `claims/README.md`, add `.claimlock/` to `.gitignore`, and add `claims/*.md text eol=lf` to `.gitattributes`. The store README explains the claim files, the pins and the `` Claim: `<id>` `` markers to anyone — human or agent — who finds them without claimlock, and says where to install it; an existing one is never overwritten. |
 | `claimlock new` | Scaffold an unverified claim (`claimlock new <id> --area <area>`). |
 | `claimlock check` | The gate: exit 1 if any claim is invalid (including conflicted), or verified and `stale`, `missing`, `renamed`, `unpinned` or `unanchored`. `owed` claims are listed and never fail it. `--changed <base>` blocks only on claims whose sources or claim file changed in committed history since the merge base with `<base>` — see [Using claimlock as a team](#using-claimlock-as-a-team). Prints a bounded report — `--full` for every claim and source. |
 | `claimlock stale` | List non-fresh verified claims (exit 1 if any) and `owed` claims, tab-separated. `--owed-by <email>` / `--mine` list only claims owed by that person. |
@@ -181,7 +181,7 @@ and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
 by default and uncapped with `--full`.
 
 Loaded or read, not printed: the two claimlock skills ~5,779 tokens when
-invoked; `README.md` ~10,246 and `docs/format.md` ~16,359 **if read**
+invoked; `README.md` ~10,307 and `docs/format.md` ~16,600 **if read**
 (`len(path.read_bytes())/4`, measured 2026-09-16 after this table's own
 edits — both files grow again with edits like this one, so treat these as
 approximate) — they are reference for changing claimlock itself, not for
