@@ -25,7 +25,9 @@ The default sequence for routine claim work, every time:
 
 1. After editing files: `claimlock affected <paths>` — lists only the claims
    citing those paths.
-2. Before committing, once: `claimlock check --changed <base>`.
+2. Once per phase — **not** per commit: `claimlock check --changed <base>`,
+   when you are about to hand the work back (opening a pull request, reporting
+   a phase or task complete, claiming something is done or verified).
 3. `claimlock diff <id>` only for the claim you are about to verify next.
 4. `claimlock search <topic>` reads one line per hit; add `--body` only when
    the headline isn't enough. `search` is ranked, so ask it a real question
@@ -36,7 +38,7 @@ The default sequence for routine claim work, every time:
    worth reporting, not something to work around by guessing at the code.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
-they are reference for changing claimlock itself (~16,359 and ~10,078 tokens);
+they are reference for changing claimlock itself (~16,359 and ~10,246 tokens);
 these skills carry what these flows need. **Do not run `check --json`**
 unless a machine is parsing it — the text form is smaller.
 
@@ -50,9 +52,17 @@ CI, on a pull request:
 deleted with nothing about the claim's sources changing, so it stays
 `verified` forever unless something re-checks the citation itself.
 
-Locally, or in a pre-commit hook after `git add`, gate the whole working tree:
+Locally, at the end of a phase, gate the whole working tree:
 
     claimlock check
+
+**Do not put this in a pre-commit hook.** It reads like diligence and is the
+most expensive mistake available here. Measured on a real 49-claim store across
+400 commits: gating every commit surfaced claims **1,327** times against **48**
+that were genuinely stale at the end — 27.6× re-reporting, firing on 54% of
+commits. Concentration drives it: one 4,110-line file backed 10 claims, so a
+single edit anywhere in it surfaced all ten, every time. The repeats cost
+re-checking effort, not run time, which is why batching them matters.
 
 `check --changed <base>` blocks only on claims **in scope** — a cited source or
 the claim file itself changed in committed history since the merge base with
@@ -181,4 +191,5 @@ nothing. Full message shapes, field ordering, caps, and session/log detail:
 | "0 claims, check passed" | Check `claims_dir`. Seeing nothing is not finding nothing. |
 | "Disable the hook, it's noisy" | Noise means sources are too broad. Narrow them. |
 | "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~16k tokens. |
-| "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` before committing. |
+| "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` when the phase is done. |
+| "Gating every commit is safer" | It re-reports what you already know: 1,327 surfacings against 48 genuinely stale claims over a measured 400-commit window. Batching removes the repeats, not the work. |

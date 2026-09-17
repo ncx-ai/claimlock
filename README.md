@@ -180,18 +180,27 @@ of them in prose — measured 2026-09-16, so `evidence` reports 41 unresolved
 and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
 by default and uncapped with `--full`.
 
-Loaded or read, not printed: the two claimlock skills ~5,463 tokens when
-invoked; `README.md` ~10,078 and `docs/format.md` ~16,359 **if read**
+Loaded or read, not printed: the two claimlock skills ~5,779 tokens when
+invoked; `README.md` ~10,246 and `docs/format.md` ~16,359 **if read**
 (`len(path.read_bytes())/4`, measured 2026-09-16 after this table's own
 edits — both files grow again with edits like this one, so treat these as
 approximate) — they are reference for changing claimlock itself, not for
 routine claim work.
 
 The cheap sequence, in the order you work: `claimlock affected <paths>` while
-editing, one `claimlock check --changed <base>` before committing, and
-`claimlock diff <id>` only for the claim you are about to verify. Add `--full`
-when a bounded report cut something you actually need; the cut always names
-what it withheld.
+editing, one `claimlock check --changed <base>` **when the phase is done — not
+before every commit**, and `claimlock diff <id>` only for the claim you are
+about to verify. Add `--full` when a bounded report cut something you actually
+need; the cut always names what it withheld.
+
+Cadence matters more than it looks. `check --changed <base>` takes the *merge
+base*, so aiming it at the branch point once reports each affected claim once,
+while running it before every commit re-reports the same claims all phase long:
+measured on a real 49-claim store over 400 commits, **1,327** surfacings against
+**48** genuinely stale at the end, a 27.6× difference from the trigger alone.
+Batching removes the repeats, not the work — the 48 still need re-checking, and
+the lever on *that* number is narrower pins, i.e. [regions](#regions). See
+[the cadence design](docs/specs/2026-09-17-claimlock-review-cadence-design.md).
 
 ## Regions
 

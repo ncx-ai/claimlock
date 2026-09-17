@@ -18,7 +18,9 @@ The default sequence, every time:
 
 1. After editing files: `claimlock affected <paths>` — lists only the claims
    citing those paths.
-2. Before committing, once: `claimlock check --changed <base>`.
+2. Once per phase — **not** per commit: `claimlock check --changed <base>`,
+   when you are about to hand the work back (opening a pull request, reporting
+   a phase or task complete, claiming something is done or verified).
 3. `claimlock diff <id>` only for the claim you are about to verify next.
 4. `claimlock search <topic>` reads one line per hit; add `--body` only when
    the headline isn't enough. `search` is ranked, so ask it a real question
@@ -29,7 +31,7 @@ The default sequence, every time:
    worth reporting, not something to work around by guessing at the code.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
-they are reference for changing claimlock itself (~16,359 and ~10,078 tokens);
+they are reference for changing claimlock itself (~16,359 and ~10,246 tokens);
 this skill carries what these flows need. **Do not run `check --json`**
 unless a machine is parsing it — the text form is smaller.
 
@@ -182,4 +184,5 @@ Exact message shapes, field ordering, caps and log detail: `docs/format.md`.
 | "One claim for the whole subsystem" | It can't go stale for one part. Split it. |
 | "It's false now, delete it" | Refute it and say what replaced it. |
 | "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~16k tokens. |
-| "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` before committing. |
+| "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` when the phase is done. |
+| "Gating every commit is safer" | It re-reports what you already know: 1,327 surfacings against 48 genuinely stale claims over a measured 400-commit window. Batching removes the repeats, not the work. |
