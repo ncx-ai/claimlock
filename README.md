@@ -180,12 +180,13 @@ of them in prose — measured 2026-09-16, so `evidence` reports 41 unresolved
 and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
 by default and uncapped with `--full`.
 
-Loaded or read, not printed: the two claimlock skills ~5,779 tokens when
-invoked; `README.md` ~10,307 and `docs/format.md` ~16,600 **if read**
-(`len(path.read_bytes())/4`, measured 2026-09-16 after this table's own
-edits — both files grow again with edits like this one, so treat these as
-approximate) — they are reference for changing claimlock itself, not for
-routine claim work.
+Loaded or read, not printed: the two claimlock skills ~6,000 tokens when
+invoked; `README.md` ~10,500 and `docs/format.md` ~17,000 **if read**
+(`len(path.read_bytes())/4`, each rounded to the nearest 500 so an ordinary
+doc edit can't move it — `tests/test_plugin_manifest.py`'s `DocTokenFigures`
+asserts every one of these figures, in this file and both skills, stays
+within 500 tokens of a fresh measurement) — they are reference for changing
+claimlock itself, not for routine claim work.
 
 The cheap sequence, in the order you work: `claimlock affected <paths>` while
 editing, one `claimlock check --changed <base>` **when the phase is done — not

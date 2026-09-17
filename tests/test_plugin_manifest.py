@@ -130,6 +130,58 @@ class LauncherOnOldPython(unittest.TestCase):
         ast.parse((REPO / "bin/claimlock").read_text(), feature_version=(3, 6))
 
 
+class DocTokenFigures(unittest.TestCase):
+    """README.md states the approximate token cost of itself, docs/format.md
+    and the two skills combined; both skills repeat the docs/format.md and
+    README.md figures. They're exact-looking numbers that every doc edit
+    invalidates -- they went stale three separate times inside one change
+    (2026-09-17) and were only caught by manual re-measurement. This checks
+    them against a fresh `len(path.read_bytes()) / 4` instead: each figure is
+    rounded to the nearest 500 (bounding the rounding error at 250), so a
+    tolerance of 500 catches real drift without firing on the rounding
+    itself."""
+
+    TOLERANCE = 500
+
+    def _tokens(self, rel):
+        return len((REPO / rel).read_bytes()) / 4
+
+    def _assert_close(self, label, stated, rel):
+        measured = self._tokens(rel)
+        self.assertLessEqual(abs(stated - measured), self.TOLERANCE,
+                              f"{label}: stated ~{stated:g}, measured {measured:.1f} tokens for {rel}")
+
+    def test_readme_states_its_own_skills_and_format_md_token_cost(self):
+        text = (REPO / "README.md").read_text()
+        m = re.search(r"claimlock skills ~([0-9,]+) tokens", text)
+        self.assertIsNotNone(m, "README.md: skills-combined token figure not found")
+        skills_stated = float(m.group(1).replace(",", ""))
+        m = re.search(r"`README\.md` ~([0-9,]+)", text)
+        self.assertIsNotNone(m, "README.md: its own token figure not found")
+        readme_stated = float(m.group(1).replace(",", ""))
+        m = re.search(r"`docs/format\.md` ~([0-9,]+)", text)
+        self.assertIsNotNone(m, "README.md: docs/format.md token figure not found")
+        format_stated = float(m.group(1).replace(",", ""))
+
+        combined = (self._tokens("skills/using-claimlock/SKILL.md")
+                    + self._tokens("skills/operating-claimlock/SKILL.md"))
+        self.assertLessEqual(abs(skills_stated - combined), self.TOLERANCE,
+                              f"README.md: stated skills figure ~{skills_stated:g}, "
+                              f"measured {combined:.1f} tokens for the two skills combined")
+        self._assert_close("README.md's own token figure", readme_stated, "README.md")
+        self._assert_close("README.md's docs/format.md figure", format_stated, "docs/format.md")
+
+    def test_skills_state_docs_format_and_readme_token_cost(self):
+        for rel in ("skills/using-claimlock/SKILL.md", "skills/operating-claimlock/SKILL.md"):
+            text = (REPO / rel).read_text()
+            m = re.search(r"~([0-9,]+) and ~([0-9,]+) tokens", text)
+            self.assertIsNotNone(m, f"{rel}: token figures not found")
+            format_stated = float(m.group(1).replace(",", ""))
+            readme_stated = float(m.group(2).replace(",", ""))
+            self._assert_close(f"{rel}'s docs/format.md figure", format_stated, "docs/format.md")
+            self._assert_close(f"{rel}'s README.md figure", readme_stated, "README.md")
+
+
 class NoLeakedMachinePaths(unittest.TestCase):
     def test_tracked_files_have_no_machine_specific_paths(self):
         """Every file `git ls-files` reports must be free of this machine's
