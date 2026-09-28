@@ -144,7 +144,7 @@ class Audit(TmpCase):
               claim_text("a", evidence=(("test", "src/a.py::a_named_test_function"),)))
         checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
         self.assertEqual([(c.outcome, c.locator) for c in checks],
-                          [("resolved", "src/a.py::a_named_test_function")])
+                          [("matched", "src/a.py::a_named_test_function")])
 
     def test_an_explicit_ref_whose_file_cannot_be_decoded_is_unlocatable(self):
         (self.root / "src").mkdir(parents=True, exist_ok=True)
@@ -181,6 +181,15 @@ class Audit(TmpCase):
         self.assertEqual(checks[0].outcome, "unlocatable")
         self.assertEqual(checks[0].reason, "no-locator")
 
+    def test_a_statically_matched_explicit_ref_is_not_resolved(self):
+        # The file exists and the name is in it, but no runner was asked. That
+        # is weaker than a runner listing the test, and printing the two the
+        # same is the defect this whole change is about, in a milder form.
+        write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
+        write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "src/a.py::a_named_test_function"),)))
+        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual(checks[0].outcome, "matched")
+
 
 class CLI(TmpCase):
     def setUp(self):
@@ -207,14 +216,14 @@ class CLI(TmpCase):
         write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "test_present_and_correct"),)))
         rc, out, _ = run_cli(self.root, "evidence")
         self.assertEqual(rc, 0, out)
-        self.assertRegex(out, r"claimlock: 1 resolved, 0 unresolved, 0 unlocatable in \d+ files scanned$")
+        self.assertRegex(out, r"claimlock: 1 resolved, 0 matched, 0 unresolved, 0 unlocatable in \d+ files scanned$")
 
     def test_census_names_a_skipped_oversized_file_so_it_is_not_silently_invisible(self):
         write(self.root, "vendor/blob.bin", "z" * (evidence.MAX_SCAN_BYTES + 10))
         write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "xy"),)))
         rc, out, _ = run_cli(self.root, "evidence")
         self.assertEqual(rc, 0, out)
-        self.assertRegex(out, r"claimlock: 0 resolved, 0 unresolved, 1 unlocatable in \d+ files scanned, "
+        self.assertRegex(out, r"claimlock: 0 resolved, 0 matched, 0 unresolved, 1 unlocatable in \d+ files scanned, "
                               r"1 skipped \(too large\)")
 
     def test_full_uncaps_the_listings(self):
@@ -230,6 +239,12 @@ class CLI(TmpCase):
         self.assertEqual(rc, 1, out)
         listed = [line for line in out.splitlines() if line.startswith("UNRESOLVED")]
         self.assertEqual(len(listed), 25)
+
+    def test_matched_does_not_fail_the_gate(self):
+        # cmd_evidence exits 1 for unresolved ONLY.
+        self.assertEqual(evidence.exit_code([evidence.Check("c", "r", "l", "matched")]), 0)
+        self.assertEqual(evidence.exit_code([evidence.Check("c", "r", "l", "unlocatable", "ambiguous")]), 0)
+        self.assertEqual(evidence.exit_code([evidence.Check("c", "r", "l", "unresolved")]), 1)
 
 
 if __name__ == "__main__":

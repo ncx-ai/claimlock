@@ -75,7 +75,7 @@ class Check:
     claim_id: str
     ref: str
     locator: str | None
-    outcome: str  # "resolved" | "unresolved" | "unlocatable"
+    outcome: str  # "resolved" | "matched" | "unresolved" | "unlocatable"
     reason: str | None = None  # "ambiguous" | "no-locator" | None
 
 
@@ -144,7 +144,7 @@ def audit(project, claims, globs=None):
             checks.append(Check(cid, ref, loc, "unlocatable", "unreadable"))
             continue
         last = name.rsplit("::", 1)[-1].rsplit(" > ", 1)[-1].strip()
-        checks.append(Check(cid, ref, loc, "resolved" if last and last in text else "unresolved"))
+        checks.append(Check(cid, ref, loc, "matched" if last and last in text else "unresolved"))
     for cid, ref, loc in wanted:
         reason = None
         if loc is None:
@@ -159,3 +159,10 @@ def audit(project, claims, globs=None):
                 outcome = "resolved"
         checks.append(Check(cid, ref, loc, outcome, reason))
     return checks, scanned, skipped
+
+
+def exit_code(checks):
+    """1 when any ref is `unresolved`, else 0. `matched` and `unlocatable` are
+    reports, not failures — a store adopting this must not meet a cliff, the
+    same reasoning that keeps orphans non-failing."""
+    return 1 if any(c.outcome == "unresolved" for c in checks) else 0

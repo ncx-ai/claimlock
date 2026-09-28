@@ -823,13 +823,16 @@ def cmd_evidence(args):
     unresolved = [c for c in checks if c.outcome == "unresolved"]
     unlocatable = [c for c in checks if c.outcome == "unlocatable"]
     resolved = [c for c in checks if c.outcome == "resolved"]
+    matched = [c for c in checks if c.outcome == "matched"]
     cap = None if args.full else LISTED_CLAIMS
     _print_capped(unresolved, cap, "… and {n} more unresolved evidence refs — claimlock evidence --full",
                   lambda c: print(f"UNRESOLVED {c.claim_id}  {c.ref}"))
     _print_capped(unlocatable, cap, "… and {n} more unlocatable evidence refs — claimlock evidence --full",
                   lambda c: print(f"UNLOCATABLE {c.claim_id}  ({c.reason})  {c.ref}"))
+    _print_capped(matched, cap, "… and {n} more statically matched evidence refs — claimlock evidence --full",
+                  lambda c: print(f"MATCHED {c.claim_id}  {c.ref}"))
     ambiguous = sum(1 for c in unlocatable if c.reason == "ambiguous")
-    census = (f"claimlock: {len(resolved)} resolved, {len(unresolved)} unresolved, "
+    census = (f"claimlock: {len(resolved)} resolved, {len(matched)} matched, {len(unresolved)} unresolved, "
               f"{len(unlocatable)} unlocatable")
     if ambiguous:
         census += f" ({ambiguous} ambiguous)"
@@ -839,7 +842,7 @@ def cmd_evidence(args):
         # skipped file must not read as though the tree came up clean.
         census += f", {skipped} skipped (too large)"
     print(census)
-    return 1 if unresolved else 0
+    return evidence.exit_code(checks)
 
 
 def cmd_affected(args):

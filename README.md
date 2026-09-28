@@ -124,7 +124,7 @@ Two **problems** fail `check` whatever the status:
 | `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. Each source's unified diff is capped at 200 lines — `--full` prints it whole. |
 | `claimlock who` | Who verified each of a claim's pins, from git history (email, timestamp, commit), tab-separated. |
 | `claimlock refs` | Fail if any `` Claim: `<id>` `` marker in prose names no claim. Its census line also reports how many claims no prose cites at all (`--orphans` lists them, capped like every other listing, `--full` to see all) — an uncited claim never fails the gate; it's a documentation gap, not a false statement. |
-| `claimlock evidence` | Resolve every `kind: test` evidence ref to a real test — `measurement`, `source` and `run` refs are prose by design and are never checked. A ref whose longest identifier token (≥ 8 chars) appears in no scanned file is `UNRESOLVED` (exit 1); a ref with no such token is `UNLOCATABLE` (reported, exit 0 — that's a citation claimlock can't check, not one that's wrong). Deliberately not part of `check`: it costs a full scan of the tree, `check`'s sub-0.1s baseline is load-bearing, and `evidence_globs` (default `**/*`) narrows it. |
+| `claimlock evidence` | Resolve every `kind: test` evidence ref to a real test — `measurement`, `source` and `run` refs are prose by design and are never checked. Reports on four states (see below): only `UNRESOLVED` fails. Deliberately not part of `check`: it costs a full scan of the tree, `check`'s sub-0.1s baseline is load-bearing, and `evidence_globs` (default `**/*`) narrows it. |
 | `claimlock affected` | List claims whose sources include the given path(s). |
 | `claimlock import` | Import claims from the original (unpinned) ground-truth format. |
 | `claimlock self-test` | Prove the freshness/anchoring/dangling-marker detectors actually fire, on this machine. |
@@ -135,6 +135,19 @@ Every command accepts `-C <dir>` to run as though started in `<dir>` — but
 come **before** the subcommand name: `claimlock -C <dir> check` works,
 `claimlock check -C <dir>` errors (`unrecognized arguments: -C <dir>`). Full
 field-level and format detail: [`docs/format.md`](docs/format.md).
+
+### Evidence resolution states
+
+`claimlock evidence` reports every `kind: test` ref in one of four states:
+
+| state | meaning | reported |
+|---|---|---|
+| `resolved` | the runner itself lists this test at this file | — (Task 4) |
+| `matched` | the file exists and the test's name appears in it as a literal, but no runner was asked | yes |
+| `unresolved` | the file or the name is absent | yes, **exit 1** |
+| `unlocatable` | claimlock cannot check this ref at all (no suitable identifier token, or too many matches) | yes |
+
+Only `unresolved` fails the gate; the others are reports.
 
 ## Output size
 
