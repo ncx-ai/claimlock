@@ -9,10 +9,10 @@ evidence:
     ref: tests/test_cli_read.py::Unreadable::test_missing_claims_dir_is_exit_2
 sources:
   - path: lib/claimlock/cli.py
-    blob: a04b87bd6bbe08510f38b9db08dcb68482ca4373
+    blob: 8acb6f82c36d7d2ed07019d30db7f53d561665e2
   - path: lib/claimlock/claims.py
     blob: 7c7f8293305418eb7b9cbd7ade8145ccee275c3e
-pins: e5f409da916b41b611f1ad57fb5acfa737169510
+pins: 0fcd73afdc74a10a64ef956179ad1f61cec3359e
 ---
 `claimlock check` exits 2 — never 0, never 1 — when the claims directory
 cannot be read, whether because it does not exist or because it exists but

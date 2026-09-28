@@ -9,13 +9,19 @@ module resolves that one thing and nothing else (design §3.2):
   refs are prose by design and are never parsed, never reported — the real
   store's one `run` ref reads "grep for prost/prost_types under crates/…/src",
   which is not a test name and has nothing to resolve it against.
-- Nothing here executes anything. It reads files and looks for an identifier
-  token; a claim file arrives by `git pull` and is untrusted input.
+- Nothing here executes anything by default. It reads files and looks for an
+  identifier token; a claim file arrives by `git pull` and is untrusted input.
+  `audit(..., ask_runners=True)` is the one exception and it is opt-in from
+  `evidence --ask-runners` alone: it asks a real test runner what tests exist
+  (`runners`), which is what lets an explicit ref be `resolved` rather than
+  merely `matched`. Nothing from a ref reaches a command line even then — see
+  that module's header for why.
 """
 import re
 from dataclasses import dataclass
 
 from . import refs as R
+from . import runners
 from .project import safe_source
 
 LOCATOR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -79,7 +85,33 @@ class Check:
     reason: str | None = None  # "ambiguous" | "no-locator" | None
 
 
-def audit(project, claims, globs=None):
+def _runner_listing(root, rel, answers):
+    """What a runner lists for `rel`, or None when no runner owns its suffix or
+    the one that does cannot be consulted. Consulted at most ONCE per file:
+    `answers` caches by relative path, so a store citing 40 tests in one file
+    spawns one subprocess, not 40. Nothing is cached between runs — claimlock
+    keeps no index."""
+    if rel not in answers:
+        fn = runners.for_file(rel)
+        answers[rel] = None if fn is None else fn(root, rel)
+    return answers[rel]
+
+
+def _runner_lists(rel, name, listed):
+    """Whether `listed` (a runner's `{(file, name)}`) holds `name` for `rel`.
+
+    Exact first. Failing that, the ref may name only the LEAF of a runner's
+    path — `attributes a frame` for vitest's `createShell > attributes a frame`,
+    `a_case` for cargo's `codec_tests::a_case` — which is how a person cites a
+    test and is still the runner saying that test exists in that file. The
+    separator is required, so `case` does not resolve against `a listed case`."""
+    if (rel, name) in listed:
+        return True
+    return any(f == rel and any(full.endswith(sep + name) for sep in (" > ", "::"))
+               for f, full in listed)
+
+
+def audit(project, claims, globs=None, ask_runners=False):
     """([Check], files_scanned, files_skipped) — one Check per `kind: test`
     evidence entry across `claims`; `measurement`/`source`/`run` entries are
     skipped and produce no Check at all. Walks `refs.files(project, None,
@@ -94,7 +126,14 @@ def audit(project, claims, globs=None):
     `files_skipped` counts these separately from `files_scanned` so a scan
     that missed its answer inside an oversized file is visible, not silent.
     This guard is local to `evidence`: `refs`'s own scan (bounded to
-    `**/*.md` by default) is untouched by it."""
+    `**/*.md` by default) is untouched by it.
+
+    `ask_runners=True` consults a test runner for each EXPLICIT ref's file
+    (`runners.for_file`, once per file) and lets its answer decide: listed →
+    `resolved`, ran and did not list it → `unresolved`, could not be consulted →
+    the static outcome stands, because an absent toolchain is not a false claim.
+    A prose ref never reaches a runner — it names no file, so there is nothing
+    to consult it about — and so can never be `matched` or runner-`resolved`."""
     globs = project.evidence_globs if globs is None else globs
     explicit, wanted = [], []
     for c in claims:
@@ -132,10 +171,13 @@ def audit(project, claims, globs=None):
             counts[tok] = counts.get(tok, 0) + 1
 
     checks = []
+    answers = {}                               # rel -> runner listing, once per FILE
     for cid, ref, (rel, name) in explicit:
         p = safe_source(project.root, rel)
         loc = f"{rel}::{name}"
         if p is None or not p.is_file():
+            # Nothing to consult a runner about: no file, and the package-root
+            # walk would start from a directory that may not exist either.
             checks.append(Check(cid, ref, loc, "unresolved"))
             continue
         try:
@@ -144,7 +186,16 @@ def audit(project, claims, globs=None):
             checks.append(Check(cid, ref, loc, "unlocatable", "unreadable"))
             continue
         last = name.rsplit("::", 1)[-1].rsplit(" > ", 1)[-1].strip()
-        checks.append(Check(cid, ref, loc, "matched" if last and last in text else "unresolved"))
+        outcome = "matched" if last and last in text else "unresolved"
+        if ask_runners:
+            listed = _runner_listing(project.root, rel, answers)
+            if listed is not None:
+                # The runner answered, so its answer is the answer — in both
+                # directions. It can promote a name the static scan could not
+                # see (one built in a loop) and demote one that is written in
+                # the file but is not a test it would run.
+                outcome = "resolved" if _runner_lists(rel, name, listed) else "unresolved"
+        checks.append(Check(cid, ref, loc, outcome))
     for cid, ref, loc in wanted:
         reason = None
         if loc is None:

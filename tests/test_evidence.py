@@ -1,8 +1,10 @@
 import unittest
+from unittest import mock
 
 from helpers import TmpCase, claim_text, make_repo, run_cli, write
 from claimlock import claims as C
 from claimlock import evidence
+from claimlock import runners
 from claimlock.project import load
 
 
@@ -191,6 +193,148 @@ class Audit(TmpCase):
         self.assertEqual(checks[0].outcome, "matched")
 
 
+class AskRunners(TmpCase):
+    """`resolved` for an explicit ref means a runner listed that test. These
+    tests replace the runner rather than installing one: what is under test is
+    the wiring — which refs reach a runner, how often, and what each of its
+    three answers does to the outcome."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make_repo(self.tmp / "r", use_git=False)
+        # The name is present in the file, so the STATIC outcome is `matched`
+        # for every case below; only the runner's answer varies.
+        write(self.root, "src/a.test.ts", "it('a listed case', () => {})\n")
+
+    def _claims(self):
+        return C.load_claims(load(self.root))
+
+    def _cite(self, name, cid="a"):
+        write(self.root, f"claims/{cid}.md",
+              claim_text(cid, evidence=(("test", f"src/a.test.ts::{name}"),)))
+
+    def _audit(self, ask_runners=True):
+        return evidence.audit(load(self.root), self._claims(), ask_runners=ask_runners)[0]
+
+    def test_a_runner_that_lists_the_test_makes_an_explicit_ref_resolved(self):
+        self._cite("a listed case")
+        with mock.patch.object(runners, "vitest_tests",
+                               return_value={("src/a.test.ts", "a listed case")}):
+            checks = self._audit()
+        self.assertEqual([c.outcome for c in checks], ["resolved"])
+
+    def test_a_runner_that_does_not_list_the_test_makes_it_unresolved(self):
+        """The falsifier. The name IS in the file — Task 3 calls that `matched`
+        — so a wiring that promoted everything the runner was asked about would
+        still pass the test above."""
+        self._cite("a listed case")
+        with mock.patch.object(runners, "vitest_tests",
+                               return_value={("src/a.test.ts", "some other case")}):
+            checks = self._audit()
+        self.assertEqual([c.outcome for c in checks], ["unresolved"])
+
+    def test_a_runner_that_lists_the_name_against_another_file_does_not_resolve_it(self):
+        # The pair is (file, name): an explicit ref is resolved by THAT file's
+        # listing, which is the whole point of naming a file (Task 2).
+        self._cite("a listed case")
+        with mock.patch.object(runners, "vitest_tests",
+                               return_value={("src/b.test.ts", "a listed case")}):
+            checks = self._audit()
+        self.assertEqual([c.outcome for c in checks], ["unresolved"])
+
+    def test_a_runner_that_cannot_be_consulted_keeps_the_static_outcome(self):
+        # An absent toolchain is not a false claim.
+        self._cite("a listed case")
+        with mock.patch.object(runners, "vitest_tests", return_value=None):
+            checks = self._audit()
+        self.assertEqual([c.outcome for c in checks], ["matched"])
+
+    def test_a_file_no_runner_owns_keeps_the_static_outcome(self):
+        write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/a.py::a_named_test_function"),)))
+        with mock.patch.object(runners, "vitest_tests") as vt, \
+             mock.patch.object(runners, "cargo_tests") as ct:
+            checks = self._audit()
+        self.assertEqual([c.outcome for c in checks], ["matched"])
+        vt.assert_not_called()
+        ct.assert_not_called()
+
+    def test_a_runner_can_resolve_a_name_the_static_scan_could_not_see(self):
+        # The reason `matched` is not `resolved`: a name built in a loop appears
+        # nowhere in the file as a literal. Static says unresolved; the runner
+        # says it exists, and the runner is right.
+        write(self.root, "src/a.test.ts",
+              "for (const n of CASES) it(`a case for ${n}`, () => {})\n")
+        self._cite("a case for seven")
+        with mock.patch.object(runners, "vitest_tests",
+                               return_value={("src/a.test.ts", "a case for seven")}):
+            checks = self._audit()
+        self.assertEqual([c.outcome for c in checks], ["resolved"])
+        # The control: without the runner the same ref is unresolved.
+        self.assertEqual([c.outcome for c in self._audit(ask_runners=False)], ["unresolved"])
+
+    def test_a_ref_naming_only_the_leaf_of_a_runners_path_resolves(self):
+        # How a person cites a test: the leaf, not the whole describe chain
+        # (vitest) or module path (cargo). The runner still says that test
+        # exists in that file.
+        for listed in ({("src/a.test.ts", "createShell > a listed case")},
+                       {("src/a.test.ts", "shell_tests::a listed case")}):
+            with self.subTest(listed=listed):
+                self._cite("a listed case")
+                with mock.patch.object(runners, "vitest_tests", return_value=listed):
+                    checks = self._audit()
+                self.assertEqual([c.outcome for c in checks], ["resolved"])
+
+    def test_a_leaf_must_be_a_whole_segment_of_the_runners_path(self):
+        # The falsifier for the rule above: a suffix that is not a whole
+        # segment is not the test. Without the separator, "case" would resolve
+        # against "a listed case" and citing a word would be enough.
+        self._cite("case")
+        with mock.patch.object(runners, "vitest_tests",
+                               return_value={("src/a.test.ts", "createShell > a listed case")}):
+            checks = self._audit()
+        self.assertEqual([c.outcome for c in checks], ["unresolved"])
+
+    def test_a_prose_ref_never_reaches_a_runner(self):
+        # Prose goes through Task 1's locator rule. It names no file, so there
+        # is no package root to consult and nothing a runner could be asked.
+        write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "a_listed_case_token"),)))
+        with mock.patch.object(runners, "for_file") as ff:
+            checks = self._audit()
+        ff.assert_not_called()
+        self.assertEqual([c.outcome for c in checks], ["unresolved"])
+
+    def test_a_runner_is_consulted_once_per_file(self):
+        # A store citing many tests in one file must not spawn one subprocess
+        # per ref: 40 refs, one file, one consultation.
+        for i in range(40):
+            write(self.root, f"claims/c{i:02d}.md",
+                  claim_text(f"c{i:02d}", evidence=(("test", f"src/a.test.ts::case {i:02d}"),)))
+        with mock.patch.object(runners, "vitest_tests",
+                               return_value=set()) as vt:
+            checks = self._audit()
+        self.assertEqual(vt.call_count, 1)
+        self.assertEqual(len(checks), 40)
+
+    def test_ask_runners_off_consults_nothing(self):
+        self._cite("a listed case")
+        with mock.patch.object(runners, "for_file") as ff:
+            checks = self._audit(ask_runners=False)
+        ff.assert_not_called()
+        self.assertEqual([c.outcome for c in checks], ["matched"])
+
+    def test_a_missing_file_is_unresolved_without_asking_a_runner(self):
+        # There is nothing to ask about a file that does not exist, and the
+        # package-root walk would start from a directory that may not either.
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/nope.test.ts::a listed case"),)))
+        with mock.patch.object(runners, "for_file") as ff:
+            checks = self._audit()
+        ff.assert_not_called()
+        self.assertEqual([c.outcome for c in checks], ["unresolved"])
+
+
 class CLI(TmpCase):
     def setUp(self):
         super().setUp()
@@ -239,6 +383,32 @@ class CLI(TmpCase):
         self.assertEqual(rc, 1, out)
         listed = [line for line in out.splitlines() if line.startswith("UNRESOLVED")]
         self.assertEqual(len(listed), 25)
+
+    def test_ask_runners_says_when_it_had_nothing_to_ask(self):
+        # The trap this line exists for: a store whose refs are all prose gets
+        # BYTE-IDENTICAL output with and without the flag, which reads as "the
+        # flag is broken" rather than "no ref names a file". Measured on a real
+        # 140-claim store: 549 kind: test refs, none of them explicit.
+        write(self.root, "src/lib.py", "def test_present_and_correct():\n    pass\n")
+        write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "test_present_and_correct"),)))
+        rc, plain, _ = run_cli(self.root, "evidence")
+        rc2, asked, _ = run_cli(self.root, "evidence", "--ask-runners")
+        self.assertEqual((rc, rc2), (0, 0), asked)
+        self.assertNotIn("nothing to ask", plain)
+        self.assertIn("claimlock: --ask-runners had nothing to ask: no evidence ref names a file",
+                      asked)
+
+    def test_ask_runners_is_silent_when_a_ref_names_a_file(self):
+        # The control. There is no vitest package here, so the runner cannot be
+        # consulted and `matched` stands — but the ref WAS askable, so the note
+        # must not print.
+        write(self.root, "src/a.test.ts", "it('a listed case', () => {})\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/a.test.ts::a listed case"),)))
+        rc, out, _ = run_cli(self.root, "evidence", "--ask-runners")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("nothing to ask", out)
+        self.assertIn("0 resolved, 1 matched", out)
 
     def test_matched_does_not_fail_the_gate(self):
         # cmd_evidence exits 1 for unresolved ONLY.

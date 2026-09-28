@@ -819,7 +819,7 @@ def cmd_refs(args):
 def cmd_evidence(args):
     project = _project(args)
     claims = C.load_claims(project)
-    checks, scanned, skipped = evidence.audit(project, claims)
+    checks, scanned, skipped = evidence.audit(project, claims, ask_runners=args.ask_runners)
     unresolved = [c for c in checks if c.outcome == "unresolved"]
     unlocatable = [c for c in checks if c.outcome == "unlocatable"]
     resolved = [c for c in checks if c.outcome == "resolved"]
@@ -842,6 +842,13 @@ def cmd_evidence(args):
         # skipped file must not read as though the tree came up clean.
         census += f", {skipped} skipped (too large)"
     print(census)
+    if args.ask_runners and not any(evidence.parse_ref(c.ref) for c in checks):
+        # A runner is only ever asked about an EXPLICIT ref. Where a store has
+        # none, `--ask-runners` produces byte-identical output to a plain run,
+        # which reads as a broken flag rather than as nothing to ask. Measured
+        # on a real 140-claim store: 549 `kind: test` refs, none explicit.
+        print("claimlock: --ask-runners had nothing to ask: no evidence ref names a file "
+              "as <file>::<test>")
     return evidence.exit_code(checks)
 
 
@@ -960,6 +967,8 @@ def build_parser():
     p = add("evidence", cmd_evidence, "resolve every kind: test evidence ref to a real test")
     p.add_argument("--full", action="store_true",
                    help="list every unresolved/unlocatable evidence ref, uncapped")
+    p.add_argument("--ask-runners", action="store_true",
+                   help="consult vitest/cargo so a matched ref can become resolved (runs subprocesses)")
     p = add("affected", cmd_affected, "claims whose sources include these paths")
     p.add_argument("paths", nargs="+")
     p = add("import", cmd_import, "import claims from the original ground-truth format")
