@@ -20,6 +20,26 @@ class Locator(unittest.TestCase):
         self.assertIsNone(evidence.locator("abc::xy"))
 
 
+class ParseRef(unittest.TestCase):
+    def test_an_explicit_ref_names_a_file_and_a_test(self):
+        self.assertEqual(
+            evidence.parse_ref("crates/a/src/main.rs::mod_tests::no_url_refuses"),
+            ("crates/a/src/main.rs", "mod_tests::no_url_refuses"))
+        self.assertEqual(
+            evidence.parse_ref("packages/web-sdk/src/shell.test.ts::createShell > attributes a frame"),
+            ("packages/web-sdk/src/shell.test.ts", "createShell > attributes a frame"))
+
+    def test_a_prose_ref_is_not_an_explicit_ref(self):
+        # Falls through to the locator rule rather than being mis-parsed.
+        self.assertIsNone(evidence.parse_ref("shell.test.ts: 'attributes a frame'"))
+        self.assertIsNone(evidence.parse_ref("pkg::mod::a_test_name"))
+
+    def test_a_bare_filename_is_refused(self):
+        # Two packages may hold shell.test.ts, so a name with no directory
+        # cannot identify one. Spec §4.2.
+        self.assertIsNone(evidence.parse_ref("shell.test.ts::createShell > attributes a frame"))
+
+
 class Audit(TmpCase):
     def setUp(self):
         super().setUp()
@@ -115,6 +135,41 @@ class Audit(TmpCase):
                       claim_text("a", evidence=(("test", "pkg::a_named_test_function"),)))
                 checks, _s, _k = evidence.audit(load(root), self._claims(root))
                 self.assertEqual(checks[0].outcome, expected)
+
+    def test_an_explicit_ref_that_names_a_real_test_in_its_file_resolves(self):
+        # The control for the two failing cases below: without it, both could
+        # pass for the wrong reason (e.g. an explicit ref always refusing).
+        write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/a.py::a_named_test_function"),)))
+        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual([(c.outcome, c.locator) for c in checks],
+                          [("resolved", "src/a.py::a_named_test_function")])
+
+    def test_an_explicit_ref_whose_file_cannot_be_decoded_is_unlocatable(self):
+        (self.root / "src").mkdir(parents=True, exist_ok=True)
+        (self.root / "src" / "a.bin").write_bytes(b"\xff\xfe\x00not utf-8")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/a.bin::a_named_test_function"),)))
+        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual([(c.outcome, c.reason) for c in checks], [("unlocatable", "unreadable")])
+
+    def test_an_explicit_ref_whose_file_is_missing_is_unresolved(self):
+        write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/nope.py::a_named_test_function"),)))
+        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual(checks[0].outcome, "unresolved")
+
+    def test_an_explicit_ref_whose_name_is_absent_from_its_file_is_unresolved(self):
+        # The file exists and contains OTHER tests. The point of an explicit ref
+        # is that the name is checked in THAT file, not anywhere in the repo.
+        write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
+        write(self.root, "src/b.py", "def some_other_test_function(): pass\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/b.py::a_named_test_function"),)))
+        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual(checks[0].outcome, "unresolved")
 
     def test_a_ref_with_no_locator_keeps_its_own_reason(self):
         # "no-locator" and "ambiguous" are both unlocatable and must stay

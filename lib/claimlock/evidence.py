@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 
 from . import refs as R
+from .project import safe_source
 
 LOCATOR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 MIN_LOCATOR = 8
@@ -36,6 +37,26 @@ AMBIGUOUS_FILES = 3
 # skipped rather than read (and counted separately — see `audit`'s `skipped`
 # return value — so a skip is visible, not a silent miss).
 MAX_SCAN_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+def parse_ref(ref):
+    """`(rel_file, test_name)` for an explicit `<repo-relative file>::<test>`
+    ref, else None.
+
+    A ref qualifies only when the part before the FIRST `::` looks like a path
+    with a directory and a file extension. That is what keeps
+    `pkg::mod::a_test` — the existing Rust-ish shape — falling through to the
+    locator rule, and what refuses a bare `shell.test.ts::…`: two packages may
+    hold that filename, so it identifies nothing (spec §4.2)."""
+    head, sep, tail = ref.partition("::")
+    if not sep or not tail.strip():
+        return None
+    head = head.strip()
+    if "/" not in head or "." not in head.rsplit("/", 1)[1]:
+        return None
+    if head.startswith("/") or ".." in head.split("/"):
+        return None
+    return head, tail.strip()
 
 
 def locator(ref):
@@ -75,14 +96,18 @@ def audit(project, claims, globs=None):
     This guard is local to `evidence`: `refs`'s own scan (bounded to
     `**/*.md` by default) is untouched by it."""
     globs = project.evidence_globs if globs is None else globs
-    wanted = []
+    explicit, wanted = [], []
     for c in claims:
         for e in c.evidence:
             if not isinstance(e, dict) or e.get("kind") != "test":
                 continue
             ref = e.get("ref")
             ref = ref if isinstance(ref, str) else ""
-            wanted.append((c.id, ref, locator(ref)))
+            parsed = parse_ref(ref)
+            if parsed is not None:
+                explicit.append((c.id, ref, parsed))
+            else:
+                wanted.append((c.id, ref, locator(ref)))
 
     needed = {loc for _, _, loc in wanted if loc is not None}
     counts = {}
@@ -107,6 +132,19 @@ def audit(project, claims, globs=None):
             counts[tok] = counts.get(tok, 0) + 1
 
     checks = []
+    for cid, ref, (rel, name) in explicit:
+        p = safe_source(project.root, rel)
+        loc = f"{rel}::{name}"
+        if p is None or not p.is_file():
+            checks.append(Check(cid, ref, loc, "unresolved"))
+            continue
+        try:
+            text = p.read_bytes().decode("utf-8")
+        except (UnicodeDecodeError, OSError):
+            checks.append(Check(cid, ref, loc, "unlocatable", "unreadable"))
+            continue
+        last = name.rsplit("::", 1)[-1].rsplit(" > ", 1)[-1].strip()
+        checks.append(Check(cid, ref, loc, "resolved" if last and last in text else "unresolved"))
     for cid, ref, loc in wanted:
         reason = None
         if loc is None:
