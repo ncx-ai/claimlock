@@ -142,7 +142,7 @@ field-level and format detail: [`docs/format.md`](docs/format.md).
 
 | state | meaning | reported |
 |---|---|---|
-| `resolved` | the runner itself lists this test at this file (a `<file>::<test>` ref under `--ask-runners`), or a prose ref's identifier appears in few enough files to identify one | counted in the census |
+| `resolved` | the runner itself lists this test — at that file under vitest, in that package under cargo ([why they differ](#--ask-runners)) — for a `<file>::<test>` ref under `--ask-runners`; or a prose ref's identifier appears in few enough files to identify one | counted in the census |
 | `matched` | the file exists and the test's name appears in it as a literal, but no runner was asked | yes |
 | `unresolved` | the file or the name is absent | yes, **exit 1** |
 | `unlocatable` | claimlock cannot check this ref at all (no suitable identifier token, or too many matches) | yes |
@@ -156,15 +156,24 @@ it is a test it would run — a name built in a loop appears nowhere as a
 literal, and a name in a comment appears as one. `claimlock evidence
 --ask-runners` asks, for each ref that names a file:
 
-| file | command, in the nearest package that owns it |
-|---|---|
-| `.ts` `.tsx` `.js` | `npx vitest list --json <a temporary file>`, in the nearest ancestor whose `package.json` mentions vitest |
-| `.rs` | `cargo test --all-targets -- --list`, in the nearest ancestor with a `Cargo.toml` |
+| file | command, in the nearest package that owns it | what `resolved` then confirms |
+|---|---|---|
+| `.ts` `.tsx` `.js` | `npx vitest list --json <a temporary file>`, in the nearest ancestor whose `package.json` mentions vitest | the name **and the file** — vitest's JSON gives `{name, file}` and both are compared |
+| `.rs` | `cargo test --all-targets -- --list`, in the nearest ancestor with a `Cargo.toml` | the name, **in that package** — not the file |
 
 Listed → `resolved`; the runner ran and did not list it → `unresolved`; the
 runner could not be consulted → the static outcome stands, because an absent
 toolchain is not a false claim. Each file is consulted once however many refs
 cite it, and nothing is cached between runs.
+
+**The two runners are not equally precise, and the difference is in what
+`resolved` means.** `cargo test -- --list` reports test names and no files at
+all, so a `.rs` ref is resolved by its name existing anywhere in that package:
+a ref naming the *wrong* `.rs` file in the right package still resolves. The
+vitest arm has no such gap — its listing carries the file, so a name listed
+against another file leaves the ref `unresolved`. For a `.rs` ref, read
+`resolved` as "this package has a test by that name", and rely on the file only
+as far as the `matched` substring check already went.
 
 It is **opt-in because it runs subprocesses**: consulting cargo compiles the
 package and consulting vitest starts a vite server, either of which can take
@@ -224,7 +233,7 @@ and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
 by default and uncapped with `--full`.
 
 Loaded or read, not printed: the two claimlock skills ~6,000 tokens when
-invoked; `README.md` ~10,500 and `docs/format.md` ~17,000 **if read**
+invoked; `README.md` ~11,000 and `docs/format.md` ~17,000 **if read**
 (`len(path.read_bytes())/4`, each rounded to the nearest 500 so an ordinary
 doc edit can't move it — `tests/test_plugin_manifest.py`'s `DocTokenFigures`
 asserts every one of these figures, in this file and both skills, stays
