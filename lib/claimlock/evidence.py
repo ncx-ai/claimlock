@@ -20,6 +20,13 @@ from . import refs as R
 LOCATOR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 MIN_LOCATOR = 8
 
+# A locator that appears in more files than this identifies nothing. Measured on
+# a 140-claim store: a genuine test name appears in 1 file (its definition) or 2
+# (definition plus one citation); the lowest common-word locator measured is
+# `attributes` at 79 files, and `platform` at 1,001. Nothing real sits between 3
+# and 79, so this threshold separates two populations rather than splitting one.
+AMBIGUOUS_FILES = 3
+
 # `evidence_globs` defaults to "**/*", not `refs`'s "**/*.md" — so, unlike
 # `refs`, a real candidate here can be a tracked fixture, PDF or model blob
 # far larger than any source file, and `audit` reads a whole candidate into
@@ -48,6 +55,7 @@ class Check:
     ref: str
     locator: str | None
     outcome: str  # "resolved" | "unresolved" | "unlocatable"
+    reason: str | None = None  # "ambiguous" | "no-locator" | None
 
 
 def audit(project, claims, globs=None):
@@ -77,7 +85,7 @@ def audit(project, claims, globs=None):
             wanted.append((c.id, ref, locator(ref)))
 
     needed = {loc for _, _, loc in wanted if loc is not None}
-    seen = set()
+    counts = {}
     scanned = 0
     skipped = 0
     for p, _rel in R.files(project, None, globs):
@@ -91,17 +99,25 @@ def audit(project, claims, globs=None):
         scanned += 1
         if not needed:
             continue
+        found = set()
         for tok in LOCATOR_RE.findall(text):
             if len(tok) >= MIN_LOCATOR and tok in needed:
-                seen.add(tok)
+                found.add(tok)
+        for tok in found:                      # once per FILE, not per occurrence
+            counts[tok] = counts.get(tok, 0) + 1
 
     checks = []
     for cid, ref, loc in wanted:
+        reason = None
         if loc is None:
-            outcome = "unlocatable"
-        elif loc in seen:
-            outcome = "resolved"
+            outcome, reason = "unlocatable", "no-locator"
         else:
-            outcome = "unresolved"
-        checks.append(Check(cid, ref, loc, outcome))
+            n = counts.get(loc, 0)
+            if n == 0:
+                outcome = "unresolved"
+            elif n > AMBIGUOUS_FILES:
+                outcome, reason = "unlocatable", "ambiguous"
+            else:
+                outcome = "resolved"
+        checks.append(Check(cid, ref, loc, outcome, reason))
     return checks, scanned, skipped

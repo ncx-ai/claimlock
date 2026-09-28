@@ -827,9 +827,13 @@ def cmd_evidence(args):
     _print_capped(unresolved, cap, "… and {n} more unresolved evidence refs — claimlock evidence --full",
                   lambda c: print(f"UNRESOLVED {c.claim_id}  {c.ref}"))
     _print_capped(unlocatable, cap, "… and {n} more unlocatable evidence refs — claimlock evidence --full",
-                  lambda c: print(f"UNLOCATABLE {c.claim_id}  {c.ref}"))
+                  lambda c: print(f"UNLOCATABLE {c.claim_id}  ({c.reason})  {c.ref}"))
+    ambiguous = sum(1 for c in unlocatable if c.reason == "ambiguous")
     census = (f"claimlock: {len(resolved)} resolved, {len(unresolved)} unresolved, "
-              f"{len(unlocatable)} unlocatable in {scanned} files scanned")
+              f"{len(unlocatable)} unlocatable")
+    if ambiguous:
+        census += f" ({ambiguous} ambiguous)"
+    census += f" in {scanned} files scanned"
     if skipped:
         # Named, not folded into "scanned" — a locator living only in a
         # skipped file must not read as though the tree came up clean.

@@ -11,8 +11,8 @@ evidence:
     ref: tests/test_output_budget.py::SearchQueryWithBraceIsNeverAFormatString::test_empty_braces_do_not_crash
 sources:
   - path: lib/claimlock/cli.py
-    blob: 067cc494254ed1c0fd2a6badf6c51e41371e3a9f
-pins: 1cbf32b0a8843c210ea017e1a94f1f46d30d71e6
+    blob: 77b3a31e7353e4ebdd6fc8af755e8bae8cb572f8
+pins: c46079c5cd7c81845a39aa8a56deebb80c077a4a
 ---
 `claimlock search` exits 1 exactly when the query has zero hits, in both
 ranked (default) and `--literal` mode — never for a query that found results,

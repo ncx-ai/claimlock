@@ -82,6 +82,50 @@ class Audit(TmpCase):
         self.assertEqual([(c.claim_id, c.outcome) for c in checks], [("a", "resolved")])
         self.assertEqual(skipped, 0)
 
+    def test_a_locator_in_many_files_is_unlocatable_not_resolved(self):
+        # Four files all containing the token, one claim citing it. The token is
+        # real and present; what it cannot do is identify a test.
+        for i in range(4):
+            write(self.root, f"src/f{i}.py", "def attributes(): pass\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "'attributes a frame to its pane'"),)))
+        checks, _scanned, _skipped = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual([c.outcome for c in checks], ["unlocatable"])
+        self.assertEqual(checks[0].reason, "ambiguous")
+
+    def test_a_locator_in_one_file_still_resolves(self):
+        # The control. Without it the assertion above is satisfied by a rule
+        # that calls everything unlocatable.
+        write(self.root, "src/a.py", "def flush_debits_conserves(): pass\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "pkg::mod::flush_debits_conserves"),)))
+        checks, _scanned, _skipped = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual([c.outcome for c in checks], ["resolved"])
+        self.assertIsNone(checks[0].reason)
+
+    def test_the_threshold_is_inclusive_at_its_boundary(self):
+        # AMBIGUOUS_FILES files is still resolvable; one more is not. Pins the
+        # boundary so a later refactor cannot move it silently by one.
+        for n, expected in ((evidence.AMBIGUOUS_FILES, "resolved"), (evidence.AMBIGUOUS_FILES + 1, "unlocatable")):
+            with self.subTest(files=n):
+                root = make_repo(self.tmp / f"r{n}", use_git=False)
+                for i in range(n):
+                    write(root, f"src/g{i}.py", "def a_named_test_function(): pass\n")
+                write(root, "claims/a.md",
+                      claim_text("a", evidence=(("test", "pkg::a_named_test_function"),)))
+                checks, _s, _k = evidence.audit(load(root), self._claims(root))
+                self.assertEqual(checks[0].outcome, expected)
+
+    def test_a_ref_with_no_locator_keeps_its_own_reason(self):
+        # "no-locator" and "ambiguous" are both unlocatable and must stay
+        # distinguishable: one is a ref claimlock cannot parse, the other a ref
+        # it parsed and cannot use.
+        write(self.root, "src/a.py", "x = 1\n")
+        write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "a b c"),)))
+        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual(checks[0].outcome, "unlocatable")
+        self.assertEqual(checks[0].reason, "no-locator")
+
 
 class CLI(TmpCase):
     def setUp(self):
@@ -101,7 +145,7 @@ class CLI(TmpCase):
         write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "xy"),)))
         rc, out, _ = run_cli(self.root, "evidence")
         self.assertEqual(rc, 0, out)
-        self.assertIn("UNLOCATABLE a  xy", out)
+        self.assertIn("UNLOCATABLE a  (no-locator)  xy", out)
 
     def test_census_names_the_scanned_file_count(self):
         write(self.root, "src/lib.py", "def test_present_and_correct():\n    pass\n")
