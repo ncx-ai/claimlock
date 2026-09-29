@@ -138,16 +138,6 @@ class Audit(TmpCase):
                 checks, _s, _k = evidence.audit(load(root), self._claims(root))
                 self.assertEqual(checks[0].outcome, expected)
 
-    def test_an_explicit_ref_that_names_a_real_test_in_its_file_resolves(self):
-        # The control for the two failing cases below: without it, both could
-        # pass for the wrong reason (e.g. an explicit ref always refusing).
-        write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
-        write(self.root, "claims/a.md",
-              claim_text("a", evidence=(("test", "src/a.py::a_named_test_function"),)))
-        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
-        self.assertEqual([(c.outcome, c.locator) for c in checks],
-                          [("matched", "src/a.py::a_named_test_function")])
-
     def test_an_explicit_ref_whose_file_cannot_be_decoded_is_unlocatable(self):
         (self.root / "src").mkdir(parents=True, exist_ok=True)
         (self.root / "src" / "a.bin").write_bytes(b"\xff\xfe\x00not utf-8")
@@ -190,7 +180,8 @@ class Audit(TmpCase):
         write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
         write(self.root, "claims/a.md", claim_text("a", evidence=(("test", "src/a.py::a_named_test_function"),)))
         checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
-        self.assertEqual(checks[0].outcome, "matched")
+        self.assertEqual([(c.outcome, c.locator) for c in checks],
+                          [("matched", "src/a.py::a_named_test_function")])
 
 
 class AskRunners(TmpCase):
