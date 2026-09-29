@@ -233,7 +233,7 @@ and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
 by default and uncapped with `--full`.
 
 Loaded or read, not printed: the two claimlock skills ~6,000 tokens when
-invoked; `README.md` ~11,000 and `docs/format.md` ~17,000 **if read**
+invoked; `README.md` ~11,000 and `docs/format.md` ~18,000 **if read**
 (`len(path.read_bytes())/4`, each rounded to the nearest 500 so an ordinary
 doc edit can't move it — `tests/test_plugin_manifest.py`'s `DocTokenFigures`
 asserts every one of these figures, in this file and both skills, stays
