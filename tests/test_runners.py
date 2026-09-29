@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from unittest import mock
 
 from helpers import TmpCase
 from claimlock import runners as R
+from claimlock.project import safe_source
 
 
 class VitestJson(unittest.TestCase):
@@ -72,6 +74,31 @@ class PackageRoot(TmpCase):
         (outer / "package.json").write_text('{"devDependencies":{"vitest":"^4"}}')
         (outer / "inner" / "a.test.ts").write_text("")
         self.assertIsNone(R.vitest_package_root(outer / "inner", "a.test.ts"))
+
+    def test_a_double_symlink_resolving_outside_the_root_is_not_a_package(self):
+        # repo/vendorlink -> an OUTSIDE directory, which itself contains a
+        # symlink back INTO the repo. `safe_source` accepts the leaf path (it
+        # resolves back inside the root, via the second symlink) — the escape
+        # is only in what the PACKAGE DIRECTORY resolves to: repo/vendorlink's
+        # realpath is the outside directory, so running `npx vitest` there
+        # with that cwd would load the outside directory's package.json.
+        if not hasattr(os, "symlink"):
+            self.skipTest("platform has no os.symlink")
+        root = self.tmp / "repo"
+        (root / "real").mkdir(parents=True)
+        (root / "real" / "a.test.ts").write_text("")
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "package.json").write_text('{"devDependencies":{"vitest":"^4"}}')
+        try:
+            (outside / "a.test.ts").symlink_to(root / "real" / "a.test.ts")
+            (root / "vendorlink").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("cannot create symlinks on this filesystem")
+        # The hazard is real: the leaf path resolves back inside the root...
+        self.assertIsNotNone(safe_source(root, "vendorlink/a.test.ts"))
+        # ...but the package directory it would run vitest in does not.
+        self.assertIsNone(R.vitest_package_root(root, "vendorlink/a.test.ts"))
 
     def test_the_cargo_package_root_is_the_nearest_ancestor_with_a_manifest(self):
         root = self.tmp / "c"

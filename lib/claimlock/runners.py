@@ -21,6 +21,8 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from .project import is_within
+
 # Generous: a cold vitest start or a cargo build from scratch is slow, and
 # timing out costs the answer (None -> the static outcome stands) rather than
 # producing a wrong one. Not configurable — nothing here is on a request path.
@@ -79,19 +81,30 @@ def _package_root(root, rel_file, manifest, contains=None):
     """The nearest ancestor directory of `rel_file`, at or below `root`, holding
     `manifest` (and, when `contains` is given, a manifest mentioning it), or
     None. The walk stops AT `root`: a package above the tree claimlock was
-    pointed at is not this project's."""
+    pointed at is not this project's.
+
+    The walk is over UNRESOLVED lexical parents, so a directory symlink inside
+    the tree can point `d` somewhere that is lexically "at or below `root`"
+    but resolves outside it (a double symlink: a tracked dir symlink into
+    another tracked dir symlink pointing off-repo). `safe_source` already lets
+    such a path through, because IT resolves inside the root — the escape is
+    only in what `d` itself resolves to. So every candidate is
+    containment-checked against the resolved root before it is returned,
+    which is the one check `os.path`/`pathlib` never does for you."""
     root = Path(root)
+    root_real = root.resolve()
     d = (root / rel_file).parent
     while True:
         m = d / manifest
         if m.is_file():
-            if contains is None:
+            ok = contains is None
+            if not ok:
+                try:
+                    ok = contains in m.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    ok = False
+            if ok and is_within(d.resolve(), root_real):
                 return d
-            try:
-                if contains in m.read_text(encoding="utf-8"):
-                    return d
-            except (OSError, UnicodeDecodeError):
-                pass
         if d == root or d.parent == d:
             return None
         d = d.parent
