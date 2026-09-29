@@ -146,6 +146,10 @@ class RunnerForFile(unittest.TestCase):
         self.assertIs(R.for_file("packages/web-sdk/src/a.test.ts"), R.vitest_tests)
         self.assertIs(R.for_file("packages/web-sdk/src/a.test.tsx"), R.vitest_tests)
         self.assertIs(R.for_file("web/a.test.js"), R.vitest_tests)
+        self.assertIs(R.for_file("web/a.test.jsx"), R.vitest_tests)
+        self.assertIs(R.for_file("web/a.test.mts"), R.vitest_tests)
+        self.assertIs(R.for_file("web/a.test.mjs"), R.vitest_tests)
+        self.assertIs(R.for_file("web/a.test.cjs"), R.vitest_tests)
         self.assertIs(R.for_file("crates/a/src/lib.rs"), R.cargo_tests)
 
     def test_a_file_no_runner_knows_chooses_none(self):

@@ -158,7 +158,7 @@ literal, and a name in a comment appears as one. `claimlock evidence
 
 | file | command, in the nearest package that owns it | what `resolved` then confirms |
 |---|---|---|
-| `.ts` `.tsx` `.js` | `npx vitest list --json <a temporary file>`, in the nearest ancestor whose `package.json` mentions vitest | the name **and the file** — vitest's JSON gives `{name, file}` and both are compared |
+| `.ts` `.tsx` `.js` `.jsx` `.mts` `.mjs` `.cjs` | `npx vitest list --json <a temporary file>`, in the nearest ancestor whose `package.json` mentions vitest | the name **and the file** — vitest's JSON gives `{name, file}` and both are compared |
 | `.rs` | `cargo test --all-targets -- --list`, in the nearest ancestor with a `Cargo.toml` | the name, **in that package** — not the file |
 
 Listed → `resolved`; the runner ran and did not list it → `unresolved`; the

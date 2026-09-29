@@ -31,7 +31,7 @@ TIMEOUT = 120
 # The suffixes each runner owns. A file no runner claims is never handed to one:
 # a Python or Go test would otherwise be "listed by vitest" — that is, absent
 # from its answer — and every ref in it would read unresolved.
-VITEST_SUFFIXES = (".ts", ".tsx", ".js")
+VITEST_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cjs")
 
 
 def parse_vitest_json(raw, root):
