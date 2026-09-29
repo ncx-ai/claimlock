@@ -211,7 +211,7 @@ def audit(project, claims, globs=None, ask_runners=False):
             counts[tok] = counts.get(tok, 0) + 1
 
     checks = []
-    answers = {}                               # rel -> runner listing, once per FILE
+    answers = {}                  # cache key -> runner listing; see _cache_key
     for cid, ref, (rel, name) in explicit:
         p = safe_source(project.root, rel)
         loc = f"{rel}::{name}"
