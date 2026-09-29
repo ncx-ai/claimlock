@@ -9,8 +9,8 @@ sources:
   - path: lib/claimlock/runners.py
     blob: e3290cef08f8bb067e898a54844f3fd8fb717d6c
   - path: lib/claimlock/evidence.py
-    blob: 463acfe9ca05a0814308cf4b7f185ae1e7a16b40
-pins: 865953ca779be30cad8a1d599bd208854cbb0cb7
+    blob: adcd998137f0ed2d27683943fa6ceb3fbc0646bd
+pins: 75a985490f4e6e59f1c661f02280db958fc448d2
 ---
 `claimlock evidence --ask-runners` never passes a string derived from a
 claim's `ref` to a command line — every `subprocess.run` argv is a fixed
