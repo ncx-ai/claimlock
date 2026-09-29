@@ -85,16 +85,40 @@ class Check:
     reason: str | None = None  # "ambiguous" | "no-locator" | None
 
 
+def _cache_key(root, rel, fn):
+    """The unit `answers` should cache `fn`'s result under for `rel`.
+
+    `vitest_tests` answers for the whole PACKAGE it lists, not just `rel` —
+    measured at 445 tests across 43 files from one call — so caching it per
+    file spawns one subprocess per cited file in that package instead of one
+    per package. Keyed on the resolved package root (falling back to `rel`
+    when none resolves, which costs nothing extra: `fn` would find the same
+    absence and return None either way).
+
+    `cargo_tests` answers per file INSTEAD: `--list` reports no file, so it
+    re-labels every name it returns with the file it was asked about. A
+    package-keyed cache would silently carry file A's relabelling onto file
+    B's answer, so cargo stays keyed on `rel`."""
+    if fn is runners.vitest_tests:
+        pkg = runners.vitest_package_root(root, rel)
+        return ("vitest", pkg) if pkg is not None else ("vitest-file", rel)
+    return ("file", rel)
+
+
 def _runner_listing(root, rel, answers):
     """What a runner lists for `rel`, or None when no runner owns its suffix or
-    the one that does cannot be consulted. Consulted at most ONCE per file:
-    `answers` caches by relative path, so a store citing 40 tests in one file
-    spawns one subprocess, not 40. Nothing is cached between runs — claimlock
-    keeps no index."""
-    if rel not in answers:
-        fn = runners.for_file(rel)
-        answers[rel] = None if fn is None else fn(root, rel)
-    return answers[rel]
+    the one that does cannot be consulted. Consulted at most once per unit
+    `_cache_key` names (a vitest package, or a cargo file): `answers` caches
+    by that key, so a store citing many tests across many files in one vitest
+    package spawns one subprocess, not one per file. Nothing is cached
+    between runs — claimlock keeps no index."""
+    fn = runners.for_file(rel)
+    if fn is None:
+        return None
+    key = _cache_key(root, rel, fn)
+    if key not in answers:
+        answers[key] = fn(root, rel)
+    return answers[key]
 
 
 def _runner_lists(rel, name, listed):

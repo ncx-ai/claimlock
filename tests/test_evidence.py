@@ -251,6 +251,29 @@ class AskRunners(TmpCase):
         vt.assert_not_called()
         ct.assert_not_called()
 
+    def test_a_cargo_runner_is_consulted_once_per_file_even_in_one_package(self):
+        # cargo's `--list` reports no file, so cargo_tests re-labels every
+        # name it returns with the FILE it was asked about. Caching cargo the
+        # way vitest is cached (by package) would carry one file's
+        # relabelling onto another file's answer, so two files in the same
+        # crate must still cost two calls, not one.
+        write(self.root, "Cargo.toml", '[package]\nname = "a"\n')
+        write(self.root, "src/a.rs", "")
+        write(self.root, "src/b.rs", "")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/a.rs::a_case"),)))
+        write(self.root, "claims/b.md",
+              claim_text("b", evidence=(("test", "src/b.rs::b_case"),)))
+
+        def fake(root, rel):
+            name = "a_case" if rel.endswith("a.rs") else "b_case"
+            return {(rel, name)}
+
+        with mock.patch.object(runners, "cargo_tests", side_effect=fake) as ct:
+            checks = self._audit()
+        self.assertEqual(ct.call_count, 2)
+        self.assertEqual({c.outcome for c in checks}, {"resolved"})
+
     def test_a_runner_can_resolve_a_name_the_static_scan_could_not_see(self):
         # The reason `matched` is not `resolved`: a name built in a loop appears
         # nowhere in the file as a literal. Static says unresolved; the runner
@@ -307,6 +330,23 @@ class AskRunners(TmpCase):
             checks = self._audit()
         self.assertEqual(vt.call_count, 1)
         self.assertEqual(len(checks), 40)
+
+    def test_a_runner_is_consulted_once_per_package_not_per_cited_file(self):
+        # vitest's answer already covers the whole package it lists, not just
+        # the one file it was asked about. Two DIFFERENT files under the same
+        # package, cited by two different claims, must still spawn one
+        # subprocess — a per-file cache key would spawn two.
+        write(self.root, "package.json", '{"devDependencies":{"vitest":"^4"}}')
+        write(self.root, "src/b.test.ts", "it('b listed case', () => {})\n")
+        self._cite("a listed case", cid="a")
+        write(self.root, "claims/b.md",
+              claim_text("b", evidence=(("test", "src/b.test.ts::b listed case"),)))
+        with mock.patch.object(runners, "vitest_tests",
+                               return_value={("src/a.test.ts", "a listed case"),
+                                             ("src/b.test.ts", "b listed case")}) as vt:
+            checks = self._audit()
+        self.assertEqual(vt.call_count, 1)
+        self.assertEqual({c.outcome for c in checks}, {"resolved"})
 
     def test_ask_runners_off_consults_nothing(self):
         self._cite("a listed case")
