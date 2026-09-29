@@ -31,7 +31,7 @@ The default sequence, every time:
    worth reporting, not something to work around by guessing at the code.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
-they are reference for changing claimlock itself (~17,000 and ~10,500 tokens,
+they are reference for changing claimlock itself (~18,000 and ~11,000 tokens,
 each rounded to the nearest 500 so an ordinary edit can't move it); this
 skill carries what these flows need. **Do not run `check --json`**
 unless a machine is parsing it — the text form is smaller.
@@ -71,7 +71,7 @@ shape: `docs/format.md`.
 | Field | Rule |
 |---|---|
 | Claim text | One sentence, present tense, **one fact**. A file stating three things cannot go stale for one of them. |
-| `evidence` | A test name, a measurement with its numbers, or a run. "I read the code" is not evidence. `kind: source` entries say *where* the behaviour lives; `verify` accepts a claim with only `source` evidence — the tool doesn't enforce this, you do: never verify on `source` evidence alone. |
+| `evidence` | For `kind: test`, prefer the explicit `<repo-relative-file>::<test-name>` form (e.g. `src/a.py::a_named_test_function`) over a bare test name: it's checked against that one file rather than the whole tree, and `claimlock evidence --ask-runners` can confirm it against a real runner (`resolved`) instead of a name-in-file match alone (`matched`). Otherwise a measurement with its numbers, or a run. "I read the code" is not evidence. `kind: source` entries say *where* the behaviour lives; `verify` accepts a claim with only `source` evidence — the tool doesn't enforce this, you do: never verify on `source` evidence alone. |
 | `sources` | Every file whose change could falsify the claim — the enforcement site, not just the constant. Prefer a `region` (`- path: <file>` / `region: <name>`, marked in the file with `claimlock:begin <name>` / `claimlock:end <name>`) when the enforcing code is a small part of a large or shared file: measured, one edit to a shared file staled **50** whole-file claims while the region-pinned claim on that same file stayed `fresh`. |
 
 Then `claimlock verify <id>` pins every source and marks it verified. Commit
@@ -184,6 +184,6 @@ Exact message shapes, field ordering, caps and log detail: `docs/format.md`.
 | "The file was only moved; I'll just edit the path" | Run `claimlock follow`: it keeps the pins honestly and updates the digest. |
 | "One claim for the whole subsystem" | It can't go stale for one part. Split it. |
 | "It's false now, delete it" | Refute it and say what replaced it. |
-| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~16k tokens. |
+| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~18k tokens. |
 | "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` when the phase is done. |
 | "Gating every commit is safer" | It re-reports what you already know: 1,327 surfacings against 48 genuinely stale claims over a measured 400-commit window. Batching removes the repeats, not the work. |

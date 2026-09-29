@@ -38,7 +38,7 @@ The default sequence for routine claim work, every time:
    worth reporting, not something to work around by guessing at the code.
 
 **Do not read `docs/format.md` or `README.md` for routine claim work** —
-they are reference for changing claimlock itself (~17,000 and ~10,500 tokens,
+they are reference for changing claimlock itself (~18,000 and ~11,000 tokens,
 each rounded to the nearest 500 so an ordinary edit can't move it); these
 skills carry what these flows need. **Do not run `check --json`**
 unless a machine is parsing it — the text form is smaller.
@@ -51,7 +51,11 @@ CI, on a pull request:
 
 `evidence` catches what the other three can't: a cited test renamed or
 deleted with nothing about the claim's sources changing, so it stays
-`verified` forever unless something re-checks the citation itself.
+`verified` forever unless something re-checks the citation itself. An
+explicit `<file>::<test>` ref that only matches statically reports `matched`,
+not `resolved`; `claimlock evidence --ask-runners` asks vitest/cargo to
+promote it to `resolved`. It's opt-in (it spawns subprocesses) and never part
+of `check` or the gate above — run it by hand when you want a runner's word.
 
 Locally, at the end of a phase, gate the whole working tree:
 
@@ -191,6 +195,6 @@ nothing. Full message shapes, field ordering, caps, and session/log detail:
 | "Take either side of the pin conflict" | Run `claimlock resolve`; it keeps pins only when the merged content is exactly what one side verified. |
 | "0 claims, check passed" | Check `claims_dir`. Seeing nothing is not finding nothing. |
 | "Disable the hook, it's noisy" | Noise means sources are too broad. Narrow them. |
-| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~16k tokens. |
+| "I'll read format.md to be sure" | The skills carry every routine rule; format.md is reference for changing claimlock itself, and costs ~18k tokens. |
 | "I'll run check after each edit" | Run `claimlock affected <paths>` while working and one `check --changed <base>` when the phase is done. |
 | "Gating every commit is safer" | It re-reports what you already know: 1,327 surfacings against 48 genuinely stale claims over a measured 400-commit window. Batching removes the repeats, not the work. |

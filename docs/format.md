@@ -1095,31 +1095,93 @@ gate — see "Cost" below).
 and are never parsed, never reported, even when the words they contain
 happen to match nothing in the tree.
 
-**The locator rule**: the longest token matching `[A-Za-z_][A-Za-z0-9_]*` in
-the ref that is at least 8 characters long. This handles both shapes actually
-seen in practice — a scoped path like `crate::module::the_test_name`, and one
-prose ref naming two tests — with one rule and no per-language parsing. Ties
-(two tokens of the same length) resolve to whichever `max()` meets first,
-which is deterministic for a given ref; nothing depends on which one wins.
+**Two ref shapes, checked two different ways** (`evidence.py::parse_ref`):
 
-Every `kind: test` entry gets exactly one of three outcomes:
+- **Explicit — `<repo-relative-path>::<test-name>`.** The part before the
+  first `::` has to look like a path: it needs a `/` and an extension on its
+  last segment, which is what makes `pkg::mod::the_test_name` (no slash) and
+  a bare `shell.test.ts::a case` (a filename, but two packages could hold it
+  and it would identify nothing) fall through to the locator rule below
+  instead of qualifying here. A qualifying ref is checked against that ONE
+  file: its name — the last `::`- or ` > `-separated segment, so citing the
+  leaf of a vitest describe chain or a cargo module path still counts — must
+  appear in the file as a whole segment, not merely a substring of a longer
+  one (a rename that leaves a superstring must not silently keep matching).
+- **Prose — anything else.** The longest token matching
+  `[A-Za-z_][A-Za-z0-9_]*` in the ref that is at least `MIN_LOCATOR` (8)
+  characters long — this is the pre-existing rule and the only one that ever
+  applied before the explicit form existed. It handles a scoped path like
+  `crate::module::the_test_name` and a prose ref naming two tests with one
+  rule and no per-language parsing, but it can only say a token is somewhere
+  in the tree; it never names a file. Ties (two tokens of the same length)
+  resolve to whichever `max()` meets first, deterministic for a given ref;
+  nothing depends on which one wins.
 
-- **`RESOLVED`** — the locator appears (as a whole identifier token) in some
-  file matched by `evidence_globs`. Not printed; only counted in the census.
-- **`UNRESOLVED`** — the locator appears in no scanned file. Printed as
-  `UNRESOLVED <claim-id>  <ref>`, capped at `LISTED_CLAIMS` (20, `--full` to
-  see the rest). **This is the only outcome that fails the gate** — `evidence`
-  exits 1 when any exist.
-- **`UNLOCATABLE`** — the ref has no token 8 characters or longer, so there is
-  nothing to search for. Printed as `UNLOCATABLE <claim-id>  <ref>`, capped
-  the same way. This does **not** fail the gate: a citation claimlock cannot
-  check is a different fact from one that is wrong.
+Every `kind: test` entry gets exactly one of **four** outcomes:
+
+- **`RESOLVED`** — the strongest thing claimlock can say about a ref. For a
+  **prose** ref: its locator appears, as a whole token, in
+  `AMBIGUOUS_FILES` (3) or fewer scanned files — a locator that identifies a
+  real test appears in the file defining it and at most one or two citing
+  it; measured on a 140-claim store, the lowest common-word locator sits at
+  79 files, with nothing real between 3 and 79, which is why 3 is the line.
+  For an **explicit** ref, a static check alone can never produce `RESOLVED`
+  — only `--ask-runners` can (below); without that flag an explicit ref tops
+  out at `MATCHED`. Not printed; only counted in the census.
+- **`MATCHED`** — an explicit ref whose file exists and whose name is
+  present in it, but no runner confirmed it is a test that would actually
+  run (either `--ask-runners` was not given, or it was and the runner could
+  not be consulted). Weaker than `RESOLVED`, and the distinction this whole
+  feature exists to keep visible: the file+name match is real, but nothing
+  ran a listing over it. A **prose** ref can never be `MATCHED` — it names no
+  file to check the name "in". Printed as `MATCHED <claim-id>  <ref>`, capped
+  at `LISTED_CLAIMS` (20, `--full` to see the rest).
+- **`UNRESOLVED`** — for a prose ref, its locator appears in no scanned file;
+  for an explicit ref, either its named file does not exist, or the file
+  exists but does not contain the name, or (under `--ask-runners`) the
+  runner ran and did not list it. Printed as `UNRESOLVED <claim-id>  <ref>`,
+  capped the same way. **This is the only outcome that fails the gate** —
+  `evidence` exits 1 when any exist.
+- **`UNLOCATABLE`** — claimlock cannot check this ref at all, for one of
+  three reasons, each printed so it stays distinguishable from the others:
+  `no-locator` (a prose ref with no token `MIN_LOCATOR` characters or
+  longer — there is nothing to search for), `ambiguous` (a prose locator
+  seen in more than `AMBIGUOUS_FILES` files — see `RESOLVED` above), or
+  `unreadable` (an explicit ref's file exists but is not valid UTF-8).
+  Printed as `UNLOCATABLE <claim-id>  (<reason>)  <ref>`, capped the same
+  way. This does **not** fail the gate, and neither does `MATCHED`: a
+  citation claimlock cannot check, or cannot fully check, is a different
+  fact from one that is wrong.
+
+**`--ask-runners`** (opt-in; never run by `check`, a hook, or a plain
+`claimlock evidence`) additionally asks a real test runner what tests exist,
+for each **explicit** ref's file — vitest for `.ts`/`.tsx`/`.js`/`.jsx`/
+`.mts`/`.mjs`/`.cjs`, cargo for `.rs` (`runners.py::for_file`) — in the
+nearest package that owns it, once per file however many refs cite it.
+Listed → promotes the ref to `RESOLVED` (this also catches a name the static
+scan could not see as a literal, such as one built in a loop); the runner ran
+and did not list it → `UNRESOLVED`, demoting a merely-`MATCHED` name that is
+written in the file but is not a test the runner would run; the runner could
+not be consulted (no toolchain, no package root, a build failure, a timeout)
+→ the static outcome stands, because an absent toolchain is not a false
+claim. A **prose** ref never reaches a runner — it names no file, so there is
+nothing to consult one about. The two runners confirm different things
+(cargo's `--list` names no file, so it resolves a `.rs` ref against its whole
+package rather than the cited file) — full detail, including the argv each
+one runs and why nothing from a ref ever reaches a command line:
+[`README.md`](README.md#--ask-runners).
 
 The census line always prints:
 
 ```
-claimlock: <resolved> resolved, <unresolved> unresolved, <unlocatable> unlocatable in <scanned> files scanned
+claimlock: <resolved> resolved, <matched> matched, <unresolved> unresolved, <unlocatable> unlocatable in <scanned> files scanned
 ```
+
+with two conditional additions: `(<ambiguous> ambiguous)` right after the
+`unlocatable` count, printed only when at least one `UNLOCATABLE` ref's
+reason is `ambiguous` (a count *within* that figure, not an addition to it),
+and a trailing `, <skipped> skipped (too large)` whenever at least one file
+was skipped this run (see below) — neither appears when its count is zero.
 
 Scanned files come from `refs.files(project, None, globs)` (the same walker
 `refs.scan` uses, minus the marker regex) with `globs` defaulting to the
@@ -1140,12 +1202,15 @@ a clean miss: the census line gains a trailing `, <skipped> skipped (too
 large)` whenever at least one file was skipped this run, and says nothing
 extra when none were.
 
-**Nothing here executes anything.** `claimlock evidence` reads files and
-looks for an identifier token; it never runs a command a claim cites, because
-claim files arrive by `git pull` and are untrusted input. This is also why a
-`kind: run` ref (a narrated procedure, not a command) is never a candidate
-for resolution — there is nothing there to execute even if execution were
-in scope.
+**Nothing here executes anything, by default.** A plain `claimlock evidence`
+reads files and looks for an identifier token; it never runs a command a
+claim cites, because claim files arrive by `git pull` and are untrusted
+input. This is also why a `kind: run` ref (a narrated procedure, not a
+command) is never a candidate for resolution — there is nothing there to
+execute even if execution were in scope. **`--ask-runners` is the one,
+opt-in exception** — and even then, nothing from a ref reaches a command
+line either way: it runs a fixed `vitest`/`cargo` invocation per package and
+compares its output in Python, never a command a claim names.
 
 **Cost.** A full evidence scan is measured at roughly an order of magnitude
 slower than `check`'s baseline over the same tree (see the [design
@@ -1161,7 +1226,7 @@ staleness surface).
 
 | Code | Meaning |
 |---|---|
-| `0` | Clean: no blocking claims (for `check`; `owed` never blocks), no non-fresh verified claims (for `stale`), no dangling markers (for `refs`), no `UNRESOLVED` evidence refs (for `evidence`; `UNLOCATABLE` never blocks), no `LEFT` outcome (for `resolve`), and successful read-only commands. |
+| `0` | Clean: no blocking claims (for `check`; `owed` never blocks), no non-fresh verified claims (for `stale`), no dangling markers (for `refs`), no `UNRESOLVED` evidence refs (for `evidence`; `MATCHED`/`UNLOCATABLE` never block), no `LEFT` outcome (for `resolve`), and successful read-only commands. |
 | `1` | Findings or a refusal: `check` found a blocking claim; `stale` found a non-fresh verified claim; `refs` found a dangling marker; `evidence` found an `UNRESOLVED` ref; `search` found nothing; `show`/`who`/`diff` named no claim; `import` reported per-file errors; `verify`, `follow`, `owe`, `new` or `init` was refused; `resolve` left a claim or named no claim. |
 | `2` | Cannot run: bad `.claimlock.toml`, no claims directory, or a claims directory that cannot be listed; `init`/`import` into a target directory that doesn't exist; `check --changed` outside git, with no merge base, or when git fails to list the changes; `owe` with no `--to` and no git `user.email`; `--mine` with no git `user.email`. |
 

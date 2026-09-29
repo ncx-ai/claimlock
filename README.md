@@ -124,7 +124,7 @@ Two **problems** fail `check` whatever the status:
 | `claimlock diff` | Show what changed in a verified or owed claim's sources since it was pinned, reading the pinned content from git; line by line, so a change of line endings alone is reported as such. Each source's unified diff is capped at 200 lines — `--full` prints it whole. |
 | `claimlock who` | Who verified each of a claim's pins, from git history (email, timestamp, commit), tab-separated. |
 | `claimlock refs` | Fail if any `` Claim: `<id>` `` marker in prose names no claim. Its census line also reports how many claims no prose cites at all (`--orphans` lists them, capped like every other listing, `--full` to see all) — an uncited claim never fails the gate; it's a documentation gap, not a false statement. |
-| `claimlock evidence` | Resolve every `kind: test` evidence ref to a real test — `measurement`, `source` and `run` refs are prose by design and are never checked. A ref whose longest identifier token (≥ 8 chars) appears in no scanned file is `UNRESOLVED` (exit 1); a ref with no such token is `UNLOCATABLE` (reported, exit 0 — that's a citation claimlock can't check, not one that's wrong). Deliberately not part of `check`: it costs a full scan of the tree, `check`'s sub-0.1s baseline is load-bearing, and `evidence_globs` (default `**/*`) narrows it. |
+| `claimlock evidence` | Resolve every `kind: test` evidence ref to a real test — `measurement`, `source` and `run` refs are prose by design and are never checked. Reports on four states (see below): only `UNRESOLVED` fails. `--ask-runners` asks the real test runner what tests exist, which is what earns `resolved` for a ref naming a file (see below); without it such a ref can only be `matched`. Deliberately not part of `check`: it costs a full scan of the tree, `check`'s sub-0.1s baseline is load-bearing, and `evidence_globs` (default `**/*`) narrows it. |
 | `claimlock affected` | List claims whose sources include the given path(s). |
 | `claimlock import` | Import claims from the original (unpinned) ground-truth format. |
 | `claimlock self-test` | Prove the freshness/anchoring/dangling-marker detectors actually fire, on this machine. |
@@ -135,6 +135,58 @@ Every command accepts `-C <dir>` to run as though started in `<dir>` — but
 come **before** the subcommand name: `claimlock -C <dir> check` works,
 `claimlock check -C <dir>` errors (`unrecognized arguments: -C <dir>`). Full
 field-level and format detail: [`docs/format.md`](docs/format.md).
+
+### Evidence resolution states
+
+`claimlock evidence` reports every `kind: test` ref in one of four states:
+
+| state | meaning | reported |
+|---|---|---|
+| `resolved` | the runner itself lists this test — at that file under vitest, in that package under cargo ([why they differ](#--ask-runners)) — for a `<file>::<test>` ref under `--ask-runners`; or a prose ref's identifier appears in few enough files to identify one | counted in the census |
+| `matched` | the file exists and the test's name appears in it as a literal, but no runner was asked | yes |
+| `unresolved` | the file or the name is absent | yes, **exit 1** |
+| `unlocatable` | claimlock cannot check this ref at all (no suitable identifier token, or too many matches) | yes |
+
+Only `unresolved` fails the gate; the others are reports.
+
+#### `--ask-runners`
+
+A substring hit says a test's name is written in a file. Only the runner says
+it is a test it would run — a name built in a loop appears nowhere as a
+literal, and a name in a comment appears as one. `claimlock evidence
+--ask-runners` asks, for each ref that names a file:
+
+| file | command, in the nearest package that owns it | what `resolved` then confirms |
+|---|---|---|
+| `.ts` `.tsx` `.js` `.jsx` `.mts` `.mjs` `.cjs` | `npx vitest list --json <a temporary file>`, in the nearest ancestor whose `package.json` mentions vitest | the name **and the file** — vitest's JSON gives `{name, file}` and both are compared |
+| `.rs` | `cargo test --all-targets -- --list`, in the nearest ancestor with a `Cargo.toml` | the name, **in that package** — not the file |
+
+Listed → `resolved`; the runner ran and did not list it → `unresolved`; the
+runner could not be consulted → the static outcome stands, because an absent
+toolchain is not a false claim. Each file is consulted once however many refs
+cite it, and nothing is cached between runs.
+
+**The two runners are not equally precise, and the difference is in what
+`resolved` means.** `cargo test -- --list` reports test names and no files at
+all, so a `.rs` ref is resolved by its name existing anywhere in that package:
+a ref naming the *wrong* `.rs` file in the right package still resolves. The
+vitest arm has no such gap — its listing carries the file, so a name listed
+against another file leaves the ref `unresolved`. For a `.rs` ref, read
+`resolved` as "this package has a test by that name", and rely on the file only
+as far as the `matched` substring check already went.
+
+It is **opt-in because it runs subprocesses**: consulting cargo compiles the
+package and consulting vitest starts a vite server, either of which can take
+minutes on a cold tree (both are bounded at 120 s). `check` never does this —
+its sub-0.1s baseline runs in every hook — and neither does a plain
+`claimlock evidence`. Nothing from a claim reaches a command line: every argv
+is fixed, a ref contributes only a repo-relative path and a name compared in
+Python, and the report path handed to `vitest --json` is always one claimlock
+made in a temporary directory, because that flag *writes* to its argument.
+
+A store whose `kind: test` refs are all prose has nothing for a runner to
+answer, and the flag says so on its own line rather than printing an
+identical report.
 
 ## Output size
 
@@ -181,7 +233,7 @@ and `refs --orphans` reports 41 uncited, each capped at `LISTED_CLAIMS` (20)
 by default and uncapped with `--full`.
 
 Loaded or read, not printed: the two claimlock skills ~6,000 tokens when
-invoked; `README.md` ~10,500 and `docs/format.md` ~17,000 **if read**
+invoked; `README.md` ~11,000 and `docs/format.md` ~18,000 **if read**
 (`len(path.read_bytes())/4`, each rounded to the nearest 500 so an ordinary
 doc edit can't move it — `tests/test_plugin_manifest.py`'s `DocTokenFigures`
 asserts every one of these figures, in this file and both skills, stays
