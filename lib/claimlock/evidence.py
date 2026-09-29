@@ -76,6 +76,22 @@ def locator(ref):
                key=len, default=None)
 
 
+def _appears_as_whole(leaf, text):
+    """Whether `leaf` appears in `text` bounded on both sides by something
+    other than an identifier character (`[A-Za-z0-9_]`) — the same
+    discipline the prose locator rule gets for free from
+    `LOCATOR_RE.findall` (which never returns a partial identifier), applied
+    here by hand because an explicit ref's leaf is not always a single
+    identifier token: a vitest name (`a listed case`) contains spaces, so a
+    plain `in` check is the right shape but needs the same boundary a bare
+    substring check lacks. Without it, `a_named_test` reads MATCHED against a
+    file containing only `a_named_test_function` — a rename that leaves a
+    superstring must not silently keep matching."""
+    if not leaf:
+        return False
+    return re.search(r"(?<![A-Za-z0-9_])" + re.escape(leaf) + r"(?![A-Za-z0-9_])", text) is not None
+
+
 @dataclass
 class Check:
     claim_id: str
@@ -210,7 +226,7 @@ def audit(project, claims, globs=None, ask_runners=False):
             checks.append(Check(cid, ref, loc, "unlocatable", "unreadable"))
             continue
         last = name.rsplit("::", 1)[-1].rsplit(" > ", 1)[-1].strip()
-        outcome = "matched" if last and last in text else "unresolved"
+        outcome = "matched" if _appears_as_whole(last, text) else "unresolved"
         if ask_runners:
             listed = _runner_listing(project.root, rel, answers)
             if listed is not None:

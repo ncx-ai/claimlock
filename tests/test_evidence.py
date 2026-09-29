@@ -163,6 +163,18 @@ class Audit(TmpCase):
         checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
         self.assertEqual(checks[0].outcome, "unresolved")
 
+    def test_an_explicit_ref_matching_only_a_superstring_is_unresolved(self):
+        # A rename that leaves the OLD name as a substring of the new one
+        # (a_named_test -> a_named_test_function) must not silently keep
+        # matching: the falsifier for whole-token matching on the explicit
+        # arm, the same discipline the prose locator rule already gets from
+        # its regex.
+        write(self.root, "src/a.py", "def a_named_test_function(): pass\n")
+        write(self.root, "claims/a.md",
+              claim_text("a", evidence=(("test", "src/a.py::a_named_test"),)))
+        checks, _s, _k = evidence.audit(load(self.root), self._claims(self.root))
+        self.assertEqual(checks[0].outcome, "unresolved")
+
     def test_a_ref_with_no_locator_keeps_its_own_reason(self):
         # "no-locator" and "ambiguous" are both unlocatable and must stay
         # distinguishable: one is a ref claimlock cannot parse, the other a ref
